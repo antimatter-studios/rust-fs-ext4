@@ -16,7 +16,7 @@
 //!   return `NEEDS_PARENT_SPLIT` so the caller can split the parent too
 //!   (or, for depth-1 root → depth-2 promotion, fail clearly).
 //!
-//! `Filesystem::split_htree_leaf_and_add_entry` composes the two for a
+//! `Filesystem::buffer_split_htree_leaf_and_add_entry` composes the two for a
 //! create into a full leaf (#195); where the parent is full it drops the
 //! index instead.
 //!

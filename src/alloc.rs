@@ -270,7 +270,7 @@ fn mark_reserved_in_group(
 /// Three separate reverts of the inline code — dropping the data run,
 /// no-oping the meta push, and keeping only `first_block` instead of the
 /// whole `count` run — each left 278 library tests green and EXIT=0.
-/// Nothing in the suite reaches `extend_dir_and_add_entry_deep`, on any
+/// Nothing in the suite reaches `buffer_extend_dir_deep`, on any
 /// runner, so the three lines that make the fix were held by nothing.
 /// Extracted here they are three assertions instead.
 ///
@@ -661,7 +661,7 @@ mod tests {
     //
     // THESE THREE ASSERTIONS ARE THE FIX. Before the extraction the
     // same three decisions were inline in
-    // `Filesystem::extend_dir_and_add_entry_deep`, and each could be
+    // `Filesystem::buffer_extend_dir_deep`, and each could be
     // reverted with 278 library tests green, EXIT=0, 0 compile errors:
     // dropping the data run, no-oping the meta push, and reserving only
     // `first_block` instead of the whole `count` run. Nothing in the

@@ -2097,18 +2097,35 @@ impl Filesystem {
         count: u32,
         hint: u32,
     ) -> Result<crate::alloc::BlockAllocationPlan> {
+        self.plan_buffered_block_allocation_excluding(buf, count, hint, &[])
+    }
+
+    /// [`Self::plan_buffered_block_allocation`], with `reserved` blocks --
+    /// spoken for but not yet staged as used -- treated as used.
+    fn plan_buffered_block_allocation_excluding(
+        &self,
+        buf: &BlockBuffer,
+        count: u32,
+        hint: u32,
+        reserved: &[u64],
+    ) -> Result<crate::alloc::BlockAllocationPlan> {
         let mut groups = self.allocation_groups();
         for (&gi, &flags) in &buf.uninit_cleared {
             if let Some(g) = groups.to_mut().get_mut(gi) {
                 g.flags = flags;
             }
         }
-        crate::alloc::plan_block_allocation(&self.sb, &groups, count, hint, |block| {
-            match buf.dirty.get(&block) {
+        crate::alloc::plan_block_allocation_excluding(
+            &self.sb,
+            &groups,
+            count,
+            hint,
+            reserved,
+            |block| match buf.dirty.get(&block) {
                 Some(bytes) => Ok(bytes.clone()),
                 None => self.read_block(block),
-            }
-        })
+            },
+        )
     }
 
     pub(crate) fn buffer_mark_block_run_used(
@@ -2625,8 +2642,7 @@ impl Filesystem {
                 Err(e) => return Err(e),
             }
         }
-        // No existing block has room — caller must extend the directory
-        // (or fall back to the un-journaled extend path).
+        // No existing block has room — caller must extend the directory.
         Err(Error::OutOfBounds)
     }
 
@@ -2751,7 +2767,8 @@ impl Filesystem {
     /// rewritten leaves a linear directory e2fsck can re-tail, where the
     /// other order would leave an index whose root no longer parses.
     ///
-    /// Not journaled, like the extend path that calls it.
+    /// Not journaled: the extend path commits the caller's transaction
+    /// before calling it.
     fn drop_htree_index(&self, dir_ino: u32) -> Result<()> {
         let (inode, mut raw) = self.read_inode_verified(dir_ino)?;
         if inode.flags & crate::inode::InodeFlags::INDEX.bits() == 0 {
@@ -3684,9 +3701,9 @@ impl Filesystem {
         self.buffer_write_inode(&mut buf, new_ino, &raw)?;
 
         // Multi-block transaction: inode bitmap + BGD + SB + new inode +
-        // parent dir entry, all atomic. The fall-through to extend-dir
-        // (when the parent has no room) must commit the buffer first
-        // and then run extend un-journaled — see end of fn.
+        // parent dir entry, all atomic, and the parent's growth with them
+        // when it has no room (see `extend_dir_and_add_entry` for the one
+        // case that commits early).
         match self.buffer_add_dir_entry_inplace(
             &mut buf,
             parent_ino,
@@ -3700,18 +3717,16 @@ impl Filesystem {
                 Ok(new_ino)
             }
             Err(Error::OutOfBounds) => {
-                // Parent dir is full → commit what we have so the inode
-                // allocation is durable, then run the un-journaled extend
-                // path. If the extend crashes mid-way we leak the
-                // already-allocated inode (orphan candidate); this is a
-                // documented limitation until extend has a buffer-twin.
-                self.commit_block_buffer(buf)?;
+                // Parent dir is full → grow it in the same transaction as
+                // the inode allocation.
                 self.extend_dir_and_add_entry(
+                    &mut buf,
                     parent_ino,
                     base_name.as_bytes(),
                     new_ino,
                     crate::dir::DirEntryType::RegFile,
                 )?;
+                self.commit_block_buffer(buf)?;
                 Ok(new_ino)
             }
             Err(e) => Err(e),
@@ -3760,13 +3775,14 @@ impl Filesystem {
                 Ok(new_ino)
             }
             Err(Error::OutOfBounds) => {
-                self.commit_block_buffer(buf)?;
                 self.extend_dir_and_add_entry(
+                    &mut buf,
                     parent_ino,
                     base_name.as_bytes(),
                     new_ino,
                     dir_entry_type,
                 )?;
+                self.commit_block_buffer(buf)?;
                 Ok(new_ino)
             }
             Err(e) => Err(e),
@@ -3911,13 +3927,14 @@ impl Filesystem {
                 Ok(new_ino)
             }
             Err(Error::OutOfBounds) => {
-                self.commit_block_buffer(buf)?;
                 self.extend_dir_and_add_entry(
+                    &mut buf,
                     parent_ino,
                     base_name.as_bytes(),
                     new_ino,
                     crate::dir::DirEntryType::Symlink,
                 )?;
+                self.commit_block_buffer(buf)?;
                 Ok(new_ino)
             }
             Err(e) => Err(e),
@@ -5259,20 +5276,20 @@ impl Filesystem {
             self.buffer_write_inode(&mut buf, parent_ino, &parent_raw)?;
             self.commit_block_buffer(buf)?;
         } else {
-            // Parent dir is full → commit what we have, then run the
-            // un-journaled extend, then commit the parent nlink bump as a
-            // small follow-up.
-            self.commit_block_buffer(buf)?;
+            // Parent dir is full → grow it, and bump its nlink, in the
+            // same transaction. The parent is re-read from the buffer,
+            // where the growth restaged it.
             self.extend_dir_and_add_entry(
+                &mut buf,
                 parent_ino,
                 base_name.as_bytes(),
                 new_ino,
                 crate::dir::DirEntryType::Directory,
             )?;
-            // Re-read parent (extend rewrote it) before patching nlink.
-            let (refreshed_parent, mut refreshed_raw) = self.read_inode_verified(parent_ino)?;
-            self.patch_inode_nlink(parent_ino, &mut refreshed_raw, &refreshed_parent, 1)?;
-            self.commit_inode_write(parent_ino, &refreshed_raw)?;
+            let (grown_parent, mut grown_raw) = self.buffered_inode_verified(&buf, parent_ino)?;
+            self.patch_inode_nlink(parent_ino, &mut grown_raw, &grown_parent, 1)?;
+            self.buffer_write_inode(&mut buf, parent_ino, &grown_raw)?;
+            self.commit_block_buffer(buf)?;
         }
 
         Ok(new_ino)
@@ -5352,16 +5369,16 @@ impl Filesystem {
         ) {
             Ok(()) => self.commit_block_buffer(buf),
             Err(Error::OutOfBounds) => {
-                // Parent dir is full → fall back to the un-journaled extend
-                // path. Commit the inode-only buffer first so the nlink bump
-                // is atomic w.r.t. itself, then run the legacy extend.
-                self.commit_block_buffer(buf)?;
+                // Parent dir is full → grow it in the same transaction as
+                // the nlink bump.
                 self.extend_dir_and_add_entry(
+                    &mut buf,
                     dst_parent_ino,
                     dst_name.as_bytes(),
                     src_ino,
                     dir_type,
-                )
+                )?;
+                self.commit_block_buffer(buf)
             }
             Err(e) => Err(e),
         }
@@ -5394,28 +5411,23 @@ impl Filesystem {
     ///
     /// Both paths stage their work into a single [`BlockBuffer`] and
     /// commit it through the journal, so a crash either applies the
-    /// whole rename or none of it.
+    /// whole rename or none of it. That includes growing the destination
+    /// directory, and splitting a full leaf of its htree index (#302).
     ///
-    /// **Except when the destination directory has no room for the new
-    /// entry.** Then the buffer is committed early and
-    /// `extend_dir_and_add_entry` — which is not journaled — runs
-    /// afterwards. That splits the operation in two, and the window
-    /// between them is a real one:
+    /// **Except when the destination is indexed and its index has to be
+    /// dropped** (the leaf is full and the index has no room to route a
+    /// new one). Dropping the index is not journaled, so
+    /// `extend_dir_and_add_entry` commits what the buffer held before
+    /// it, and the rest of the rename lands in a second commit:
     ///
     /// - On the overwrite path, the early commit has already removed
     ///   dst's directory entry. A crash there leaves dst's name gone
     ///   and src still present: the file that was at dst is
     ///   unreachable, and src has not moved.
     /// - On the no-overwrite path, the early commit is empty, so a
-    ///   crash in the extend leaves the filesystem as it was — but a
-    ///   crash *after* it leaves both names pointing at src's inode
-    ///   with a link count of one.
-    ///
-    /// Closing this needs `extend_dir_and_add_entry` to stage into the
-    /// buffer rather than write on its own, which is a change to the
-    /// directory-growth path rather than to this function. Until then
-    /// the guarantee is: **atomic unless the destination directory has
-    /// to grow.**
+    ///   crash in the drop leaves the filesystem as it was — but a
+    ///   crash *after* the growth commits leaves both names pointing at
+    ///   src's inode with a link count of one.
     pub fn apply_rename(&self, src: &str, dst: &str, replace_if_exists: bool) -> Result<()> {
         self.refuse_write()?;
         if src == dst {
@@ -5545,10 +5557,9 @@ impl Filesystem {
 
             // Stage the whole overwrite into a single buffer so a crash
             // either fully replaces dst or leaves the FS in its prior
-            // state — UNLESS the destination directory has to grow, in
-            // which case this buffer is committed early and the
-            // un-journaled extend runs after it. See the "Atomicity"
-            // section on this function for what that window costs.
+            // state — UNLESS the destination's htree index has to be
+            // dropped, which commits this buffer early. See the
+            // "Atomicity" section on this function for what that costs.
             let mut buf = BlockBuffer::new(self.sb.block_size());
 
             // Parent link-count changes are ACCUMULATED rather than
@@ -5596,16 +5607,13 @@ impl Filesystem {
                 Err(e) => return Err(e),
             };
             if dst_extends {
-                // Commit removal (and any prior in-buffer mutations) so
-                // the un-journaled extend doesn't race with replays.
-                self.commit_block_buffer(buf)?;
                 self.extend_dir_and_add_entry(
+                    &mut buf,
                     dst_parent_ino,
                     dst_name.as_bytes(),
                     src_ino,
                     dir_type,
                 )?;
-                buf = BlockBuffer::new(self.sb.block_size());
             }
 
             // 3. Remove src entry from its parent.
@@ -5695,9 +5703,8 @@ impl Filesystem {
         // Multi-block transaction: insert dst entry + remove src entry +
         // (cross-parent dir) update .. + adjust parent nlinks. Atomic so
         // a crash either fully renames or leaves the original — UNLESS
-        // the destination directory has to grow, which commits this
-        // buffer early and then runs the un-journaled extend. See the
-        // "Atomicity" section on this function.
+        // the destination's htree index has to be dropped, which commits
+        // this buffer early. See the "Atomicity" section on this function.
         let mut buf = BlockBuffer::new(self.sb.block_size());
         let mut parent_nlink: BTreeMap<u32, i32> = BTreeMap::new();
 
@@ -5715,14 +5722,14 @@ impl Filesystem {
         };
 
         if dst_extends {
-            // Dest parent full → fall back to the un-journaled extend.
-            // Commit any partial state first to avoid mixing journaled
-            // and un-journaled writes that race.
-            self.commit_block_buffer(buf)?;
-            self.extend_dir_and_add_entry(dst_parent_ino, dst_name.as_bytes(), src_ino, dir_type)?;
-            // Now the source removal + .. + nlink adjustments in a
-            // fresh buffer.
-            buf = BlockBuffer::new(self.sb.block_size());
+            // Dest parent full → grow it in this transaction.
+            self.extend_dir_and_add_entry(
+                &mut buf,
+                dst_parent_ino,
+                dst_name.as_bytes(),
+                src_ino,
+                dir_type,
+            )?;
         }
 
         self.buffer_remove_dir_entry(
@@ -5767,49 +5774,108 @@ impl Filesystem {
             if delta == 0 {
                 continue;
             }
-            let (inode, mut raw) = self.read_inode_verified(ino)?;
+            let (inode, mut raw) = self.buffered_inode_verified(buf, ino)?;
             self.patch_inode_nlink(ino, &mut raw, &inode, delta)?;
             self.buffer_write_inode(buf, ino, &raw)?;
         }
         Ok(())
     }
 
-    /// Grow `parent_ino`'s directory file by one fs block, seed that block
-    /// with the entry `(name → target_ino)`, and update the parent inode
-    /// image (size +block_size, +1 extent, recomputed CSUM). Assumes the
-    /// parent's inline extent root still has a free slot (the common case
-    /// until htree promotion lands).
-    /// Mark a freshly-allocated single block used and apply its BGD + SB
-    /// free-count deltas in one cache-coherent transaction. Routes through
-    /// `buffer_mark_block_run_used`, which refreshes the block-bitmap
-    /// checksum — the bare `mark_block_run_used` + `patch_*_counters` sequence
-    /// the directory-grow path used to run left that csum stale, so e2fsck
-    /// reported "block bitmap does not match checksum" once a directory grew a
-    /// block (and on 1 KiB images, where dirs grow at far fewer entries).
-    fn commit_dir_block_alloc(
+    /// Stage one freshly planned directory block as used: its bitmap bit
+    /// (through `buffer_mark_block_run_used`, which also refreshes the
+    /// block-bitmap checksum -- the bare `mark_block_run_used` +
+    /// `patch_*_counters` sequence the directory-grow path used to run left
+    /// that csum stale, so e2fsck reported "block bitmap does not match
+    /// checksum" once a directory grew a block) and its BGD + SB free-count
+    /// deltas.
+    fn buffer_dir_block_alloc(
         &self,
-        phys: u64,
+        buf: &mut BlockBuffer,
         plan: &crate::alloc::BlockAllocationPlan,
     ) -> Result<()> {
-        let mut buf = BlockBuffer::new(self.sb.block_size());
-        self.buffer_mark_block_run_used(&mut buf, phys, 1)?;
+        self.buffer_mark_block_run_used(buf, plan.first_block, 1)?;
         self.buffer_patch_bgd_counters(
-            &mut buf,
+            buf,
             plan.bgd.group_idx as usize,
             plan.bgd.free_blocks_delta,
             plan.bgd.free_inodes_delta,
             plan.bgd.used_dirs_delta,
         )?;
-        self.buffer_patch_sb_counters(
-            &mut buf,
-            plan.sb.free_blocks_delta,
-            plan.sb.free_inodes_delta,
-        )?;
-        self.commit_block_buffer(buf)
+        self.buffer_patch_sb_counters(buf, plan.sb.free_blocks_delta, plan.sb.free_inodes_delta)
     }
 
+    /// Plan one block for directory `parent_ino` against the bitmaps `buf`
+    /// has staged, and stage it as used, so the next plan in the same
+    /// transaction picks a different one.
+    fn buffer_alloc_dir_block(&self, buf: &mut BlockBuffer, parent_ino: u32) -> Result<u64> {
+        let parent_group = (parent_ino - 1) / self.sb.inodes_per_group;
+        let plan = self.plan_buffered_block_allocation(buf, 1, parent_group)?;
+        self.buffer_dir_block_alloc(buf, &plan)?;
+        Ok(plan.first_block)
+    }
+
+    /// `block`, as `buf` has it staged, or as the device has it.
+    fn buffered_block(&self, buf: &BlockBuffer, block: u64) -> Result<Vec<u8>> {
+        match buf.dirty.get(&block) {
+            Some(bytes) => Ok(bytes.clone()),
+            None => self.read_block(block),
+        }
+    }
+
+    /// [`Self::read_inode_verified`] through `buf`: the inode as the open
+    /// transaction has staged it, when it has staged its inode-table block.
+    ///
+    /// A directory grown inside a caller's transaction is read and restaged
+    /// in it, and restaging the device's copy of an inode the caller has
+    /// already patched in the buffer would put the old bytes back.
+    fn buffered_inode_verified(&self, buf: &BlockBuffer, ino: u32) -> Result<(Inode, Vec<u8>)> {
+        let (block, offset) = bgd::locate_inode(&self.sb, &self.groups, ino)?;
+        let Some(staged) = buf.dirty.get(&block) else {
+            return self.read_inode_verified(ino);
+        };
+        let off = offset as usize;
+        let raw = staged
+            .get(off..off + self.sb.inode_size as usize)
+            .ok_or(Error::Corrupt("inode slice exceeds block data"))?
+            .to_vec();
+        let inode = Inode::parse(&raw)?;
+        if self.csum.enabled && !self.csum.verify_inode(ino, inode.generation, &raw) {
+            return Err(Error::BadChecksum { what: "inode" });
+        }
+        Ok((inode, raw))
+    }
+
+    /// Recompute `raw`'s inode checksum and stage it into `buf`.
+    fn buffer_write_dir_inode(
+        &self,
+        buf: &mut BlockBuffer,
+        ino: u32,
+        generation: u32,
+        raw: &mut [u8],
+    ) -> Result<()> {
+        if self.csum.enabled {
+            if let Some((lo, hi)) = self.csum.compute_inode_checksum(ino, generation, raw) {
+                raw[0x7C..0x7E].copy_from_slice(&lo.to_le_bytes());
+                if raw.len() >= 0x84 {
+                    raw[0x82..0x84].copy_from_slice(&hi.to_le_bytes());
+                }
+            }
+        }
+        self.buffer_write_inode(buf, ino, raw)
+    }
+
+    /// Add `(name → target_ino)` to `parent_ino` by growing it, staged into
+    /// `buf`, the caller's open transaction, which the caller then commits:
+    /// the new entry, its inode and the growth land together.
+    ///
+    /// An indexed directory's full leaf is split (#195), and the split is
+    /// staged whole (#302). Where the index cannot take the new leaf, the
+    /// index is dropped instead; that rewrite is not journaled, so what
+    /// `buf` held is committed before it, and `buf` is left holding only
+    /// the appended block. A directory with no index grows in `buf`.
     fn extend_dir_and_add_entry(
         &self,
+        buf: &mut BlockBuffer,
         parent_ino: u32,
         name: &[u8],
         target_ino: u32,
@@ -5822,12 +5888,19 @@ impl Filesystem {
         // entry, as the kernel's `ext4_dx_add_entry` does (#195); only
         // where it does not is the index dropped, so the block appended
         // below is one a linear scan finds.
-        if self.split_htree_leaf_and_add_entry(parent_ino, name, target_ino, file_type, has_ft)? {
+        if self.buffer_split_htree_leaf_and_add_entry(
+            buf, parent_ino, name, target_ino, file_type, has_ft,
+        )? {
             return Ok(());
         }
-        self.drop_htree_index(parent_ino)?;
+        let (parent_inode, _) = self.buffered_inode_verified(buf, parent_ino)?;
+        if parent_inode.flags & crate::inode::InodeFlags::INDEX.bits() != 0 {
+            let staged = std::mem::replace(buf, BlockBuffer::new(self.sb.block_size()));
+            self.commit_block_buffer(staged)?;
+            self.drop_htree_index(parent_ino)?;
+        }
 
-        let (parent_inode, _) = self.read_inode_verified(parent_ino)?;
+        let (parent_inode, _) = self.buffered_inode_verified(buf, parent_ino)?;
         let block = self.seeded_dir_block(
             &parent_inode,
             parent_ino,
@@ -5836,7 +5909,7 @@ impl Filesystem {
             file_type,
             has_ft,
         )?;
-        self.append_dir_block(parent_ino, block)
+        self.buffer_append_dir_block(buf, parent_ino, block)
     }
 
     /// Split the full htree leaf that `name` routes to, add the entry to the
@@ -5848,21 +5921,24 @@ impl Filesystem {
     /// indexed, or is casefolded or encrypted (hashed some way this crate does
     /// not), the index has more than one interior level, the parent index
     /// block is full, every name in the leaf has one hash, or the new entry
-    /// does not fit the half it belongs in.
+    /// does not fit the half it belongs in. Nothing is staged then.
     ///
-    /// The new leaf is appended unjournaled, like every directory extension
-    /// here, before the index routes to it; the rewritten leaf and the parent
-    /// are then committed together. A crash between the two leaves the moved
-    /// names in both leaves, which lookups still resolve.
-    fn split_htree_leaf_and_add_entry(
+    /// Otherwise everything is staged into `buf`: the new leaf's allocation,
+    /// its extent, the directory's new size, the new leaf, the halved leaf
+    /// and the routing entry. They land in one commit, so a cut anywhere
+    /// leaves either the full leaf or both halves routed (#302). The new
+    /// leaf used to be appended and written first, outside the transaction,
+    /// and a cut before the commit left a block the index never referenced.
+    fn buffer_split_htree_leaf_and_add_entry(
         &self,
+        buf: &mut BlockBuffer,
         dir_ino: u32,
         name: &[u8],
         target_ino: u32,
         file_type: crate::dir::DirEntryType,
         has_ft: bool,
     ) -> Result<bool> {
-        let (dir, _) = self.read_inode_verified(dir_ino)?;
+        let (dir, _) = self.buffered_inode_verified(buf, dir_ino)?;
         if dir.flags & crate::inode::InodeFlags::INDEX.bits() == 0
             || dir.flags & (EXT4_CASEFOLD_FL | EXT4_ENCRYPT_FL) != 0
         {
@@ -5875,7 +5951,7 @@ impl Filesystem {
         };
 
         let root_phys = physical(0)?;
-        let root = self.read_block(root_phys)?;
+        let root = self.buffered_block(buf, root_phys)?;
         self.check_dx_block(dir_ino, &dir, &root, true)?;
         let info = crate::htree::parse_root_info(&root)?;
         if info.indirect_levels > 1 {
@@ -5890,7 +5966,7 @@ impl Filesystem {
             (root_phys, root, 32, routed)
         } else {
             let node_phys = physical(routed)?;
-            let node = self.read_block(node_phys)?;
+            let node = self.buffered_block(buf, node_phys)?;
             self.check_dx_block(dir_ino, &dir, &node, false)?;
             let (_, entries) = crate::htree::parse_node_entries(&node)?;
             let leaf = crate::htree::find_entry_for_hash(&entries, hash).block;
@@ -5903,7 +5979,7 @@ impl Filesystem {
         }
 
         let leaf_phys = physical(leaf_logical)?;
-        let leaf = self.read_block(leaf_phys)?;
+        let leaf = self.buffered_block(buf, leaf_phys)?;
         let reserved_tail = if self.csum.enabled && crate::dir::has_csum_tail(&leaf) {
             if !self
                 .csum
@@ -5928,7 +6004,9 @@ impl Filesystem {
             return Ok(false);
         };
 
-        let new_logical = u32::try_from(dir.size / bs as u64)
+        // Where `buffer_append_dir_block` puts the new leaf: a directory's
+        // size is whole blocks.
+        let new_logical = u32::try_from(dir.size.div_ceil(bs as u64))
             .map_err(|_| Error::Corrupt("directory too large to index another block"))?;
         let parent = match if count_offset == 32 {
             crate::htree_mut::plan_insert_dx_entry_root(
@@ -5947,18 +6025,6 @@ impl Filesystem {
         };
 
         let (mut left, mut right) = (split.left_bytes, split.right_bytes);
-        let seal = |block: &mut Vec<u8>| {
-            if reserved_tail == 12 {
-                self.csum
-                    .patch_dir_entry_tail(dir_ino, dir.generation, block);
-            }
-        };
-        // The new half goes on disk first holding only the names it takes
-        // from the full leaf, which that leaf still holds: until the commit
-        // below routes to it, it is an unreferenced copy, and every name is
-        // where the index sends a lookup (CodeRabbit on #238).
-        let mut right_moved = right.clone();
-        seal(&mut right_moved);
         let into = if hash >= split.split_out_hash {
             &mut right
         } else {
@@ -5976,26 +6042,21 @@ impl Filesystem {
             Err(Error::OutOfBounds) => return Ok(false),
             Err(e) => return Err(e),
         }
-        seal(&mut left);
-        seal(&mut right);
+        if reserved_tail == 12 {
+            for block in [&mut left, &mut right] {
+                self.csum
+                    .patch_dir_entry_tail(dir_ino, dir.generation, block);
+            }
+        }
         let mut parent = parent;
         self.csum
             .patch_dx_tail(dir_ino, dir.generation, &mut parent, count_offset);
 
-        self.append_dir_block(dir_ino, right_moved)?;
-        let (grown, _) = self.read_inode_verified(dir_ino)?;
-        let right_phys = self
-            .map_inode_logical(&grown, u64::from(new_logical))?
-            .ok_or(Error::CorruptDirEntry(
-                "the appended htree leaf is not mapped",
-            ))?;
-        // The halved leaf, the new name in its half and the routing entry
-        // land in one transaction.
-        let mut buf = BlockBuffer::new(self.sb.block_size());
+        // The new leaf, its allocation and extent and the grown inode; then
+        // the halved leaf and the routing entry. One transaction.
+        self.buffer_append_dir_block(buf, dir_ino, right)?;
         buf.put(leaf_phys, left);
-        buf.put(right_phys, right);
         buf.put(parent_phys, parent);
-        self.commit_block_buffer(buf)?;
         Ok(true)
     }
 
@@ -6029,20 +6090,27 @@ impl Filesystem {
     }
 
     /// Grow `parent_ino`'s directory by one block holding `block`, at logical
-    /// block `size / block_size`: allocate it, map it, write it, grow the
-    /// inode. Not journaled. Leaves any htree index alone.
-    fn append_dir_block(&self, parent_ino: u32, block: Vec<u8>) -> Result<()> {
+    /// block `size / block_size`, staged into `buf`: the allocation, the
+    /// mapping, the block itself and the grown inode. Nothing is written
+    /// until the caller commits `buf`, so a cut leaves all of it or none.
+    /// Leaves any htree index alone.
+    fn buffer_append_dir_block(
+        &self,
+        buf: &mut BlockBuffer,
+        parent_ino: u32,
+        block: Vec<u8>,
+    ) -> Result<()> {
         let bs = self.sb.block_size();
         let bs_u64 = bs as u64;
 
-        // Re-read parent so we operate on the freshest on-disk bytes.
-        let (parent_inode, mut parent_raw) = self.read_inode_verified(parent_ino)?;
+        let (parent_inode, mut parent_raw) = self.buffered_inode_verified(buf, parent_ino)?;
         if !parent_inode.is_dir() {
             return Err(Error::NotADirectory);
         }
         let new_logical_block = parent_inode.size.div_ceil(bs_u64);
         if parent_inode.flags & crate::inode::InodeFlags::EXTENTS.bits() == 0 {
-            return self.extend_mapped_dir_and_add_entry(
+            return self.buffer_extend_mapped_dir(
+                buf,
                 parent_ino,
                 &parent_inode,
                 &mut parent_raw,
@@ -6053,14 +6121,7 @@ impl Filesystem {
 
         // 1. Allocate one fs block. Hint to parent's group.
         let parent_group = (parent_ino - 1) / self.sb.inodes_per_group;
-        let mut bitmap_reader = |block: u64| self.read_block(block);
-        let plan = crate::alloc::plan_block_allocation(
-            &self.sb,
-            &self.allocation_groups(),
-            1,
-            parent_group,
-            &mut bitmap_reader,
-        )?;
+        let plan = self.plan_buffered_block_allocation(buf, 1, parent_group)?;
         let new_phys = plan.first_block;
 
         // 2. Insert extent into parent's inline extent root. If the root is
@@ -6079,29 +6140,32 @@ impl Filesystem {
         // gets rewritten.
         let root_header = crate::extent::ExtentHeader::parse(&parent_inode.block)?;
         if root_header.depth == 1 {
-            return self.extend_dir_and_add_entry_depth1(
+            return self.buffer_extend_dir_depth1(
+                buf,
                 parent_ino,
                 &parent_inode,
                 &mut parent_raw,
                 block,
-                new_phys,
                 new_extent,
                 plan,
             );
         }
         if root_header.depth > 1 {
-            return self.extend_dir_and_add_entry_deep(
+            return self.buffer_extend_dir_deep(
+                buf,
                 parent_ino,
                 &parent_inode,
                 &mut parent_raw,
                 block,
-                new_phys,
                 new_extent,
                 plan,
             );
         }
 
-        let (new_root, leaf_meta_alloc) =
+        // The data block is staged as used now, so the leaf-node plan on
+        // the promotion path below picks a different one.
+        self.buffer_dir_block_alloc(buf, &plan)?;
+        let (new_root, promoted) =
             match crate::extent_mut::plan_insert_extent(&parent_inode.block, new_extent) {
                 Ok(muts) => {
                     let root = muts
@@ -6113,28 +6177,11 @@ impl Filesystem {
                         .ok_or(Error::Corrupt(
                             "extend_dir_and_add_entry: plan produced no WriteRoot",
                         ))?;
-                    (root, None)
+                    (root, false)
                 }
                 Err(Error::CorruptExtentTree(msg)) if msg.contains("LEAF_FULL_NEEDS_PROMOTION") => {
-                    // Commit the data-block allocation NOW so the next plan picks
-                    // a different run (plan_block_allocation reads the bitmap).
-                    self.commit_dir_block_alloc(new_phys, &plan)?;
-
                     // Second allocation: the leaf node block.
-                    let mut reader2 = |block: u64| -> Result<Vec<u8>> {
-                        let mut buf = vec![0u8; bs as usize];
-                        self.dev.read_at(block * bs_u64, &mut buf)?;
-                        Ok(buf)
-                    };
-                    let meta_plan = crate::alloc::plan_block_allocation(
-                        &self.sb,
-                        &self.allocation_groups(),
-                        1,
-                        parent_group,
-                        &mut reader2,
-                    )?;
-                    let leaf_meta_phys = meta_plan.first_block;
-
+                    let leaf_meta_phys = self.buffer_alloc_dir_block(buf, parent_ino)?;
                     let promo = crate::extent_mut::plan_promote_leaf(
                         &parent_inode.block,
                         new_extent,
@@ -6147,8 +6194,8 @@ impl Filesystem {
                         self.csum
                             .patch_extent_tail(parent_ino, parent_inode.generation, &mut leaf);
                     }
-                    self.dev.write_at(leaf_meta_phys * bs_u64, &leaf)?;
-                    (promo.new_root_bytes, Some(meta_plan))
+                    buf.put(leaf_meta_phys, leaf);
+                    (promo.new_root_bytes, true)
                 }
                 Err(e) => return Err(e),
             };
@@ -6156,48 +6203,25 @@ impl Filesystem {
 
         // 3. Patch size (+= block_size) and i_blocks. On the promotion path
         //    the inode claims both the data block AND the leaf-node block.
-        let blocks_consumed: u64 = 1 + if leaf_meta_alloc.is_some() { 1 } else { 0 };
+        let blocks_consumed: u64 = 1 + u64::from(promoted);
         let new_size = parent_inode.size + bs_u64;
         let new_blocks = parent_inode.blocks + (bs_u64 / 512) * blocks_consumed;
         Self::patch_inode_size_and_blocks(&mut parent_raw, new_size, new_blocks)?;
 
-        // 4. Recompute parent inode CSUM and write it back.
-        if self.csum.enabled {
-            if let Some((lo, hi)) =
-                self.csum
-                    .compute_inode_checksum(parent_ino, parent_inode.generation, &parent_raw)
-            {
-                parent_raw[0x7C..0x7E].copy_from_slice(&lo.to_le_bytes());
-                if parent_raw.len() >= 0x84 {
-                    parent_raw[0x82..0x84].copy_from_slice(&hi.to_le_bytes());
-                }
-            }
-        }
-        self.write_inode_raw(parent_ino, &parent_raw)?;
-
-        self.dev.write_at(new_phys * bs_u64, &block)?;
-
-        // 6. Commit block allocator side-effects. On the promotion path the
-        //    data-block allocation was already committed above; here we only
-        //    commit the leaf-node allocation. On the simple path we commit the
-        //    data block as usual.
-        if let Some(meta_plan) = leaf_meta_alloc {
-            self.commit_dir_block_alloc(meta_plan.first_block, &meta_plan)?;
-        } else {
-            self.commit_dir_block_alloc(new_phys, &plan)?;
-        }
-
+        // 4. The inode, with its checksum, and the block.
+        self.buffer_write_dir_inode(buf, parent_ino, parent_inode.generation, &mut parent_raw)?;
+        buf.put(new_phys, block);
         Ok(())
     }
 
-    /// [`Self::extend_dir_and_add_entry`] for an ext2/ext3 directory, whose
+    /// [`Self::buffer_append_dir_block`] for an ext2/ext3 directory, whose
     /// blocks are named by `i_block`'s twelve direct pointers and then its
     /// single-indirect block. It read that array as an extent header and
     /// refused, so such a directory never grew past its first block (#89).
     /// A directory needing the double-indirect block is refused.
-    #[allow(clippy::too_many_arguments)]
-    fn extend_mapped_dir_and_add_entry(
+    fn buffer_extend_mapped_dir(
         &self,
+        buf: &mut BlockBuffer,
         parent_ino: u32,
         parent_inode: &Inode,
         parent_raw: &mut [u8],
@@ -6214,24 +6238,14 @@ impl Filesystem {
                 "growing an ext2/ext3 directory past its single-indirect block",
             ));
         }
-        let parent_group = (parent_ino - 1) / self.sb.inodes_per_group;
-        let allocate = || -> Result<(u32, crate::alloc::BlockAllocationPlan)> {
-            let mut bitmap_reader = |block: u64| self.read_block(block);
-            let plan = crate::alloc::plan_block_allocation(
-                &self.sb,
-                &self.allocation_groups(),
-                1,
-                parent_group,
-                &mut bitmap_reader,
-            )?;
-            let phys = u32::try_from(plan.first_block)
-                .map_err(|_| Error::Corrupt("directory block past a 32-bit block map"))?;
-            // Committed now, so the next plan picks a different block.
-            self.commit_dir_block_alloc(plan.first_block, &plan)?;
-            Ok((phys, plan))
+        // Each allocation is staged as used, so the next picks another.
+        let allocate = |buf: &mut BlockBuffer| -> Result<u32> {
+            let phys = self.buffer_alloc_dir_block(buf, parent_ino)?;
+            u32::try_from(phys)
+                .map_err(|_| Error::Corrupt("directory block past a 32-bit block map"))
         };
 
-        let (new_phys, _) = allocate()?;
+        let new_phys = allocate(buf)?;
         let mut blocks_consumed = 1u64;
         if new_logical_block < DIRECT {
             let at = OFF_BLOCK + 4 * new_logical_block as usize;
@@ -6241,36 +6255,24 @@ impl Filesystem {
             let mut indirect_phys =
                 u32::from_le_bytes(parent_raw[slot..slot + 4].try_into().unwrap());
             let mut indirect = if indirect_phys == 0 {
-                let (phys, _) = allocate()?;
-                indirect_phys = phys;
+                indirect_phys = allocate(buf)?;
                 blocks_consumed += 1;
-                parent_raw[slot..slot + 4].copy_from_slice(&phys.to_le_bytes());
+                parent_raw[slot..slot + 4].copy_from_slice(&indirect_phys.to_le_bytes());
                 vec![0u8; bs as usize]
             } else {
-                self.read_block(u64::from(indirect_phys))?
+                self.buffered_block(buf, u64::from(indirect_phys))?
             };
             let at = 4 * (new_logical_block - DIRECT) as usize;
             indirect[at..at + 4].copy_from_slice(&new_phys.to_le_bytes());
-            self.dev
-                .write_at(u64::from(indirect_phys) * bs_u64, &indirect)?;
+            buf.put(u64::from(indirect_phys), indirect);
         }
 
         let new_size = parent_inode.size + bs_u64;
         let new_blocks = parent_inode.blocks + (bs_u64 / 512) * blocks_consumed;
         Self::patch_inode_size_and_blocks(parent_raw, new_size, new_blocks)?;
-        if self.csum.enabled {
-            if let Some((lo, hi)) =
-                self.csum
-                    .compute_inode_checksum(parent_ino, parent_inode.generation, parent_raw)
-            {
-                parent_raw[0x7C..0x7E].copy_from_slice(&lo.to_le_bytes());
-                if parent_raw.len() >= 0x84 {
-                    parent_raw[0x82..0x84].copy_from_slice(&hi.to_le_bytes());
-                }
-            }
-        }
-        self.write_inode_raw(parent_ino, parent_raw)?;
-        self.dev.write_at(u64::from(new_phys) * bs_u64, &block)
+        self.buffer_write_dir_inode(buf, parent_ino, parent_inode.generation, parent_raw)?;
+        buf.put(u64::from(new_phys), block);
+        Ok(())
     }
 
     /// Grow a directory whose extent tree is already at depth ≥ 2.
@@ -6278,15 +6280,15 @@ impl Filesystem {
     /// allocating index-node blocks on demand via
     /// `plan_block_allocation_excluding`, which is told about the data
     /// block and about every meta block already handed out -- none of
-    /// which is committed to the bitmap until every write has succeeded.
+    /// which is staged as used until the plan has succeeded.
     #[allow(clippy::too_many_arguments)]
-    fn extend_dir_and_add_entry_deep(
+    fn buffer_extend_dir_deep(
         &self,
+        buf: &mut BlockBuffer,
         parent_ino: u32,
         parent_inode: &Inode,
         parent_raw: &mut [u8],
         block: Vec<u8>,
-        new_phys: u64,
         new_extent: crate::extent::Extent,
         data_plan: crate::alloc::BlockAllocationPlan,
     ) -> Result<()> {
@@ -6294,21 +6296,13 @@ impl Filesystem {
         let bs_u64 = bs as u64;
         let parent_group = (parent_ino - 1) / self.sb.inodes_per_group;
 
-        // Collect all allocation plans without committing them yet.  Committing
-        // eagerly (old behaviour) leaked blocks permanently when
-        // plan_insert_extent_deep or the subsequent writes failed — the bitmap
-        // was marked used but no extent ever referenced those blocks.  Instead,
-        // we gather all plans and commit them only after every write succeeds,
-        // matching the late-commit ordering of extend_dir_and_add_entry_depth1.
+        // NOTHING HERE IS STAGED AS USED UNTIL THE PLAN SUCCEEDS, SO THE
+        // PLANNER HAS TO BE TOLD WHAT IS ALREADY SPOKEN FOR.
         //
-        // NOTHING HERE IS COMMITTED YET, SO THE PLANNER HAS TO BE TOLD WHAT
-        // IS ALREADY SPOKEN FOR.
-        //
-        // `plan_block_allocation` reads the bitmap off the device, and this
-        // function deliberately writes nothing to it until every write has
-        // succeeded. So every call sees the same bytes and returns the same
-        // block: measured on a fresh 64 MiB image, three consecutive plans
-        // gave `517 517 517`.
+        // The planner reads the bitmaps `buf` holds, and this function marks
+        // nothing in them until the tree plan is done. So every call sees
+        // the same bytes and returns the same block: measured on a fresh
+        // 64 MiB image, three consecutive plans gave `517 517 517`.
         //
         // This used to defend itself with one equality test against
         // `data_block`, and the comment above it claimed the closure "skips
@@ -6331,27 +6325,15 @@ impl Filesystem {
         let mut pending_meta: Vec<crate::alloc::BlockAllocationPlan> = Vec::new();
 
         let reader = FsBlockReader { fs: self };
-        let mut meta_block_count: u64 = 0;
+        let staged: &BlockBuffer = buf;
         let mut alloc_fn = || -> Result<u64> {
-            let mut bm_reader = |block: u64| -> Result<Vec<u8>> {
-                let mut buf = vec![0u8; bs as usize];
-                self.dev.read_at(block * bs_u64, &mut buf)?;
-                Ok(buf)
-            };
             // RECOMPUTED PER CALL rather than accumulated, so the list
             // handed to the planner is a function of the plans that
             // exist -- one expression to test, and no state to get out
             // of step with `pending_meta`.
             let reserved = crate::alloc::reserved_blocks(&data_plan, &pending_meta);
-            let meta_plan = crate::alloc::plan_block_allocation_excluding(
-                &self.sb,
-                &self.allocation_groups(),
-                1,
-                parent_group,
-                &reserved,
-                &mut bm_reader,
-            )?;
-            meta_block_count += 1;
+            let meta_plan =
+                self.plan_buffered_block_allocation_excluding(staged, 1, parent_group, &reserved)?;
             pending_meta.push(meta_plan);
             Ok(pending_meta.last().unwrap().first_block)
         };
@@ -6364,44 +6346,28 @@ impl Filesystem {
             &mut alloc_fn,
         )?;
 
-        // Write tree-meta blocks (rewritten leaves + any new index nodes).
+        // The plan holds: every block it handed out is staged as used.
+        self.buffer_dir_block_alloc(buf, &data_plan)?;
+        for plan in &pending_meta {
+            self.buffer_dir_block_alloc(buf, plan)?;
+        }
+
+        // Tree-meta blocks (rewritten leaves + any new index nodes).
         for (block, mut bytes) in deep_plan.block_writes {
             if self.csum.enabled {
                 self.csum
                     .patch_extent_tail(parent_ino, parent_inode.generation, &mut bytes);
             }
-            self.dev.write_at(block * bs_u64, &bytes)?;
+            buf.put(block, bytes);
         }
 
         // Patch inode: root bytes, size (+1 data block), i_blocks.
         Self::patch_inode_block_area(parent_raw, &deep_plan.new_root)?;
         let new_size = parent_inode.size + bs_u64;
-        let new_blocks = parent_inode.blocks + (bs_u64 / 512) * (1 + meta_block_count);
+        let new_blocks = parent_inode.blocks + (bs_u64 / 512) * (1 + pending_meta.len() as u64);
         Self::patch_inode_size_and_blocks(parent_raw, new_size, new_blocks)?;
-        if self.csum.enabled {
-            if let Some((lo, hi)) =
-                self.csum
-                    .compute_inode_checksum(parent_ino, parent_inode.generation, parent_raw)
-            {
-                parent_raw[0x7C..0x7E].copy_from_slice(&lo.to_le_bytes());
-                if parent_raw.len() >= 0x84 {
-                    parent_raw[0x82..0x84].copy_from_slice(&hi.to_le_bytes());
-                }
-            }
-        }
-        self.write_inode_raw(parent_ino, parent_raw)?;
-
-        self.dev.write_at(new_phys * bs_u64, &block)?;
-
-        // All writes succeeded — now commit the allocation accounting. Route
-        // through commit_dir_block_alloc so the block-bitmap checksum is
-        // refreshed together with the BGD + SB free-count deltas (the bare
-        // mark_block_run_used + patch_*_counters sequence left the csum stale).
-        self.commit_dir_block_alloc(data_plan.first_block, &data_plan)?;
-        for plan in pending_meta {
-            self.commit_dir_block_alloc(plan.first_block, &plan)?;
-        }
-
+        self.buffer_write_dir_inode(buf, parent_ino, parent_inode.generation, parent_raw)?;
+        buf.put(data_plan.first_block, block);
         Ok(())
     }
 
@@ -6410,16 +6376,16 @@ impl Filesystem {
     /// block. The mutation happens entirely inside the leaf block; the inode
     /// root is unchanged.
     ///
-    /// Leaf overflow (>340 entries in a 4 KiB block with csum) returns a
-    /// clean error. Callers that hit this should retry via `extend_dir_and_add_entry_deep`.
+    /// Leaf overflow (>340 entries in a 4 KiB block with csum) falls back to
+    /// `buffer_extend_dir_deep`.
     #[allow(clippy::too_many_arguments)]
-    fn extend_dir_and_add_entry_depth1(
+    fn buffer_extend_dir_depth1(
         &self,
+        buf: &mut BlockBuffer,
         parent_ino: u32,
         parent_inode: &Inode,
         parent_raw: &mut [u8],
         block: Vec<u8>,
-        new_phys: u64,
         new_extent: crate::extent::Extent,
         plan: crate::alloc::BlockAllocationPlan,
     ) -> Result<()> {
@@ -6432,12 +6398,12 @@ impl Filesystem {
         // first put logical blocks past the split where no lookup
         // descends, and the entry just added was not found.
         if crate::extent::ExtentHeader::parse(&parent_inode.block)?.entries != 1 {
-            return self.extend_dir_and_add_entry_deep(
+            return self.buffer_extend_dir_deep(
+                buf,
                 parent_ino,
                 parent_inode,
                 parent_raw,
                 block,
-                new_phys,
                 new_extent,
                 plan,
             );
@@ -6454,8 +6420,7 @@ impl Filesystem {
         // `plan_insert_extent` operates on any depth-0 root — it uses
         // `header.max` for capacity, which was set to (bs-12-4)/12 = 340
         // when the leaf was built by `plan_promote_leaf`.
-        let mut leaf = vec![0u8; bs as usize];
-        self.dev.read_at(leaf_phys * bs_u64, &mut leaf)?;
+        let leaf = self.buffered_block(buf, leaf_phys)?;
         // CRC-verify before mutating — if the leaf's tail is corrupt we'd
         // write a false "fixed" version back.
         if self.csum.enabled
@@ -6474,57 +6439,41 @@ impl Filesystem {
                 // The single depth-1 leaf is full (≥340 extents in a 4 KiB block
                 // with csum). Fall back to the deep path, which handles adding a
                 // sibling leaf or promoting to depth 2. The data block hasn't
-                // been committed yet, so pass `plan` unchanged.
-                return self.extend_dir_and_add_entry_deep(
+                // been staged yet, so pass `plan` unchanged.
+                return self.buffer_extend_dir_deep(
+                    buf,
                     parent_ino,
                     parent_inode,
                     parent_raw,
                     block,
-                    new_phys,
                     new_extent,
                     plan,
                 );
             }
             Err(e) => return Err(e),
         };
-        let new_leaf = muts
+        let mut new_leaf = muts
             .into_iter()
             .find_map(|m| match m {
                 crate::extent_mut::ExtentMutation::WriteRoot { bytes } => Some(bytes),
                 _ => None,
             })
             .ok_or(Error::Corrupt(
-                "extend_dir_and_add_entry_depth1: plan produced no WriteRoot",
+                "buffer_extend_dir_depth1: plan produced no WriteRoot",
             ))?;
-        let mut new_leaf = new_leaf;
         if self.csum.enabled {
             self.csum
                 .patch_extent_tail(parent_ino, parent_inode.generation, &mut new_leaf);
         }
-        self.dev.write_at(leaf_phys * bs_u64, &new_leaf)?;
+        self.buffer_dir_block_alloc(buf, &plan)?;
+        buf.put(leaf_phys, new_leaf);
 
         // Inode root is unchanged — just grow size + blocks by one data block.
         let new_size = parent_inode.size + bs_u64;
         let new_blocks = parent_inode.blocks + (bs_u64 / 512);
         Self::patch_inode_size_and_blocks(parent_raw, new_size, new_blocks)?;
-        if self.csum.enabled {
-            if let Some((lo, hi)) =
-                self.csum
-                    .compute_inode_checksum(parent_ino, parent_inode.generation, parent_raw)
-            {
-                parent_raw[0x7C..0x7E].copy_from_slice(&lo.to_le_bytes());
-                if parent_raw.len() >= 0x84 {
-                    parent_raw[0x82..0x84].copy_from_slice(&hi.to_le_bytes());
-                }
-            }
-        }
-        self.write_inode_raw(parent_ino, parent_raw)?;
-
-        self.dev.write_at(new_phys * bs_u64, &block)?;
-
-        // Commit data-block allocation.
-        self.commit_dir_block_alloc(new_phys, &plan)?;
-
+        self.buffer_write_dir_inode(buf, parent_ino, parent_inode.generation, parent_raw)?;
+        buf.put(plan.first_block, block);
         Ok(())
     }
 

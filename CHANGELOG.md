@@ -165,6 +165,23 @@
 
 ### Fixed
 
+- **Splitting a full htree leaf is one transaction (#302).** The new right
+  leaf was appended first — allocated, mapped, written and the directory's
+  size grown with raw device writes and a commit of its own — and the
+  halved leaf and the parent's routing entry were committed after it. A
+  crash or an I/O error between the two left an allocated, mapped block
+  the index never referenced, which e2fsck reports as a damaged index, on
+  journaled volumes too. The allocation, the extent insert, the inode's
+  size, both leaves and the routing entry are now staged into one
+  `BlockBuffer` and committed once, and so is the rest of the operation
+  that needed the room: the new file's inode for a create, mknod or
+  symlink, the link count for a link or mkdir, and the rest of a rename.
+  Growing a directory with no index is one transaction the same way. Only
+  dropping an index that cannot route another leaf still commits early.
+  `tests/htree_split_write_cut.rs` cuts the writes of a splitting create
+  after each index and requires `e2fsck -fn` to accept every remounted
+  image; 29 of 46 cuts were rejected before.
+
 - **A hole can be punched in a file whose extent tree is deeper than the
   inode.** Punching wrote what survived back into the inode's four inline
   entries and freed every node below, so a punch leaving more than four
