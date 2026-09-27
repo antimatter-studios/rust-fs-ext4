@@ -179,6 +179,26 @@ fn readlink_into_a_short_buffer_is_erange_and_writes_nothing() {
     unsafe { fs_ext4_umount(fs) };
 }
 
+/// A non-NULL buffer of size 0 is only too small: ERANGE, not EINVAL.
+#[test]
+fn readlink_with_bufsize_zero_is_erange() {
+    let fs = mount_fixture();
+    let p = CString::new("/link.txt").unwrap();
+    let mut byte = 0xAAu8;
+    let rc = unsafe { fs_ext4_readlink(fs, p.as_ptr(), (&mut byte as *mut u8).cast(), 0) };
+    assert_eq!(rc, -1);
+    assert_eq!(fs_ext4_last_errno(), 34, "errno must be ERANGE");
+    assert_eq!(byte, 0xAA, "nothing may be written");
+    let err = unsafe { CStr::from_ptr(fs_ext4_last_error()) }
+        .to_string_lossy()
+        .into_owned();
+    assert!(
+        err.contains('9'),
+        "the message must name the size needed: {err}"
+    );
+    unsafe { fs_ext4_umount(fs) };
+}
+
 /// Target plus NUL exactly fills the buffer: success.
 #[test]
 fn readlink_into_an_exact_fit_buffer_succeeds() {

@@ -1249,8 +1249,10 @@ pub unsafe extern "C" fn fs_ext4_readlink(
         -1,
         AssertUnwindSafe(|| {
             clear_last_error();
-            if fs.is_null() || path.is_null() || buf.is_null() || bufsize == 0 {
-                set_err_msg("null fs/path/buf or zero bufsize", EINVAL);
+            // A zero bufsize is not an invalid argument, only a buffer too
+            // small for any target: it reaches the ERANGE check below.
+            if fs.is_null() || path.is_null() || buf.is_null() {
+                set_err_msg("null fs/path/buf", EINVAL);
                 return -1;
             }
             let fs_ref = &(*fs).fs;

@@ -12,6 +12,8 @@
   the NUL. A buffer smaller than length + 1 fails with -1 and errno
   `ERANGE`, and nothing is written to it. The message names the size
   needed. Unlike `readlink(2)`, the target is never silently truncated.
+  A `bufsize` of 0 with a non-NULL buffer is also `ERANGE`. Only a NULL
+  fs, path or buffer is `EINVAL`.
   Every other failure is -1 with the errno set, including a target
   declared longer than any path, which used to set only the message.
   **Callers that test `== 0` for success must test `>= 0`**, and a caller

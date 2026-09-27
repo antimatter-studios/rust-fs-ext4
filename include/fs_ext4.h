@@ -380,7 +380,8 @@ int64_t fs_ext4_read_file(fs_ext4_fs_t *fs, const char *path,
  * ERANGE, fs_ext4_last_error() naming the size needed, and writes nothing
  * into buf. The target is never silently truncated (unlike readlink(2)).
  *
- * NULL fs, path or buf, or bufsize 0: -1, EINVAL. Any other failure: -1
+ * bufsize 0 with a non-NULL buf is only too small: ERANGE as above.
+ * NULL fs, path or buf: -1, EINVAL. Any other failure: -1
  * with fs_ext4_last_errno() set (ENOENT, EINVAL when not a symlink, EIO,
  * ENOTSUP for an encrypted target, ...).
  */
