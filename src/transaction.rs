@@ -49,7 +49,7 @@ use crate::jbd2::{
     self, JbdIncompat, JournalSuperblock, BLOCK_TAIL_BYTES, COMMIT_CHECKSUM_AT, JBD2_COMMIT_BLOCK,
     JBD2_DESCRIPTOR_BLOCK, JBD2_MAGIC_NUMBER, JBD2_REVOKE_BLOCK,
 };
-use crate::journal::{TAG_LAST, TAG_SAME_UUID};
+use crate::journal::{TAG_ESCAPED, TAG_LAST, TAG_SAME_UUID};
 
 /// One buffered write the transaction will journal.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -196,7 +196,7 @@ impl Transaction {
             for chunk in self.writes.chunks(self.tags_per_descriptor(layout)) {
                 out.push(self.build_descriptor_block(chunk, layout)?);
                 for w in chunk {
-                    out.push(w.bytes.clone());
+                    out.push(logged_copy(&w.bytes));
                 }
             }
         }
@@ -237,6 +237,9 @@ impl Transaction {
             // Always set SAME_UUID so we don't have to carry a per-tag UUID
             // (journal's own s_uuid is used implicitly).
             flags |= TAG_SAME_UUID;
+            if needs_escape(&w.bytes) {
+                flags |= TAG_ESCAPED;
+            }
 
             if pos + tag_size > usable {
                 return Err(Error::Corrupt("descriptor block overflow (too many tags)"));
@@ -246,7 +249,9 @@ impl Transaction {
             blk[pos..pos + 4].copy_from_slice(&blocknr_lo.to_be_bytes());
             let checksum = layout
                 .seed
-                .map(|seed| jbd2::tag_checksum(seed, self.sequence, &w.bytes));
+                // Over the block as logged -- escaped -- since that is what
+                // recovery reads and verifies before it restores the magic.
+                .map(|seed| jbd2::tag_checksum(seed, self.sequence, &logged_copy(&w.bytes)));
 
             if layout.csum_v3 {
                 // journal_block_tag3_t: t_blocknr, t_flags, t_blocknr_high,
@@ -323,6 +328,32 @@ impl Transaction {
         blk[4..8].copy_from_slice(&block_type.to_be_bytes());
         blk[8..12].copy_from_slice(&self.sequence.to_be_bytes());
     }
+}
+
+/// Whether a data block begins with the journal magic and so must be
+/// escaped in the log.
+///
+/// Recovery tells journal blocks from data by their first four bytes. A data
+/// block that begins with the magic, logged as it is, is one a recovery scan
+/// that reaches it -- the stale tail of an earlier, longer transaction, just
+/// past the last commit -- takes for a descriptor or commit block: a file's
+/// contents could then be replayed as a transaction of its own. JBD2 has the
+/// writer zero those four bytes in the logged copy and set `TAG_ESCAPED` on
+/// its tag; replay puts the magic back (the kernel's
+/// `jbd2_journal_write_metadata_buffer` and `do_one_pass`).
+fn needs_escape(bytes: &[u8]) -> bool {
+    bytes.get(0..4) == Some(&JBD2_MAGIC_NUMBER.to_be_bytes()[..])
+}
+
+/// The copy of a data block that goes into the log: the block itself, with
+/// the magic zeroed when [`needs_escape`] says so. The final-location write
+/// keeps the original bytes.
+fn logged_copy(bytes: &[u8]) -> Vec<u8> {
+    let mut logged = bytes.to_vec();
+    if needs_escape(bytes) {
+        logged[0..4].fill(0);
+    }
+    logged
 }
 
 #[cfg(test)]
@@ -741,6 +772,72 @@ mod tests {
         assert_eq!(plan.writes[0].fs_block, 10);
         assert_eq!(plan.writes[1].fs_block, 20);
         assert_eq!(plan.writes[2].fs_block, 30);
+    }
+
+    /// A data block whose first four bytes are the journal magic, the rest
+    /// a pattern.
+    fn magic_led(len: usize) -> Vec<u8> {
+        let mut b: Vec<u8> = (0..len).map(|j| 0x5A ^ (j % 251) as u8).collect();
+        b[0..4].copy_from_slice(&JBD2_MAGIC_NUMBER.to_be_bytes());
+        b
+    }
+
+    /// A data block that begins with the journal magic is logged escaped: the
+    /// magic zeroed in the logged copy, `TAG_ESCAPED` on its tag, the rest of
+    /// the block untouched (#292). A block that does not is logged as it is.
+    #[test]
+    fn a_data_block_starting_with_the_magic_is_escaped_in_the_log() {
+        let original = magic_led(4096);
+        let mut tx = mk_tx(5);
+        tx.add_write(100, original.clone()).unwrap();
+        tx.add_write(200, vec![0x77; 4096]).unwrap();
+        let blocks = tx.commit().unwrap();
+        assert_eq!(blocks.len(), 4, "descriptor, two data, commit");
+
+        let desc = &blocks[0];
+        let tag_flags = |i: usize| {
+            u16::from_be_bytes(desc[12 + 8 * i + 6..12 + 8 * i + 8].try_into().unwrap()) as u32
+        };
+        assert_eq!(
+            tag_flags(0) & TAG_ESCAPED,
+            TAG_ESCAPED,
+            "the tag of a block that starts with the magic is not marked escaped"
+        );
+        assert_eq!(
+            &blocks[1][0..4],
+            &[0u8; 4],
+            "the logged copy still starts with the journal magic"
+        );
+        assert!(
+            blocks[1][4..] == original[4..],
+            "escaping touched more than the magic"
+        );
+        assert_eq!(
+            tag_flags(1) & TAG_ESCAPED,
+            0,
+            "an ordinary block was escaped"
+        );
+        assert!(blocks[2] == vec![0x77; 4096]);
+        assert!(
+            tx.writes[0].bytes == original,
+            "the final-location copy lost its magic"
+        );
+    }
+
+    /// Under CSUM_V3 the flag sits in the 32-bit `t_flags`, and the tag
+    /// checksum covers the block as logged -- escaped -- which is what
+    /// recovery reads and verifies before it restores the magic.
+    #[test]
+    fn an_escaped_block_is_checksummed_as_logged() {
+        let jsb = csum_jsb(JbdIncompat::REVOKE.bits() | JbdIncompat::CSUM_V3.bits());
+        let seed = jsb.csum_seed();
+        let mut tx = Transaction::begin(9, 4096, false, true);
+        tx.add_write(100, magic_led(4096)).unwrap();
+        let blocks = tx.commit_for(&jsb).unwrap();
+        let desc = &blocks[0];
+        assert_eq!(be32(desc, 12 + 4) & TAG_ESCAPED, TAG_ESCAPED);
+        assert_eq!(&blocks[1][0..4], &[0u8; 4]);
+        assert_eq!(be32(desc, 12 + 12), jbd2::tag_checksum(seed, 9, &blocks[1]));
     }
 
     // Silence unused imports kept for future checksum wiring.

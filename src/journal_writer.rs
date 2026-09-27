@@ -582,6 +582,100 @@ mod tests {
                 .commit(fs.dev.as_ref(), &small)
                 .expect("the next transaction commits");
         }
+
+        /// Drops every write after the first `budget`: a power cut.
+        struct CutDevice {
+            inner: Arc<MemDev>,
+            budget: Mutex<usize>,
+        }
+
+        impl crate::block_io::BlockDevice for CutDevice {
+            fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<()> {
+                self.inner.read_at(offset, buf)
+            }
+            fn write_at(&self, offset: u64, buf: &[u8]) -> Result<()> {
+                let mut left = self.budget.lock().unwrap();
+                if *left == 0 {
+                    return Ok(());
+                }
+                *left -= 1;
+                self.inner.write_at(offset, buf)
+            }
+            fn size_bytes(&self) -> u64 {
+                VOL
+            }
+            fn flush(&self) -> Result<()> {
+                Ok(())
+            }
+            fn is_writable(&self) -> bool {
+                true
+            }
+        }
+
+        /// A data block that begins with the journal magic goes into the log
+        /// escaped, and this crate's replay puts the magic back (#292).
+        ///
+        /// The commit is cut once the journal is marked dirty, so the target
+        /// holds only what replay gives it.
+        #[test]
+        fn a_block_starting_with_the_magic_is_logged_escaped_and_replayed_whole() {
+            let dev = MemDev::new();
+            crate::mkfs::format_filesystem_with_flavor(
+                dev.as_ref(),
+                None,
+                None,
+                VOL,
+                BS,
+                FsFlavor::Ext3,
+            )
+            .expect("format");
+            let fs = Filesystem::mount(dev.clone()).expect("mount");
+            let mut writer = JournalWriter::open(&fs).expect("open").expect("writer");
+            let target = fs.sb.blocks_count - 1;
+            let mut payload: Vec<u8> = (0..BS as usize).map(|j| 0x5A ^ (j % 251) as u8).collect();
+            payload[0..4].copy_from_slice(&JBD2_MAGIC_NUMBER.to_be_bytes());
+
+            let mut tx = writer.begin();
+            tx.add_write(target, payload.clone()).expect("add_write");
+            // Descriptor, data, commit; `needs_recovery`; the dirty journal
+            // superblock. The final-location write is lost.
+            let cut = CutDevice {
+                inner: dev.clone(),
+                budget: Mutex::new(3 + 2),
+            };
+            writer.commit(&cut, &tx).expect("commit");
+            let logged_at = writer.physical_map[2];
+            drop(fs);
+
+            let read = |block: u64| {
+                let mut b = vec![0u8; BS as usize];
+                dev.read_at(block * BS as u64, &mut b).unwrap();
+                b
+            };
+            let logged = read(logged_at);
+            assert_eq!(
+                &logged[0..4],
+                &[0u8; 4],
+                "the logged copy starts with the journal magic, unescaped"
+            );
+            assert!(logged[4..] == payload[4..]);
+            assert_eq!(read(target), vec![0u8; BS as usize], "cut too late");
+
+            // A writable mount replays a dirty journal (`replay_if_dirty`).
+            let fs = Filesystem::mount(dev.clone()).expect("remount");
+            assert!(
+                crate::jbd2::read_superblock(&fs)
+                    .expect("journal superblock")
+                    .expect("a journal")
+                    .is_clean(),
+                "the remount did not replay the journal"
+            );
+            drop(fs);
+            assert!(
+                read(target) == payload,
+                "replay did not restore the block, magic and all"
+            );
+        }
     }
 
     /// Tests that copy a fixture from `test-disks/` (`chore fixtures`).
