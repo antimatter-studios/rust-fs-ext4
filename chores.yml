@@ -98,12 +98,15 @@ chore_min_version: 0.6.0
 #                                                    visible step
 #     suite     1,989 /  93,373    2,500 / 125,000   ~25%
 #     scripts      28 /   1,427       50 /   3,000   ~75%: three tests
-#     wasm        127 /   4,327      170 /   6,000   ~35%. Measured cold (no
-#                                                    registry cache, no build):
-#                                                    58 of those lines are
-#                                                    crate downloads, which a
-#                                                    first CI run after a
-#                                                    Cargo.lock change prints
+#     wasm        127 /   5,302      170 /   8,000   ~25% / ~34%. Lines measured
+#                                                    cold on arm64 macOS (no
+#                                                    registry cache, no build;
+#                                                    58 are crate downloads, as
+#                                                    a first CI run after a
+#                                                    Cargo.lock change prints);
+#                                                    bytes in CI (PR #312: 113
+#                                                    lines), whose longer paths
+#                                                    and colour codes cost more
 #     vm        2,090 /  99,544    2,700 / 135,000   ~30%. Measured in CI
 #                                                    (suite-in-vm), which is
 #                                                    a FIRST run: the guest
@@ -438,7 +441,7 @@ tasks:
     # tier was added. The file is small, so one test lost is the signal.
     cmds:
       - scripts/wasm-tools.sh --check
-      - 'CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner scripts/tier.sh test:wasm wasm 170 6000 -- cargo test --locked --target wasm32-unknown-unknown --test wasm'
+      - 'CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner scripts/tier.sh test:wasm wasm 170 8000 -- cargo test --locked --target wasm32-unknown-unknown --test wasm'
       - 'scripts/test-floor.sh wasm 2'
 
   test:vm:
