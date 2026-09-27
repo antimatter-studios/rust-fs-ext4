@@ -12,14 +12,18 @@
 # requires the floor to refuse it.
 #
 # And every tier that tier.sh runs must have a floor at all, so a tier
-# added later cannot arrive without one. `scripts` is the exception, named
-# below: it prints PASS lines, not cargo's result lines, so the counter
-# would read zero for a run that did everything.
+# added later cannot arrive without one. Two tiers are exceptions, named
+# below, because neither is a cargo test run and the counter reads cargo's
+# result lines: `scripts` prints PASS lines, so it would read zero for a
+# run that did everything; and `semver` runs cargo-semver-checks, whose
+# check count is legitimately ZERO once the version declares a break
+# ("0 checks: 0 pass, 254 skip", then "no semver update required"), so no
+# floor above zero could hold for it (#120).
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 CHORES="$REPO/chores.yml"
-UNFLOORED='scripts'
+UNFLOORED='scripts semver'
 
 fails=0
 fail() { echo "FAIL  $*" >&2; fails=$((fails + 1)); }
@@ -44,7 +48,7 @@ if [ -z "$tiers" ]; then
 fi
 
 for tier in $tiers; do
-    [ "$tier" = "$UNFLOORED" ] && continue
+    case " $UNFLOORED " in *" $tier "*) continue ;; esac
     if ! printf '%s\n' "$floors" | grep -qE "^$tier "; then
         fail "the $tier tier has no scripts/test-floor.sh call in chores.yml"
     fi
