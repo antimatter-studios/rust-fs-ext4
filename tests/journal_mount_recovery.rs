@@ -61,6 +61,17 @@ struct Fixture {
 
 impl Fixture {
     fn new(tail_revoke: bool) -> Self {
+        Self::build(tail_revoke, false)
+    }
+
+    /// The journaled superblock carries `s_state` without `EXT4_VALID_FS`,
+    /// as a kernel mount leaves it: replay then writes the volume back to
+    /// "not clean", and only the release puts the found state back.
+    fn kernel_mounted() -> Self {
+        Self::build(false, true)
+    }
+
+    fn build(tail_revoke: bool, journaled_not_clean: bool) -> Self {
         static NEXT: AtomicUsize = AtomicUsize::new(0);
         let dir = fs_ext4_test_support::temp_dir().join(format!(
             "jbd2-oracle-{}-{}",
@@ -132,6 +143,12 @@ impl Fixture {
         let mut superblock = image[..BLOCK].to_vec();
         superblock[1024 + 120..1024 + 136].fill(0);
         superblock[1024 + 120..1024 + 120 + LABEL.len()].copy_from_slice(LABEL.as_bytes());
+        if journaled_not_clean {
+            let state =
+                u16::from_le_bytes(superblock[1024 + 0x3a..1024 + 0x3c].try_into().unwrap());
+            assert_eq!(state & 1, 1, "mkfs leaves the volume clean");
+            superblock[1024 + 0x3a..1024 + 0x3c].copy_from_slice(&(state & !1).to_le_bytes());
+        }
 
         // First tag carries the UUID; the second uses SAME_UUID | LAST_TAG.
         let mut descriptor = header(1, SEQUENCE);
@@ -499,7 +516,7 @@ fn interrupted_finish(path: &Path, fail_at: usize, writeback: bool) -> (bool, us
 /// that was not restored. Both durability models, flags read by dumpe2fs.
 #[test]
 fn a_failed_finish_never_clears_the_recovery_marker_before_the_release_is_complete() {
-    let fixture = Fixture::new(false);
+    let fixture = Fixture::kernel_mounted();
     for writeback in [false, true] {
         let baseline = fixture.copy(&format!("release-baseline-{writeback}"));
         let (success, events) = interrupted_finish(&baseline, usize::MAX, writeback);
