@@ -310,7 +310,7 @@ tasks:
     # which is what proves the split.
     cmds:
       - 'EXPECT_OVERFLOW_CHECKS=1 scripts/tier.sh test:unit unit 700 42000 -- scripts/test.sh --locked $(scripts/test-targets.sh unit)'
-      - 'scripts/test-floor.sh unit 400'
+      - 'scripts/test-floor.sh unit 440'
 
   # EVERY TIER SAYS HOW FEW TESTS STILL COUNT AS HAVING RUN IT (#271).
   #
@@ -321,13 +321,25 @@ tasks:
   # empties a selection — and `cargo test` with no matching target exits
   # 0, which `tier.sh` then reports as `ok (2 lines)`.
   #
-  # `unit`'s floor is measured: 440 executed on an arm64 host on
-  # 2026-09-19, floored at 400. The others are **1**, and that is not a
-  # measurement — it is the collapse to zero, which is the failure this
-  # catches and the one a guess cannot get wrong. Each call prints what
-  # it counted (`unit: 440 tests executed (floor 400)`), so the numbers
-  # to raise them to are in the next run's log; raising them is a
-  # separate change, and a floor only ever goes up.
+  # EVERY FLOOR IS MEASURED, from the executed counts each floor call
+  # printed in CI run 36310164119 (main at ff0911d, 2026-09-27; the
+  # counts were the same in 36284844285 at abbb3db):
+  #
+  #   tier     executed   floor   where it ran
+  #   unit        466      440    `unit` job, and both `test` jobs
+  #   images      477      450    `test (aarch64, no KVM on this runner)`
+  #   oracle      147      140    `test (x86_64, oracles in the VM)`
+  #   kernel        4        3    `test (x86_64, oracles in the VM)`
+  #   lwext4        8        7    `test (x86_64, oracles in the VM)`
+  #   suite      1115     1060    `test (x86_64, oracles in the VM)`
+  #   vm         1115     1060    `suite in the guest (the macOS path)`
+  #
+  # About 95% of the measurement (one below it for the two small tiers),
+  # so merging two tests is not a failure and losing a test binary is.
+  # A floor only ever goes up: raise it with the run that measured the
+  # new count. tests/scripts/test-tier-floors.sh fails if a tier run
+  # through tier.sh has no floor, or if a floor passes a tier that
+  # executed one test.
   #
   # `scripts` has none: it prints a PASS line per shell test rather than
   # cargo's result lines, so the counter here would read zero for a tier
@@ -341,7 +353,7 @@ tasks:
     # visible in the workflow rather than hidden in a green log.
     cmds:
       - 'scripts/tier.sh test:images images 1400 60000 -- scripts/test.sh --locked --release $(scripts/test-targets.sh images)'
-      - 'scripts/test-floor.sh images 1'
+      - 'scripts/test-floor.sh images 450'
 
   test:oracle:
     desc: 'The driver writes, e2fsprogs reads back — every tool call made inside the harness VM'
@@ -361,7 +373,7 @@ tasks:
     cmds:
       - scripts/tools.sh --check
       - 'scripts/tier.sh test:oracle oracle 2300 180000 -- scripts/test.sh --locked --release $(scripts/test-targets.sh oracle) -- --show-output'
-      - 'scripts/test-floor.sh oracle 1'
+      - 'scripts/test-floor.sh oracle 140'
 
   test:kernel:
     desc: 'The driver writes, THE KERNEL reads back: our images loop-mounted by Linux in the guest'
@@ -373,7 +385,7 @@ tasks:
     # that must fail.
     cmds:
       - 'scripts/tier.sh test:kernel kernel 80 4000 -- scripts/test.sh --locked --release $(scripts/test-targets.sh kernel) -- --show-output'
-      - 'scripts/test-floor.sh kernel 1'
+      - 'scripts/test-floor.sh kernel 3'
 
   test:lwext4:
     desc: 'CROSS-VALIDATION: lwext4 — a third implementation, built in the guest — reads what we wrote, and we read what it wrote'
@@ -443,7 +455,7 @@ tasks:
         # shellcheck disable=SC2086  # the words are the point
         scripts/tier.sh test:vm vm 2700 135000 -- \
           ../fs-linux-test-harness/scripts/vm.sh guest-test $guest_args
-        scripts/test-floor.sh vm 1
+        scripts/test-floor.sh vm 1060
 
   test:
     desc: 'Everything, exactly as CI runs it — natively on Linux, inside the VM anywhere else'
@@ -484,7 +496,7 @@ tasks:
       - task: test:kernel
       - task: test:lwext4
       - 'scripts/tier.sh "test:native (whole suite, release)" suite 2500 125000 -- scripts/test.sh --locked --release'
-      - 'scripts/test-floor.sh suite 1'
+      - 'scripts/test-floor.sh suite 1060'
       - task: test:scripts
       # THE LAST LINE: one number across the tiers, and where the detail is.
       - scripts/test-verdict.sh unit oracle kernel lwext4 suite
