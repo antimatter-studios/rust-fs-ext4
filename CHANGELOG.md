@@ -4,6 +4,29 @@
 
 ### Breaking
 
+The next release is **0.6.0**, not 0.5.2: each change below breaks code
+written against 0.5.1 (#120). `chore check:semver` now refuses a pull request
+whose public-API break the version does not declare (see Added).
+
+Source-breaking, each caught by the compiler downstream:
+
+- **`XattrEntry` gained `value_inum` and `value_size`** (#101, #121), and is
+  now `#[non_exhaustive]`, so a struct literal or an exhaustive pattern
+  outside this crate no longer compiles. The fields stay public to read;
+  build one with `XattrEntry::new(name, value)` for an inline value or
+  `XattrEntry::in_ea_inode(name, inum, size)` for one held in an EA inode.
+- **`Error` gained `Unsupported(&'static str)`** (#101), and is now
+  `#[non_exhaustive]`: a `match` on it outside this crate needs a `_` arm,
+  and later variants will not break it again.
+- `ea_inode::read_value_inode` takes the size the entry declared as a third
+  argument, and refuses a body that does not match it (#121).
+- `journal::ReplayPlan` gained `next_sequence: Option<u32>` (#146).
+- `extent_mut::ExtentMutation` gained `WriteTreeBlock`, which moved the
+  implicit discriminants of `AllocLeafBlock`, `FreeLeafBlock` and
+  `FreePhysicalRun` up by one (#169).
+
+Not caught by the compiler — the same source builds and behaves differently:
+
 - **`fs_ext4_readlink` returns the target's length, and refuses a buffer
   it would have to truncate.** It returned 0 on success, so a caller
   slicing its buffer by the return value, as `readlink(2)` callers do, got
@@ -21,6 +44,18 @@
   The target is also available from Rust as `Filesystem::read_link`.
   `tests/readlink_oracle.rs` checks it against what `debugfs` reports,
   for fast and slow links on either side of the 60-byte `i_block` boundary.
+- **`XattrEntry` equality covers the two new fields.** It derives
+  `PartialEq`, so an entry whose value lives in an EA inode no longer equals
+  an inline entry with the same name and (empty) value.
+- `plan_set_in_inode_region` and `plan_remove_in_inode_region` refuse an
+  attribute held in an EA inode with `Error::Unsupported`, where they used
+  to proceed (#101).
+- A write to a volume carrying a `RO_COMPAT` feature this driver does not
+  maintain is refused, where it used to succeed: the read-only feature rules
+  now gate writes, `QUOTA` among them (#77), and `GDT_CSUM` without
+  `METADATA_CSUM` is no longer counted as maintained (#92).
+- `features::READ_BREAKING_RO_COMPAT` is now `0`: `BIGALLOC` volumes mount
+  and read rather than being refused (#237).
 
 ### Added
 
@@ -84,6 +119,26 @@
   zero keeps no clean blocks. `tests/read_path_cost.rs` measures mount,
   walk, stat and read in device calls at no cache, the default and four
   times it, and `docs/read-path-cost.md` records the figures.
+
+- `XattrEntry::new` and `XattrEntry::in_ea_inode`, the constructors a
+  caller now needs (see Breaking).
+- **A mount takes its wall time and inode generations from a provider.**
+  `runtime::Runtime` (`now_unix_seconds`, `next_inode_generation`),
+  `runtime::SystemRuntime` as the default, and
+  `Filesystem::mount_with_runtime` to supply another (#144).
+- **Checked journal recovery on an owned device.**
+  `Filesystem::mount_recovering` opens a writable, exclusively owned device
+  and replays a plain JBD2 journal the way the kernel does;
+  `Filesystem::finish` releases it and reports flush errors, `flush` flushes
+  without releasing, and `fresh_read` discards checkpointed read caches before
+  a physical readback. `BlockDevice::invalidate_cache` backs the last; it has
+  a default, so existing implementors are unaffected (#146).
+- `file_mut::plan_truncate_shrink_deep`: truncate shrinks, and removes, an
+  extent tree deeper than the inode (#169).
+- **`chore check:semver`**, and the `semver` CI job under `ci-ok`: the public
+  API is compared with the newest am-fs-ext4 on crates.io by
+  cargo-semver-checks, and a break that Cargo.toml's version does not declare
+  fails the pull request (#120).
 
 ### Changed
 
