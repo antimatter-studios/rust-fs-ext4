@@ -9139,17 +9139,12 @@ mod tests {
                 std::process::id()
             ));
             std::fs::write(&image, &*dev.bytes.lock().unwrap()).unwrap();
-            let out = fs_ext4_test_support::oracle("e2fsck")
+            let judged = fs_ext4_test_support::oracle("e2fsck")
                 .arg("-fn")
                 .arg(&image)
-                .output();
+                .judged();
             let _ = std::fs::remove_file(&image);
-            assert!(
-                out.status.success(),
-                "e2fsck -fn:\n{}{}",
-                String::from_utf8_lossy(&out.stdout),
-                String::from_utf8_lossy(&out.stderr)
-            );
+            judged.clean("an indirect-mapped orphan after its data is freed");
         }
     }
 }
