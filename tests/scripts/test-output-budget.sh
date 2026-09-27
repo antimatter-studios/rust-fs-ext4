@@ -26,7 +26,7 @@ note() { echo "FAIL  $*" >&2; fails=$(( fails + 1 )); }
 # list is the contract; a tier not named here is not checked, so adding one
 # means adding it here too -- which is the one registration this file asks
 # for, and it is in the same file as the assertion.
-for tier in test:unit test:images test:oracle test:kernel test:lwext4 test:vm; do
+for tier in test:unit test:images test:oracle test:kernel test:lwext4 test:wasm test:vm; do
     # The task's own block: from its name to the next top-level task.
     block="$(awk -v t="  $tier:" '
         $0 == t { inside = 1; next }

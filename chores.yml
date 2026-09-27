@@ -98,6 +98,12 @@ chore_min_version: 0.6.0
 #                                                    visible step
 #     suite     1,989 /  93,373    2,500 / 125,000   ~25%
 #     scripts      28 /   1,427       50 /   3,000   ~75%: three tests
+#     wasm        127 /   4,327      170 /   6,000   ~35%. Measured cold (no
+#                                                    registry cache, no build):
+#                                                    58 of those lines are
+#                                                    crate downloads, which a
+#                                                    first CI run after a
+#                                                    Cargo.lock change prints
 #     vm        2,090 /  99,544    2,700 / 135,000   ~30%. Measured in CI
 #                                                    (suite-in-vm), which is
 #                                                    a FIRST run: the guest
@@ -410,6 +416,30 @@ tasks:
       - scripts/tools.sh --check
       - 'scripts/tier.sh test:lwext4 lwext4 80 6000 -- scripts/test.sh --locked --release $(scripts/test-targets.sh lwext4) -- --show-output'
       - 'scripts/test-floor.sh lwext4 7'
+
+  tools:wasm:
+    desc: 'Install and verify what test:wasm needs: the wasm32 target, the wasm-bindgen test runner at Cargo.lock''s version, and node'
+    cmds: ['scripts/wasm-tools.sh']
+
+  test:wasm:
+    desc: 'The browser build (wasm32-unknown-unknown): tests/wasm.rs RUN under wasm-bindgen-test in Node'
+    # RUN, NOT BUILT. std on this target compiles SystemTime::now,
+    # Instant::now and std::process::id and panics when they are called,
+    # so only running the code finds those. tests/wasm.rs formats, mounts,
+    # creates, writes and unmounts an in-memory volume; on every other
+    # target it compiles to nothing. tests/scripts/test-clock-calls.sh is
+    # the toolchain-free half: it refuses those calls anywhere in src/ but
+    # src/runtime.rs.
+    #
+    # Not part of `test`: that runs in the harness guest too, which has no
+    # Node. CI runs this in its own job, `wasm`, which ci-ok needs.
+    #
+    # FLOOR: every test in tests/wasm.rs, measured -- 2 executed when the
+    # tier was added. The file is small, so one test lost is the signal.
+    cmds:
+      - scripts/wasm-tools.sh --check
+      - 'CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner scripts/tier.sh test:wasm wasm 170 6000 -- cargo test --locked --target wasm32-unknown-unknown --test wasm'
+      - 'scripts/test-floor.sh wasm 2'
 
   test:vm:
     desc: 'The whole suite, compiled and run INSIDE the harness VM (how a Mac runs the Linux tests)'

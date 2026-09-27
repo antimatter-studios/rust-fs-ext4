@@ -548,6 +548,7 @@ chore test:images   # the tests that read a fixture but need no VM
 chore test:oracle   # the driver writes, e2fsprogs reads back — in the VM
 chore test:kernel   # the driver writes, the real kernel reads back — in the VM
 chore test:lwext4   # a third implementation reads ours, and we read its — in the VM
+chore test:wasm     # the browser build (wasm32-unknown-unknown), run under Node
 chore test:vm       # the whole suite, compiled and run INSIDE the VM
 chore test          # everything, as CI runs it
 ```

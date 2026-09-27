@@ -31,6 +31,10 @@ name: CI
 #   suite-in-vm  `chore test:vm`: the whole suite COMPILED AND RUN INSIDE
 #                the guest. That is how a macOS host runs a Linux suite,
 #                and this job is what keeps that path working.
+#   wasm         `chore test:wasm`: the browser build (wasm32-unknown-
+#                unknown) RUN under wasm-bindgen-test in Node, because std
+#                there compiles clock and process-ID calls that panic at
+#                run time -- a build-only check cannot see them.
 #   ci-ok        the one required check: green only when every job above
 #                ran and succeeded (failed, cancelled OR skipped fails it).
 #
@@ -315,10 +319,48 @@ jobs:
       - name: chore vm:status (the VM is down again)
         run: '! chore vm:status'
 
+  wasm:
+    name: wasm32 (browser build, tests under Node)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install chore
+        run: scripts/ci-install-chore.sh
+      - name: chore siblings
+        run: chore siblings
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-wasm-cargo-${{ hashFiles('**/Cargo.lock') }}
+      - name: chore tools:wasm
+        # The wasm32 target, and wasm-bindgen-test-runner at the exact
+        # wasm-bindgen version Cargo.lock resolved.
+        run: chore tools:wasm
+      - name: chore test:wasm
+        run: chore test:wasm
+      - name: Keep the tier logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tier-logs-wasm
+          path: tmp/logs/*.log
+          if-no-files-found: error
+
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [unit, fixtures, test, test-arm64, suite-in-vm]
+    needs: [unit, fixtures, test, test-arm64, suite-in-vm, wasm]
     runs-on: ubuntu-latest
     steps:
       - name: Every job ran and succeeded

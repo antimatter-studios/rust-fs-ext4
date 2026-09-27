@@ -44,7 +44,6 @@ am-fs-core = { path = "../rust-fs-core", version = "0.2.13" }
 
 [dev-dependencies]
 hex = "0.4"
-fs-ext4-test-support = { path = "tests/support" }
 # YAML parser for tests/ci_profile.rs, which reads .github/workflows/ci.yml
 # and refuses if the debug run that lets the PR gate see an arithmetic
 # overflow has been removed or disabled. That guard hand-rolled its own
@@ -56,6 +55,12 @@ fs-ext4-test-support = { path = "tests/support" }
 # which is deprecated and wraps unsafe-libyaml. Test-only: it never
 # reaches a consumer of this crate.
 saphyr = "0.0.12"
+
+# The fixture, oracle and VM helpers are Unix-host code (they spawn
+# processes and build paths from raw bytes), and nothing that runs on the
+# browser build uses them: tests/wasm.rs is the one test built for it.
+[target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dev-dependencies]
+fs-ext4-test-support = { path = "tests/support" }
 
 [profile.release]
 lto = true
@@ -69,3 +74,9 @@ panic = "unwind"
 
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 js-sys = "0.3"
+
+# The browser build's tests (tests/wasm.rs, `chore test:wasm`) run under
+# wasm-bindgen-test in Node. MIT/Apache-2.0, test-only, and only for the
+# target that needs it: no other build resolves it.
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dev-dependencies]
+wasm-bindgen-test = "0.3"
