@@ -232,6 +232,15 @@ pub struct Filesystem {
     /// what [`Drop`] puts back. Kept apart from `sb`, which is re-read after
     /// replay and orphan recovery and by then holds the cleared state.
     state_found: std::sync::atomic::AtomicU16,
+    /// Set when a direct (unjournaled) commit fails part-way (#319).
+    ///
+    /// Some of its blocks reached the disk and some did not, and the mount's
+    /// own view -- `uninit_cleared` above all -- was never told about any of
+    /// them. Planning another allocation against that view can hand out a
+    /// block the disk already records as taken, so the mount stops writing:
+    /// [`Self::refuse_write`] answers `ReadOnly` from here on, and [`Drop`]
+    /// leaves the volume marked not clean for the checker.
+    direct_commit_failed: std::sync::atomic::AtomicBool,
 }
 
 /// A mount that cleared `EXT4_VALID_FS` puts the state it found back when
@@ -252,6 +261,9 @@ impl Drop for Filesystem {
             .load(std::sync::atomic::Ordering::SeqCst)
             && self.dev.is_writable()
             && !journal_failed
+            && !self
+                .direct_commit_failed
+                .load(std::sync::atomic::Ordering::SeqCst)
         {
             let state = self.state_found.load(std::sync::atomic::Ordering::SeqCst);
             let _ = self.write_superblock_state(state);
@@ -366,6 +378,14 @@ impl Filesystem {
     /// Checked journal transactions must already be fully checkpointed. After an
     /// error the owner must retire the mount, just as for a failed mutation.
     pub fn flush(&mut self) -> Result<()> {
+        if self
+            .direct_commit_failed
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(Error::Corrupt(
+                "direct commit failed; reopen and check the volume",
+            ));
+        }
         if let Some(writer) = &self.journal {
             if !writer
                 .lock()
@@ -544,6 +564,7 @@ impl Filesystem {
             flavor,
             journal: None,
             marked_not_clean: std::sync::atomic::AtomicBool::new(false),
+            direct_commit_failed: std::sync::atomic::AtomicBool::new(false),
             state_found: std::sync::atomic::AtomicU16::new(0),
         };
 
@@ -690,6 +711,15 @@ impl Filesystem {
     /// before it knows whether it will.
     fn write_refusal(&self) -> Result<()> {
         if !self.dev.is_writable() {
+            return Err(Error::ReadOnly);
+        }
+        // A direct commit that failed part-way left the disk and this
+        // mount's view of it disagreeing (#319): no further write can be
+        // planned safely, as the kernel remounts read-only on a write error.
+        if self
+            .direct_commit_failed
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
             return Err(Error::ReadOnly);
         }
         let unmaintained = features::unmaintained_ro_compat(self.sb.feature_ro_compat);
@@ -2923,30 +2953,68 @@ impl Filesystem {
             publish(self);
             Ok(())
         } else {
-            // THE SUPERBLOCK GOES LAST, after everything else is flushed.
-            // It carries the markers that say work is finished --
-            // `s_last_orphan` cleared, the free counts credited -- and the
-            // map iterates by block number, which put block 0 first. A
-            // crash after it and before the inode table left an orphan
-            // still allocated, still holding its blocks, and named by
-            // nothing, so no later mount would retry it (#124). Written
-            // last, a crash anywhere before it leaves the old superblock,
-            // whose chain head sends the next mount back to finish.
-            let bs = self.sb.block_size() as u64;
-            let sb_block = crate::superblock::SUPERBLOCK_OFFSET / bs;
-            let mut dirty = buf.dirty;
-            let superblock = dirty.remove(&sb_block);
-            for (block, bytes) in dirty {
-                self.dev.write_at(block * bs, &bytes)?;
-            }
-            self.dev.flush()?;
-            if let Some(bytes) = superblock {
-                self.dev.write_at(sb_block * bs, &bytes)?;
-                self.dev.flush()?;
+            let descriptors: std::collections::BTreeSet<u64> = buf
+                .uninit_cleared
+                .keys()
+                .map(|&gi| self.sb.descriptor_location(gi as u64).0)
+                .collect();
+            if let Err(e) = self.write_direct(buf.dirty, &descriptors) {
+                // Part of the commit may be on disk and none of it is in
+                // `uninit_cleared`: stop this mount writing (#319).
+                self.direct_commit_failed
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                return Err(e);
             }
             publish(self);
             Ok(())
         }
+    }
+
+    /// Write a committed buffer straight to the device, in three flushed
+    /// stages, for a mount with no journal.
+    ///
+    /// 1. **Everything else** -- bitmaps, inode tables, extent and directory
+    ///    blocks, data.
+    /// 2. **The descriptor blocks that clear an uninit flag** (`descriptors`).
+    ///    The map iterates by block number and the descriptor table sits
+    ///    near the front of the volume, so it went out before the bitmap it
+    ///    vouches for. A failure in between left `BLOCK_UNINIT` down over a
+    ///    bitmap still holding whatever the flag licensed leaving there, and
+    ///    the next mount trusted it (#319). Written after the bitmaps, a
+    ///    failure anywhere earlier leaves the flag standing, and the flag
+    ///    tells every reader to ignore the bitmap.
+    /// 3. **The superblock, last.** It carries the markers that say work is
+    ///    finished -- `s_last_orphan` cleared, the free counts credited --
+    ///    and block 0 came first. A crash after it and before the inode
+    ///    table left an orphan still allocated, still holding its blocks,
+    ///    and named by nothing, so no later mount would retry it (#124).
+    ///    Written last, a crash anywhere before it leaves the old
+    ///    superblock, whose chain head sends the next mount back to finish.
+    fn write_direct(
+        &self,
+        mut dirty: std::collections::BTreeMap<u64, Vec<u8>>,
+        descriptors: &std::collections::BTreeSet<u64>,
+    ) -> Result<()> {
+        let bs = self.sb.block_size() as u64;
+        let sb_block = crate::superblock::SUPERBLOCK_OFFSET / bs;
+        let superblock = dirty.remove(&sb_block);
+        let (late, early): (Vec<_>, Vec<_>) = dirty
+            .into_iter()
+            .partition(|(block, _)| descriptors.contains(block));
+        for stage in [
+            early,
+            late,
+            superblock.map(|b| (sb_block, b)).into_iter().collect(),
+        ] {
+            if stage.is_empty() {
+                continue;
+            }
+            for (block, bytes) in stage {
+                self.dev.write_at(block * bs, &bytes)?;
+            }
+            self.dev.flush()?;
+        }
+        Ok(())
     }
 
     /// Change the owner of `path` to (`uid`, `gid`). Both values are full

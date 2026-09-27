@@ -295,6 +295,17 @@ Not caught by the compiler — the same source builds and behaves differently:
   reads that block. It is now verified before the edit, as the indexed
   branch already was, and a mismatch is `BadChecksum` with the block left
   untouched (#322).
+- **A direct commit that fails part-way no longer cross-links blocks.**
+  Without a journal, a commit wrote its blocks in block-number order, so a
+  group descriptor clearing `BLOCK_UNINIT` reached the disk before the
+  bitmap it vouches for; and a write error returned without marking the
+  mount, which stayed writable while still believing the group uninit.
+  When only the final superblock write failed, the next allocation handed
+  out the block just taken and `e2fsck -fn` reported it multiply-claimed.
+  Bitmaps and every other block now go first, then the descriptors that
+  clear an uninit flag, then the superblock, each stage flushed; any
+  failure leaves the mount refusing writes with `ReadOnly`, its `flush`
+  failing, and the volume marked not clean (#319).
 - **A hole can be punched in a file whose extent tree is deeper than the
   inode.** Punching wrote what survived back into the inode's four inline
   entries and freed every node below, so a punch leaving more than four
