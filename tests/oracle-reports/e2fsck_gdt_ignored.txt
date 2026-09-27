@@ -1,0 +1,13 @@
+exit 0
+--- stdout
+One or more block group descriptor checksums are invalid.  Fix? no
+
+Group descriptor 0 checksum is 0x1234, should be 0xd2c4.  IGNORED.
+Pass 1: Checking inodes, blocks, and sizes
+Pass 2: Checking directory structure
+Pass 3: Checking directory connectivity
+Pass 4: Checking reference counts
+Pass 5: Checking group summary information
+gdt2.img: 11/4096 files (9.1% non-contiguous), 1291/4096 blocks
+--- stderr
+e2fsck 1.47.0 (5-Feb-2023)

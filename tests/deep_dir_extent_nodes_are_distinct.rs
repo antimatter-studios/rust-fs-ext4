@@ -152,17 +152,8 @@ fn a_directory_promoted_to_depth_two_keeps_its_tree_nodes_on_distinct_blocks() {
     assert!(report.is_clean(), "audit: {:?}", report.anomalies);
     drop(fs);
     // And e2fsck, in the harness VM.
-    let e2fsck = "e2fsck";
     let image = fs_ext4_test_support::temp_path!("fs_ext4_deep_dir_{}.img", std::process::id());
     std::fs::write(&image, &*dev.bytes.lock().unwrap()).unwrap();
-    let out = fs_ext4_test_support::oracle(e2fsck)
-        .args(["-fn", &image])
-        .output();
+    fs_ext4_test_support::assert_e2fsck_clean(&image, "deep directory extent nodes");
     let _ = std::fs::remove_file(&image);
-    assert!(
-        out.status.success(),
-        "e2fsck -fn:\n{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
 }

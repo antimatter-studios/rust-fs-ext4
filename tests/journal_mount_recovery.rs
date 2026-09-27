@@ -222,14 +222,12 @@ impl Fixture {
     }
 
     fn linux_recover(&self, path: &Path) {
-        let output = command("e2fsck", &["-fy", path.to_str().unwrap()]);
-        let transcript = format!(
-            "{}{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
+        let transcript = fs_ext4_test_support::oracle("e2fsck")
+            .args(["-fy", path.to_str().unwrap()])
+            .env("LC_ALL", "C")
+            .judged()
+            .repaired("linux recovery");
         fs::write(path.with_extension("e2fsck.txt"), &transcript).unwrap();
-        assert!(matches!(output.status.code(), Some(0 | 1)), "{transcript}");
         for unexpected in [
             "Fix?",
             "Clear?",
@@ -248,19 +246,13 @@ impl Fixture {
     }
 
     fn linux_check(&self, path: &Path) {
-        let output = command("e2fsck", &["-fn", path.to_str().unwrap()]);
-        let transcript = format!(
-            "{}{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert_eq!(output.status.code(), Some(0), "{transcript}");
-        assert!(
-            !transcript
-                .to_lowercase()
-                .contains("skipping journal recovery"),
-            "{transcript}"
-        );
+        // The verdict refuses a check that skipped journal recovery, as
+        // well as one that found anything.
+        fs_ext4_test_support::oracle("e2fsck")
+            .args(["-fn", path.to_str().unwrap()])
+            .env("LC_ALL", "C")
+            .judged()
+            .clean("linux check");
     }
 }
 

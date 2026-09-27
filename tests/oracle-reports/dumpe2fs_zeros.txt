@@ -1,0 +1,6 @@
+exit 19
+--- stdout
+Couldn't find valid filesystem superblock.
+--- stderr
+dumpe2fs 1.47.0 (5-Feb-2023)
+dumpe2fs: Bad magic number in super-block while trying to open zeros.img

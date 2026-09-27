@@ -93,8 +93,11 @@ fn run(hash_alg: &str, s_flags: u32) {
             "{request}: {log}"
         );
     }
-    let (code, log) = ok(oracle(e2fsck).args(["-fyD"]).arg(&image), "e2fsck -fyD");
-    assert!(matches!(code, Some(0 | 1)), "{log}");
+    oracle(e2fsck)
+        .args(["-fyD"])
+        .arg(&image)
+        .judged()
+        .repaired("e2fsck -fyD");
 
     let fs = Filesystem::mount(Arc::new(
         fs_ext4::block_io::FileDevice::open(&image).unwrap(),

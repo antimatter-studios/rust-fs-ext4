@@ -1,0 +1,6 @@
+exit 0
+--- stdout
+--- stderr
+debugfs 1.47.0 (5-Feb-2023)
+debugfs: Bad magic number in super-block while trying to open zeros.img
+stat: Filesystem not open

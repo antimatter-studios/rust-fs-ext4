@@ -1,0 +1,4 @@
+exit 2
+--- stdout
+--- stderr
+lwext4-report: unknown mode bogus

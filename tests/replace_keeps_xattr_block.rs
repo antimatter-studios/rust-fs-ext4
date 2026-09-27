@@ -56,14 +56,7 @@ fn replacing_content_keeps_the_xattr_block_counted() {
             fs.apply_replace_file_content("/a", &vec![6u8; len])
                 .unwrap();
             drop(fs);
-            let out = fs_ext4_test_support::oracle("e2fsck")
-                .args(["-fn", &path])
-                .output();
-            assert!(
-                out.status.success(),
-                "[{tag} {what}] e2fsck -fn rejected the volume:\n{}",
-                String::from_utf8_lossy(&out.stdout)
-            );
+            fs_ext4_test_support::assert_e2fsck_clean(&path, &format!("{tag} {what}"));
             let _ = std::fs::remove_file(&path);
         }
     }

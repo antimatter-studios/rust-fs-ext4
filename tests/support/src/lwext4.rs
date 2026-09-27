@@ -31,6 +31,7 @@ use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
 use crate::oracle::{guest_quote, guest_shell, repo, session};
+use crate::verdict::{Judged, Verdict};
 
 /// The lwext4 revision the guest builds, and the only one this module
 /// will talk to.
@@ -98,9 +99,20 @@ fn reporter() -> &'static str {
     })
 }
 
-/// `lwext4-report <mode> <image>`, as the guest ran it.
-fn run(mode: &str, image: &str) -> std::process::Output {
-    crate::oracle(reporter()).args([mode, image]).output()
+/// `lwext4-report <mode> <image>`, as the guest ran it, and read (#280).
+///
+/// THE IMAGE HAS TO EXIST FIRST. lwext4 opens its file lazily, so a path
+/// that names nothing comes back as `ext4_mount (read-only): 5
+/// (Input/output error)` — word for word what a refusal of a real volume
+/// looks like. Checked here, where it can be said plainly.
+#[track_caller]
+fn run(mode: &str, image: &str) -> Judged {
+    assert!(
+        std::fs::metadata(image).is_ok_and(|m| m.is_file() && m.len() > 0),
+        "{image} does not exist or is empty, so lwext4 has no volume to report on. \
+         Whatever it said about it would be about nothing."
+    );
+    crate::oracle(reporter()).args([mode, image]).judged()
 }
 
 /// `kind<TAB>path<TAB>value` lines, as the reporter prints them.
@@ -126,14 +138,7 @@ fn parse(text: &str) -> Report {
 /// about an image lwext4 is expected to turn down.
 #[track_caller]
 pub fn lwext4_report(image: &str, what: &str) -> Report {
-    let out = run("read", image);
-    assert!(
-        out.status.success(),
-        "[{what}] lwext4 could not read {image} ({:?}):\n{}{}",
-        out.status.code(),
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
+    let out = run("read", image).clean(what);
     parse(&String::from_utf8_lossy(&out.stdout))
 }
 
@@ -147,14 +152,19 @@ pub fn lwext4_report(image: &str, what: &str) -> Report {
 /// months later that it was never compared at all.
 #[track_caller]
 pub fn lwext4_refusal(image: &str, what: &str) -> String {
-    let out = run("read", image);
-    assert!(
-        !out.status.success(),
-        "[{what}] lwext4 was expected to refuse {image}, and it read it. \
-         Move it into the compared set.\n{}",
-        String::from_utf8_lossy(&out.stdout)
-    );
-    String::from_utf8_lossy(&out.stderr).into_owned()
+    let judged = run("read", image);
+    match judged.verdict {
+        Verdict::Findings(said) => said,
+        Verdict::Clean => panic!(
+            "[{what}] lwext4 was expected to refuse {image}, and it read it. \
+             Move it into the compared set.\n{}",
+            String::from_utf8_lossy(&judged.output.stdout)
+        ),
+        Verdict::NotAVerdict(why) => panic!(
+            "[{what}] lwext4 was expected to refuse {image}, and failed without \
+             examining it, which is not a refusal: {why}"
+        ),
+    }
 }
 
 /// THE OTHER DIRECTION: lwext4 writes a known tree into `image`, and
@@ -166,13 +176,6 @@ pub fn lwext4_refusal(image: &str, what: &str) -> String {
 /// rather than against a copy of the expectation kept somewhere else.
 #[track_caller]
 pub fn lwext4_write(image: &str, what: &str) -> Report {
-    let out = run("write", image);
-    assert!(
-        out.status.success(),
-        "[{what}] lwext4 could not write into {image} ({:?}):\n{}{}",
-        out.status.code(),
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
+    let out = run("write", image).clean(what);
     parse(&String::from_utf8_lossy(&out.stdout))
 }

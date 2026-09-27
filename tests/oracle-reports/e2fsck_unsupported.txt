@@ -1,0 +1,6 @@
+exit 8
+--- stdout
+--- stderr
+e2fsck 1.47.0 (5-Feb-2023)
+unsup.img has unsupported feature(s): FEATURE_I31
+e2fsck: Get a newer version of e2fsck!

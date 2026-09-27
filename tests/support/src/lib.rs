@@ -6,10 +6,12 @@
 mod kernel;
 mod lwext4;
 mod oracle;
+pub mod verdict;
 
 pub use kernel::{guest_kernel_report, guest_kernel_write, sha256_hex};
 pub use lwext4::{lwext4_refusal, lwext4_report, lwext4_write, Report, PIN as LWEXT4_PIN};
 pub use oracle::{guest_base64, guest_quote, oracle, Oracle};
+pub use verdict::{Judge, Judged, Verdict};
 
 use std::ffi::OsStr;
 use std::fmt;
@@ -150,21 +152,18 @@ pub fn fixture(manifest_dir: &str, name: &str) -> String {
     path
 }
 
-/// `e2fsck -fn` on `image` must exit 0, or the test fails with its report
-/// (#88).
+/// `e2fsck -fn` on `image` must examine it and find nothing, or the test
+/// fails with its report (#88, #280).
 ///
 /// The oracle suites checked their images with this crate's own reader,
 /// which cannot see a wrong checksum. `-f` forces a full check, `-n`
 /// answers no to every repair, so it reports without touching the image.
 /// It runs in the harness VM, like every oracle tool (see [`oracle`]).
+///
+/// EXIT 0 IS NOT THE VERDICT. `e2fsck -fn` exits 0 having answered "no"
+/// to `Free blocks count wrong`, and exits 0 having skipped the replay of
+/// a journal it then graded around. [`Judged::clean`] reads the report.
 #[track_caller]
 pub fn assert_e2fsck_clean(image: &str, tag: &str) {
-    let out = oracle("e2fsck").args(["-fn", image]).output();
-    assert_eq!(
-        out.status.code(),
-        Some(0),
-        "[{tag}] e2fsck -fn {image}:\n{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
+    oracle("e2fsck").args(["-fn", image]).judged().clean(tag);
 }

@@ -61,8 +61,10 @@ fn fresh_image(tag: &str) -> String {
     let (code, log) = run("debugfs", &["-w", "-f", &script, &image]);
     let _ = std::fs::remove_file(&script);
     assert_eq!(code, Some(0), "{log}");
-    let (code, log) = run("e2fsck", &["-fy", &image]);
-    assert!(matches!(code, Some(0 | 1)), "{log}");
+    fs_ext4_test_support::oracle("e2fsck")
+        .args(["-fy", &image])
+        .judged()
+        .repaired("e2fsck -fy");
     let (_, log) = run("dumpe2fs", &["-h", &image]);
     assert!(log.contains("journal_checksum_v3"), "{log}");
     image
@@ -126,8 +128,7 @@ fn a_write_past_one_descriptor_is_read_back_by_debugfs() {
             .expect("a write larger than one descriptor block");
         assert_eq!(size, payload.len() as u64);
     }
-    let (code, log) = run("e2fsck", &["-fn", &image]);
-    assert_eq!(code, Some(0), "{log}");
+    fs_ext4_test_support::assert_e2fsck_clean(&image, "e2fsck -fn");
 
     let dumped = format!("{image}.dump");
     let _ = std::fs::remove_file(&dumped);
@@ -176,15 +177,16 @@ fn e2fsck_replays_a_transaction_split_across_descriptors() {
         );
     }
 
-    let (code, log) = run("e2fsck", &["-fy", &image]);
-    assert!(matches!(code, Some(0 | 1)), "{log}");
+    let log = fs_ext4_test_support::oracle("e2fsck")
+        .args(["-fy", &image])
+        .judged()
+        .repaired("e2fsck -fy");
     for (i, &block) in targets.iter().enumerate() {
         assert!(
             read_block(&image, block) == pattern(i, BS as usize),
             "e2fsck did not replay block {block} (tag {i}): {log}"
         );
     }
-    let (code, log) = run("e2fsck", &["-fn", &image]);
-    assert_eq!(code, Some(0), "{log}");
+    fs_ext4_test_support::assert_e2fsck_clean(&image, "e2fsck -fn");
     let _ = std::fs::remove_file(&image);
 }

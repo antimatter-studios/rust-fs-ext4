@@ -44,6 +44,8 @@ use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
 
+use crate::verdict::{Judge, Judged, Verdict};
+
 /// This repository, which is also where the guest sees it.
 pub(crate) fn repo() -> &'static Path {
     static REPO: OnceLock<PathBuf> = OnceLock::new();
@@ -302,8 +304,55 @@ impl Oracle {
     }
 
     /// Run it, and return what the tool did.
+    ///
+    /// A tool that reports on a volume is read before it is returned
+    /// (#280, see [`crate::verdict`]): a `debugfs`, `dumpe2fs` or lwext4
+    /// call that did not examine what it was asked about fails here, and
+    /// `e2fsck` — a checker, whose exit status is not its verdict — is
+    /// refused outright in favour of [`Oracle::judged`].
     #[track_caller]
     pub fn output(self) -> Output {
+        let judge = Judge::of(&self.tool);
+        assert!(
+            judge != Some(Judge::E2fsck),
+            "`{}` is a checker, and its exit status is not its verdict: `e2fsck -n` \
+             exits 0 on a volume it skipped, one whose journal it did not replay, and \
+             one it has just reported a wrong count on. Read it with \
+             `oracle(\"e2fsck\")...judged()` or `assert_e2fsck_clean`.",
+            self.tool
+        );
+        let (call, out) = self.run();
+        if let Some(judge) = judge {
+            if let Verdict::NotAVerdict(why) = judge.read_output(&out) {
+                panic!("{call} did not examine what it was asked about: {why}");
+            }
+        }
+        out
+    }
+
+    /// Run a tool that reports on a volume, and read its report as a
+    /// [`Verdict`]. Never fails on the verdict itself: the caller says
+    /// which one it requires ([`Judged::clean`], [`Judged::findings`],
+    /// [`Judged::repaired`]) or matches on it.
+    #[track_caller]
+    pub fn judged(self) -> Judged {
+        let Some(judge) = Judge::of(&self.tool) else {
+            panic!(
+                "`{}` makes volumes rather than reporting on them; there is no verdict \
+                 to read. Use .output().",
+                self.tool
+            );
+        };
+        let (call, output) = self.run();
+        Judged {
+            verdict: judge.read_output(&output),
+            call,
+            output,
+        }
+    }
+
+    #[track_caller]
+    fn run(self) -> (String, Output) {
         session();
         for argument in self.args.iter().filter_map(Arg::as_path) {
             self.check_path(argument);
@@ -336,8 +385,8 @@ impl Oracle {
 
         // The evidence a green run carries: every tool call and its
         // verdict, printed by `chore test:oracle` (--show-output).
-        println!(
-            "[oracle vm] {} {} -> {code}",
+        let call = format!(
+            "{} {}",
             self.tool,
             self.args
                 .iter()
@@ -345,11 +394,15 @@ impl Oracle {
                 .collect::<Vec<_>>()
                 .join(" ")
         );
-        Output {
-            status: ExitStatusExt::from_raw(code << 8),
-            stdout,
-            stderr,
-        }
+        println!("[oracle vm] {call} -> {code}");
+        (
+            call,
+            Output {
+                status: ExitStatusExt::from_raw(code << 8),
+                stdout,
+                stderr,
+            },
+        )
     }
 
     /// The shell the guest runs: the tool, its arguments unchanged, with

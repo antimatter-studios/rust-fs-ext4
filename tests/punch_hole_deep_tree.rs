@@ -25,12 +25,7 @@ use std::sync::Arc;
 const EXTENTS: u64 = 800;
 
 fn e2fsck_clean(image: &str, what: &str) {
-    let out = oracle("e2fsck").args(["-fn", image]).output();
-    assert!(
-        out.status.success(),
-        "[{what}] e2fsck rejected the volume:\n{}",
-        String::from_utf8_lossy(&out.stdout)
-    );
+    fs_ext4_test_support::assert_e2fsck_clean(image, what);
 }
 
 fn mount(image: &str) -> Filesystem {

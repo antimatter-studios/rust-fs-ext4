@@ -1,0 +1,17 @@
+exit 8
+--- stdout
+The filesystem revision is apparently too high for this version of e2fsck.
+(Or the filesystem superblock is corrupt)
+
+
+The superblock could not be read or does not describe a valid ext2/ext3/ext4
+filesystem.  If the device is valid and it really contains an ext2/ext3/ext4
+filesystem (and not swap or ufs or something else), then the superblock
+is corrupt, and you might try running e2fsck with an alternate superblock:
+    e2fsck -b 8193 <device>
+ or
+    e2fsck -b 32768 <device>
+
+--- stderr
+e2fsck 1.47.0 (5-Feb-2023)
+e2fsck: Filesystem revision too high while trying to open rev.img

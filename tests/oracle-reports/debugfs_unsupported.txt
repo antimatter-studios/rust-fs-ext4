@@ -1,0 +1,6 @@
+exit 0
+--- stdout
+--- stderr
+debugfs 1.47.0 (5-Feb-2023)
+debugfs: Filesystem has unsupported feature(s) while trying to open unsup.img
+stat: Filesystem not open

@@ -167,17 +167,17 @@ fn e2fsck_replays_what_this_crate_committed(tag: &str, features: &str, bits: u32
         );
     }
 
-    let e2fsck = "e2fsck";
-    let (code, log) = run(e2fsck, &["-fy", &image], None);
-    assert!(matches!(code, Some(0 | 1)), "[{tag}] {log}");
+    let log = oracle("e2fsck")
+        .args(["-fy", &image])
+        .judged()
+        .repaired(tag);
     for (i, &block) in TARGETS.iter().enumerate() {
         assert!(
             read_block(&image, block) == pattern(i),
             "[{tag}] e2fsck did not replay block {block} of the crate's transaction: {log}"
         );
     }
-    let (code, log) = run(e2fsck, &["-fn", &image], None);
-    assert_eq!(code, Some(0), "[{tag}] {log}");
+    fs_ext4_test_support::assert_e2fsck_clean(&image, tag);
     let _ = std::fs::remove_file(&image);
 }
 

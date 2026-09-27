@@ -1,0 +1,15 @@
+exit 4
+--- stdout
+Pass 1: Checking inodes, blocks, and sizes
+Pass 2: Checking directory structure
+Pass 3: Checking directory connectivity
+Pass 4: Checking reference counts
+Inode 2 ref count is 7, should be 3.  Fix? no
+
+Pass 5: Checking group summary information
+
+ino.img: ********** WARNING: Filesystem still has errors **********
+
+ino.img: 11/4096 files (9.1% non-contiguous), 1291/4096 blocks
+--- stderr
+e2fsck 1.47.0 (5-Feb-2023)

@@ -98,10 +98,10 @@ fn build_image() -> String {
             .args(["-q", "-F", "-b", "4096", "-d", &root, &image])),
         Some(0)
     );
-    assert!(matches!(
-        ok(fs_ext4_test_support::oracle(e2fsck).args(["-fyD", &image])),
-        Some(0 | 1)
-    ));
+    fs_ext4_test_support::oracle(e2fsck)
+        .args(["-fyD", &image])
+        .judged()
+        .repaired("e2fsck -fyD");
     let _ = std::fs::remove_dir_all(&root);
     image
 }

@@ -22,14 +22,7 @@ use fs_ext4::fs::Filesystem;
 use std::sync::Arc;
 
 fn e2fsck_clean(image: &str, what: &str) {
-    let out = fs_ext4_test_support::oracle("e2fsck")
-        .args(["-fn", image])
-        .output();
-    assert!(
-        out.status.success(),
-        "[{what}] e2fsck -fn rejected the volume:\n{}",
-        String::from_utf8_lossy(&out.stdout)
-    );
+    fs_ext4_test_support::assert_e2fsck_clean(image, what);
 }
 
 /// An image with a 512-entry root that `e2fsck -D` indexed, and its path.
@@ -61,14 +54,10 @@ fn indexed_root(tag: &str) -> (String, String) {
         "{}",
         String::from_utf8_lossy(&mkfs.stderr)
     );
-    let index = fs_ext4_test_support::oracle("e2fsck")
+    fs_ext4_test_support::oracle("e2fsck")
         .args(["-fyD", &image])
-        .output();
-    assert!(
-        matches!(index.status.code(), Some(0..=2)),
-        "{}",
-        String::from_utf8_lossy(&index.stdout)
-    );
+        .judged()
+        .repaired("e2fsck -fyD indexes the root");
     (root, image)
 }
 

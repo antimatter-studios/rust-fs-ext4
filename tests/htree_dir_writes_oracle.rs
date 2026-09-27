@@ -58,8 +58,10 @@ fn indexed_volume(tag: &str, features: &str, count: usize) -> String {
         ],
     );
     assert_eq!(code, Some(0), "mkfs.ext4: {log}");
-    let (code, log) = run("e2fsck", &["-fyD", &image]);
-    assert!(matches!(code, Some(0 | 1)), "e2fsck -fyD: {log}");
+    fs_ext4_test_support::oracle("e2fsck")
+        .args(["-fyD", &image])
+        .judged()
+        .repaired("e2fsck -fyD indexes the fixture");
     let _ = std::fs::remove_dir_all(&root);
     image
 }
@@ -75,13 +77,19 @@ fn is_indexed(fs: &Filesystem, path: &str) -> bool {
     inode.flags & InodeFlags::INDEX.bits() != 0
 }
 
+/// `-n` answers "no" and can still exit 0 with IGNORED lines, so the
+/// report is read rather than the exit status; one that is not a verdict
+/// at all fails here.
 fn e2fsck_clean(image: &str) -> Result<(), String> {
-    let (code, report) = run("e2fsck", &["-fn", image]);
-    // `-n` answers "no" and can still exit 0 with IGNORED lines.
-    if code == Some(0) && !report.contains("IGNORED") && !report.contains("HTREE") {
-        Ok(())
-    } else {
-        Err(report)
+    let judged = fs_ext4_test_support::oracle("e2fsck")
+        .args(["-fn", image])
+        .judged();
+    match judged.verdict {
+        fs_ext4_test_support::Verdict::Clean => Ok(()),
+        fs_ext4_test_support::Verdict::Findings(report) => Err(report),
+        fs_ext4_test_support::Verdict::NotAVerdict(why) => {
+            panic!("{}: not a verdict on {image}: {why}", judged.call)
+        }
     }
 }
 
@@ -347,7 +355,10 @@ fn a_corrupt_index_root_is_neither_routed_through_nor_restamped() {
         ),
     }
     drop(fs);
-    let (_, report) = run("e2fsck", &["-fn", &image]);
+    let report = fs_ext4_test_support::oracle("e2fsck")
+        .args(["-fn", &image])
+        .judged()
+        .findings("a corrupt index root");
     assert!(
         report.contains("HTREE") || report.contains("checksum"),
         "the corruption must still be visible to e2fsck:\n{report}"

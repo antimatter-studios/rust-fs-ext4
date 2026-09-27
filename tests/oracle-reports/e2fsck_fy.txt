@@ -1,0 +1,15 @@
+exit 1
+--- stdout
+Pass 1: Checking inodes, blocks, and sizes
+Pass 2: Checking directory structure
+Pass 3: Checking directory connectivity
+Pass 4: Checking reference counts
+Pass 5: Checking group summary information
+Free blocks count wrong (1, counted=2805).
+Fix? yes
+
+
+freey.img: ***** FILE SYSTEM WAS MODIFIED *****
+freey.img: 11/4096 files (9.1% non-contiguous), 1291/4096 blocks
+--- stderr
+e2fsck 1.47.0 (5-Feb-2023)

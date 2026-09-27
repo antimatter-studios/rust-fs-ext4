@@ -38,15 +38,7 @@ fn mkfs(tag: &str) -> String {
 }
 
 fn e2fsck_clean(path: &str) {
-    let out = fs_ext4_test_support::oracle("e2fsck")
-        .args(["-fn", path])
-        .output();
-    assert!(
-        out.status.success(),
-        "e2fsck -fn rejected the volume:\n{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
+    fs_ext4_test_support::assert_e2fsck_clean(path, "e2fsck -fn");
 }
 
 fn mount(path: &str) -> Filesystem {

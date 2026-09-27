@@ -74,8 +74,13 @@ fn report(program: &str, args: &[&str], code: Option<i32>) {
     println!("[oracle host] {program} {} -> {code:?}", args.join(" "));
 }
 
+/// `fsck.ext4` must examine the volume and find nothing. Its exit status
+/// is not that verdict (#280): the report is read.
 fn fsck(args: &[&str]) {
-    succeeds("fsck.ext4", args);
+    oracle("fsck.ext4")
+        .args(args)
+        .judged()
+        .clean(&format!("fsck.ext4 {}", args.join(" ")));
 }
 
 #[test]
@@ -122,7 +127,8 @@ fn multi_group_images_pass_fsck_through_primary_and_backup_superblocks() {
     fsck(&["-fn", "-b", "98304", "-B", "4096", &mg5]);
 
     // The short final group ends at the last block of the device.
-    let groups = succeeds("dumpe2fs", &[&mg3]);
+    let groups = oracle("dumpe2fs").arg(&mg3).judged().clean("dumpe2fs");
+    let groups = String::from_utf8_lossy(&groups.stdout);
     let layout: Vec<&str> = groups.lines().filter(|l| l.starts_with("Group ")).collect();
     assert!(
         groups.contains("Group 2: (Blocks 65536-81919)"),

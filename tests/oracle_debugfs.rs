@@ -154,37 +154,28 @@ fn run(tool: &str, args: &[&str]) -> Output {
 /// request on stderr and still exits 0, so a request that printed an
 /// error line is a failure here.
 fn debugfs(image: &Path, request: &str) -> String {
-    let o = run("debugfs", &["-R", request, image.to_str().unwrap()]);
-    let errors: Vec<&str> = o
-        .stderr
-        .lines()
-        .filter(|l| !l.starts_with("debugfs ") && !l.trim().is_empty())
-        .collect();
-    assert!(
-        o.code == 0 && errors.is_empty(),
-        "debugfs -R '{request}' {} failed (exit {}): {}",
-        image.display(),
-        o.code,
-        o.stderr
-    );
-    o.stdout
+    let out = fs_ext4_test_support::oracle("debugfs")
+        .args(["-R", request, image.to_str().unwrap()])
+        .judged()
+        .clean(&format!("debugfs -R '{request}' {}", image.display()));
+    String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
 /// `e2fsck -fn`: forced full check, answering no to every repair, so it
-/// reports without touching the image. Exit 0 is clean.
+/// reports without touching the image. Exit 0 is not the verdict (#280):
+/// `-n` exits 0 having answered "no" to a wrong count, so the report is
+/// read.
 fn e2fsck_clean(image: &Path) {
-    let o = run("e2fsck", &["-fn", image.to_str().unwrap()]);
-    assert_eq!(
-        o.code,
-        0,
-        "e2fsck -fn {} is not clean:\n{}{}",
-        image.display(),
-        o.stdout,
-        o.stderr
-    );
+    let out = fs_ext4_test_support::oracle("e2fsck")
+        .args(["-fn", image.to_str().unwrap()])
+        .judged()
+        .clean(&image.display().to_string());
     eprintln!(
         "[oracle] e2fsck -fn clean: {}",
-        o.stdout.lines().last().unwrap_or("")
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .last()
+            .unwrap_or("")
     );
 }
 

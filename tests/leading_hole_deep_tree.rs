@@ -91,11 +91,6 @@ fn a_hole_below_the_first_index_entry_reads_as_zeros() {
     assert!(buf.iter().all(|&b| b == 9), "{:?}", &buf[..8]);
     drop(fs);
 
-    let out = oracle("e2fsck").args(["-fn", &image]).output();
-    assert!(
-        out.status.success(),
-        "e2fsck rejected the volume:\n{}",
-        String::from_utf8_lossy(&out.stdout)
-    );
+    fs_ext4_test_support::assert_e2fsck_clean(&image, "leading hole");
     let _ = std::fs::remove_file(&image);
 }

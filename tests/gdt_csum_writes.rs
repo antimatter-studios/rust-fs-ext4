@@ -59,18 +59,6 @@ fn make_sized_volume(tag: &str, sixty_four: bool, block_size: u32, mib: u64) -> 
     path
 }
 
-fn e2fsck_clean(path: &str) -> (bool, String) {
-    let out = oracle("e2fsck").args(["-fn", path]).output();
-    (
-        out.status.success(),
-        format!(
-            "{}{}",
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr)
-        ),
-    )
-}
-
 fn write_and_check(tag: &str, sixty_four: bool) {
     let path = make_volume(tag, sixty_four);
     {
@@ -108,14 +96,11 @@ fn write_and_check(tag: &str, sixty_four: bool) {
             .expect_err("rmdir of a non-empty dir is refused");
         fs.dev.flush().expect("flush");
     }
-    let (clean, report) = e2fsck_clean(&path);
     // The exit status is not enough on its own: `e2fsck -n` answers "no" to
     // "One or more block group descriptor checksums are invalid", prints
-    // IGNORED, and still exits 0 when nothing else is wrong.
-    assert!(
-        clean && !report.contains("IGNORED") && !report.contains("checksum"),
-        "[{tag}] e2fsck found problems after the driver's writes:\n{report}"
-    );
+    // IGNORED, and still exits 0 when nothing else is wrong. The verdict
+    // reads the report.
+    fs_ext4_test_support::assert_e2fsck_clean(&path, &format!("{tag}: after the driver's writes"));
 
     // The mount checks what it reads: a descriptor whose crc16 no longer
     // matches is refused, as the kernel refuses it.
@@ -185,11 +170,7 @@ fn large_write_and_check(tag: &str, sixty_four: bool, block_size: u32) {
         fs.apply_rmdir("/temporary").expect("rmdir");
         fs.dev.flush().expect("flush");
     }
-    let (clean, report) = e2fsck_clean(&path);
-    assert!(
-        clean && !report.contains("IGNORED") && !report.contains("checksum"),
-        "[{tag}] e2fsck found problems after the driver's writes:\n{report}"
-    );
+    fs_ext4_test_support::assert_e2fsck_clean(&path, &format!("{tag}: after the driver's writes"));
     let out = oracle("debugfs")
         .args(["-R", "cat /unrelated.txt", &path])
         .output();

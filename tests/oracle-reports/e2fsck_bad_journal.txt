@@ -1,0 +1,12 @@
+exit 12
+--- stdout
+Superblock has an invalid journal (inode 8).
+Clear? no
+
+
+jrnl.img: ********** WARNING: Filesystem still has errors **********
+
+--- stderr
+e2fsck 1.47.0 (5-Feb-2023)
+e2fsck: The journal superblock is corrupt while checking journal for jrnl.img
+e2fsck: Cannot proceed with file system check

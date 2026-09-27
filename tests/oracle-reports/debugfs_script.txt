@@ -1,0 +1,21 @@
+exit 0
+--- stdout
+debugfs: stat /f
+Inode: 12   Type: regular    Mode:  0644   Flags: 0x80000
+Generation: 0    Version: 0x00000000:00000000
+User:     0   Group:     0   Project:     0   Size: 6
+File ACL: 0
+Links: 1   Blockcount: 8
+Fragment:  Address: 0    Number: 0    Size: 0
+ ctime: 0x6ab9411f:00000000 -- Sun Sep 27 17:15:27 2026
+ atime: 0x6ab9411f:00000000 -- Sun Sep 27 17:15:27 2026
+ mtime: 0x6ab9411f:00000000 -- Sun Sep 27 17:15:27 2026
+crtime: 0x6ab9411f:00000000 -- Sun Sep 27 17:15:27 2026
+Size of extra inode fields: 32
+Inode checksum: 0x47919fde
+EXTENTS:
+(0):1291
+debugfs: cat /nope
+--- stderr
+debugfs 1.47.0 (5-Feb-2023)
+/nope: File not found by ext2_lookup 

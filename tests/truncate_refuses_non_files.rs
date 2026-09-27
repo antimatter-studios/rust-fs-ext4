@@ -68,14 +68,7 @@ fn truncate_refuses_directories_symlinks_and_device_nodes() {
                 (_, Err(Error::InvalidArgument(_))) => {}
                 _ => panic!("[{kind} {what}] expected InvalidArgument, got {got:?}"),
             }
-            let fsck = fs_ext4_test_support::oracle("e2fsck")
-                .args(["-fn", &image])
-                .output();
-            assert!(
-                fsck.status.success(),
-                "[{kind} {what}] e2fsck -fn rejected the volume:\n{}",
-                String::from_utf8_lossy(&fsck.stdout)
-            );
+            fs_ext4_test_support::assert_e2fsck_clean(&image, &format!("{kind} {what}"));
             let _ = std::fs::remove_file(&image);
         }
     }

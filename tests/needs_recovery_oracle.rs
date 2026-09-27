@@ -45,6 +45,23 @@ fn run(tool: &str, args: &[&str]) -> (Option<i32>, String) {
 
 /// A fresh `metadata_csum` image whose journal declares CSUM_V3, as the
 /// kernel's first mount leaves it.
+/// `e2fsck -fy`: replays, repairs, and must not have declined to look or
+/// left anything standing. Its transcript.
+fn repair(image: &str) -> String {
+    oracle("e2fsck")
+        .args(["-fy", image])
+        .judged()
+        .repaired("e2fsck -fy")
+}
+
+/// `e2fsck -fn`: must examine the volume and find nothing. Its transcript.
+fn check(image: &str) -> String {
+    let judged = oracle("e2fsck").args(["-fn", image]).judged();
+    let log = judged.report();
+    judged.clean("e2fsck -fn");
+    log
+}
+
 fn fresh_image(tag: &str) -> String {
     let mkfs = "mkfs.ext4";
     let debugfs = "debugfs";
@@ -62,8 +79,7 @@ fn fresh_image(tag: &str) -> String {
     let (code, log) = run(debugfs, &["-w", "-f", &script, &image]);
     let _ = std::fs::remove_file(&script);
     assert_eq!(code, Some(0), "{log}");
-    let (code, log) = run("e2fsck", &["-fy", &image]);
-    assert!(matches!(code, Some(0 | 1)), "{log}");
+    repair(&image);
     assert!(
         !flag_set(&image),
         "the fixture starts without needs_recovery"
@@ -155,8 +171,7 @@ fn a_crash_after_the_journal_is_dirty_leaves_the_flag_for_linux() {
         "a live journal without needs_recovery is wiped by Linux"
     );
 
-    let (code, log) = run("e2fsck", &["-fy", &image]);
-    assert!(matches!(code, Some(0 | 1)), "{log}");
+    let log = repair(&image);
     assert!(!log.contains(CLEAR_BUT_DATA), "{log}");
     for (i, &block) in TARGETS.iter().enumerate() {
         assert!(
@@ -183,12 +198,10 @@ fn a_journaled_superblock_block_keeps_the_flag() {
         flag_set(&image),
         "step 3 wrote a superblock without needs_recovery over a live journal"
     );
-    let (code, log) = run("e2fsck", &["-fy", &image]);
-    assert!(matches!(code, Some(0 | 1)), "{log}");
+    let log = repair(&image);
     assert!(!log.contains(CLEAR_BUT_DATA), "{log}");
     assert!(read_at(&image, TARGETS[0] * BS, BS as usize) == pattern(0));
-    let (code, log) = run("e2fsck", &["-fn", &image]);
-    assert_eq!(code, Some(0), "{log}");
+    check(&image);
     let _ = std::fs::remove_file(&image);
 }
 
@@ -197,8 +210,7 @@ fn a_finished_commit_leaves_neither_flag_nor_journal() {
     let image = fresh_image("done");
     commit(&image, &targets(), usize::MAX);
     assert!(!flag_set(&image));
-    let (code, log) = run("e2fsck", &["-fn", &image]);
-    assert_eq!(code, Some(0), "{log}");
+    let log = check(&image);
     assert!(!log.contains("journal"), "{log}");
     let _ = std::fs::remove_file(&image);
 }
@@ -216,8 +228,7 @@ fn the_crates_replay_clears_the_journal_and_the_flag() {
         assert!(read_at(&image, block * BS, BS as usize) == pattern(i));
     }
     assert!(!flag_set(&image), "replay left needs_recovery set");
-    let (code, log) = run("e2fsck", &["-fn", &image]);
-    assert_eq!(code, Some(0), "{log}");
+    let log = check(&image);
     assert!(
         !log.contains(CLEAR_BUT_DATA),
         "replay left the journal dirty: {log}"
@@ -225,7 +236,6 @@ fn the_crates_replay_clears_the_journal_and_the_flag() {
 
     // And the journal the replay left is one the crate writes on again.
     commit(&image, &targets(), usize::MAX);
-    let (code, log) = run("e2fsck", &["-fn", &image]);
-    assert_eq!(code, Some(0), "{log}");
+    check(&image);
     let _ = std::fs::remove_file(&image);
 }

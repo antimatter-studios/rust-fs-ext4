@@ -1,0 +1,11 @@
+exit 0
+--- stdout
+Warning: skipping journal recovery because doing a read-only filesystem check.
+Pass 1: Checking inodes, blocks, and sizes
+Pass 2: Checking directory structure
+Pass 3: Checking directory connectivity
+Pass 4: Checking reference counts
+Pass 5: Checking group summary information
+rec.img: 11/4096 files (9.1% non-contiguous), 1291/4096 blocks
+--- stderr
+e2fsck 1.47.0 (5-Feb-2023)

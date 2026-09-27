@@ -47,7 +47,6 @@ fn a_name_holding_a_nul_byte_is_refused() {
         ("link", |fs| fs.apply_link("/f", "/a\0b")),
         ("rename", |fs| fs.apply_rename("/f", "/a\0b", false)),
     ];
-    let e2fsck = "e2fsck";
     for (tag, op) in ops {
         let path = mkfs(tag);
         let fs = Filesystem::mount(Arc::new(FileDevice::open_rw(&path).unwrap())).unwrap();
@@ -63,14 +62,7 @@ fn a_name_holding_a_nul_byte_is_refused() {
             ),
             "[{tag}] a name holding a NUL byte was not refused as one: {got:?}"
         );
-        let out = fs_ext4_test_support::oracle(e2fsck)
-            .args(["-fn", &path])
-            .output();
-        assert!(
-            out.status.success(),
-            "[{tag}] e2fsck -fn rejected the volume:\n{}",
-            String::from_utf8_lossy(&out.stdout)
-        );
+        fs_ext4_test_support::assert_e2fsck_clean(&path, tag);
         let _ = std::fs::remove_file(&path);
     }
 }

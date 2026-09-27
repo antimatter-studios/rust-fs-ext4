@@ -37,12 +37,20 @@ impl Rng {
     }
 }
 
-/// e2fsck's complaint, or `None` for a clean volume.
+/// e2fsck's complaint, or `None` for a clean volume. A report that is not
+/// a verdict — e2fsck could not open the image, or skipped the check —
+/// fails here rather than counting as either.
 fn e2fsck(image: &str) -> Option<String> {
-    let out = fs_ext4_test_support::oracle("e2fsck")
+    let judged = fs_ext4_test_support::oracle("e2fsck")
         .args(["-fn", image])
-        .output();
-    (!out.status.success()).then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+        .judged();
+    match judged.verdict {
+        fs_ext4_test_support::Verdict::Clean => None,
+        fs_ext4_test_support::Verdict::Findings(said) => Some(said),
+        fs_ext4_test_support::Verdict::NotAVerdict(why) => {
+            panic!("{}: not a verdict on {image}: {why}", judged.call)
+        }
+    }
 }
 
 fn mount(image: &str) -> Filesystem {

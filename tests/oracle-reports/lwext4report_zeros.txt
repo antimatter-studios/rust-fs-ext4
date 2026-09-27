@@ -1,0 +1,4 @@
+exit 2
+--- stdout
+--- stderr
+lwext4-report: ext4_mount (read-only): 95 (Operation not supported)

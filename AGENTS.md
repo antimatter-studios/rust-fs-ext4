@@ -277,15 +277,23 @@ and no reader of ours can prove the bytes it wrote are the bytes on disk.
 Independent tools can:
 
 - **`e2fsck -fn`** — consistency. `assert_e2fsck_clean(image, tag)` in the
-  test support crate. Exit `0` clean, `4` errors left uncorrected, `8`
-  operational error, `12` cannot proceed (e.g. a corrupt journal superblock).
+  test support crate. **Exit `0` is not "clean"**: `-n` exits 0 having
+  answered "no" to `Free blocks count wrong`, having skipped the replay of a
+  journal it then graded, and (without `-f`) having run no pass at all. Every
+  report is read by `fs_ext4_test_support::verdict` into `Clean`, `Findings`
+  or `NotAVerdict`, and only `Clean` passes; `oracle("e2fsck")` is reachable
+  only through `.judged()` (#280). `tests/oracle_verdicts.rs` holds the reader
+  to reports captured from the tools in the guest, and
+  `tests/oracle_verdicts_live.rs` to the tools themselves.
 - **`debugfs`** — content and metadata: `dump` + compare, `stat`, `ex`,
   `icheck`, `ncheck`, `logdump`. `tests/oracle_debugfs.rs` is the template,
   including the negative case that proves why both are needed (a flipped
   data byte passes e2fsck and fails the dump comparison).
   Both are reached through `fs_ext4_test_support::oracle(tool)`, which runs
   them in the guest and returns the tool's own `Output` — same exit status,
-  same streams, no host path to fall back to.
+  same streams, no host path to fall back to. debugfs exits 0 on a request it
+  could not carry out, so a `debugfs`, `dumpe2fs` or lwext4 call whose report
+  is not a verdict fails where it was made.
 - **The kernel itself**, through `guest_kernel_report` /
   `guest_kernel_write` in the test support crate: our image is loop-mounted
   in the guest and a script walks it, hashes every file and reads xattrs

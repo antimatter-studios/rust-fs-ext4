@@ -21,7 +21,6 @@ use std::sync::Arc;
 
 fn run(tag: &str, features: &str) {
     let mkfs = "mkfs.ext4";
-    let e2fsck = "e2fsck";
     let path = fs_ext4_test_support::temp_path!("fs_ext4_uninit_{tag}_{}.img", std::process::id());
     std::fs::File::create(&path)
         .and_then(|f| f.set_len(64 * 1024 * 1024))
@@ -53,19 +52,9 @@ fn run(tag: &str, features: &str) {
         fs.dev.flush().expect("flush");
     }
 
-    let out = fs_ext4_test_support::oracle(e2fsck)
-        .args(["-fn", &path])
-        .output();
-    let report = format!(
-        "{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
-    // `e2fsck -n` can print a problem as IGNORED and still exit 0.
-    assert!(
-        out.status.success() && !report.contains("IGNORED"),
-        "[{tag}] e2fsck found problems:\n{report}"
-    );
+    // `e2fsck -n` can print a problem as IGNORED and still exit 0; the
+    // verdict reads the report, not the exit status.
+    fs_ext4_test_support::assert_e2fsck_clean(&path, tag);
     let _ = std::fs::remove_file(&path);
 }
 

@@ -1,0 +1,9 @@
+exit 0
+--- stdout
+type	lost+found	directory
+mode	lost+found	700
+type	f	regular-file
+mode	f	644
+size	f	6
+sha256	f	5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03
+--- stderr

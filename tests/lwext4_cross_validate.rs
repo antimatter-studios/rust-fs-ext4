@@ -328,6 +328,21 @@ fn the_fixtures_lwext4_does_not_implement_are_refused_by_name() {
     }
 }
 
+/// A PATH THAT NAMES NOTHING IS NOT A REFUSAL (#280).
+///
+/// lwext4 opens its file lazily, so a missing image comes back as
+/// `ext4_mount (read-only): 5 (Input/output error)` — word for word what
+/// a refusal of a real volume prints, and exactly what the test above
+/// accepts. `lwext4_refusal` used to return it as one.
+#[test]
+#[should_panic(expected = "does not exist")]
+fn a_missing_image_is_not_a_refusal() {
+    let path = temp_path!("fs_ext4_lwext4_missing_{}.img", std::process::id());
+    let _ = std::fs::remove_file(&path);
+    let said = lwext4_refusal(&path, "an image that does not exist");
+    panic!("a missing image was taken for a refusal: {said}");
+}
+
 /// NOTHING FALLS BETWEEN THE TWO LISTS. A fixture added to
 /// `test-disks/build-fixtures.sh` and to neither list above would be one
 /// lwext4 never sees, and nothing else in the suite would say so.

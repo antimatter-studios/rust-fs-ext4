@@ -1,0 +1,21 @@
+exit 16
+--- stdout
+--- stderr
+e2fsck: invalid option -- 'Z'
+Usage: e2fsck [-panyrcdfktvDFV] [-b superblock] [-B blocksize]
+		[-l|-L bad_blocks_file] [-C fd] [-j external_journal]
+		[-E extended-options] [-z undo_file] device
+
+Emergency help:
+ -p                   Automatic repair (no questions)
+ -n                   Make no changes to the filesystem
+ -y                   Assume "yes" to all questions
+ -c                   Check for bad blocks and add them to the badblock list
+ -f                   Force checking even if filesystem is marked clean
+ -v                   Be verbose
+ -b superblock        Use alternative superblock
+ -B blocksize         Force blocksize when looking for superblock
+ -j external_journal  Set location of the external journal
+ -l bad_blocks_file   Add to badblocks list
+ -L bad_blocks_file   Set badblocks list
+ -z undo_file         Create an undo file

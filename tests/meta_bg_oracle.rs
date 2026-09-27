@@ -47,10 +47,19 @@ fn read_file(fs: &Filesystem, path: &str) -> Vec<u8> {
     fs_ext4::file_io::read_all(fs, &inode).unwrap()
 }
 
+/// `dumpe2fs` on `image`: it must describe the volume and find no group
+/// descriptor whose checksum is wrong (`csum 0x1234 (EXPECTED 0xd2c4)`).
+fn dumpe2fs(image: &str) -> String {
+    let out = fs_ext4_test_support::oracle("dumpe2fs")
+        .arg(image)
+        .judged()
+        .clean("dumpe2fs");
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
 /// Group number → free blocks, as `dumpe2fs` reports them.
 fn dumpe2fs_free_blocks(image: &str) -> BTreeMap<usize, u64> {
-    let (code, log) = run("dumpe2fs", &[image]);
-    assert_eq!(code, Some(0), "{log}");
+    let log = dumpe2fs(image);
     let mut out = BTreeMap::new();
     let mut group = None;
     for line in log.lines() {
@@ -69,8 +78,7 @@ fn dumpe2fs_free_blocks(image: &str) -> BTreeMap<usize, u64> {
 /// Group number → blocks at its head that `dumpe2fs` names as the
 /// superblock, its descriptor block(s) and reserved GDT blocks.
 fn dumpe2fs_head_blocks(image: &str) -> BTreeMap<usize, u64> {
-    let (code, log) = run("dumpe2fs", &[image]);
-    assert_eq!(code, Some(0), "{log}");
+    let log = dumpe2fs(image);
     let span = |text: &str| -> u64 {
         let range = text.trim().trim_end_matches(',');
         match range.split_once('-') {
@@ -110,7 +118,6 @@ fn dumpe2fs_head_blocks(image: &str) -> BTreeMap<usize, u64> {
 
 fn meta_bg_volume(block_size: u32) {
     let mkfs = "mkfs.ext4";
-    let e2fsck = "e2fsck";
     let debugfs = "debugfs";
     let tag = format!("meta_bg_{block_size}");
     let root = fs_ext4_test_support::temp_path!("fs_ext4_{tag}_{}", std::process::id());
@@ -195,8 +202,7 @@ fn meta_bg_volume(block_size: u32) {
         }
         fs.apply_unlink("/f3.bin").unwrap();
     }
-    let (code, log) = run(e2fsck, &["-fn", &image]);
-    assert_eq!(code, Some(0), "[{tag}] e2fsck -fn after writes:\n{log}");
+    fs_ext4_test_support::assert_e2fsck_clean(&image, "e2fsck -fn");
     let (code, log) = run(debugfs, &["-R", "cat /w/big11", &image]);
     assert_eq!(code, Some(0), "{log}");
     let fs = Filesystem::mount(Arc::new(FileDevice::open(&image).unwrap())).unwrap();

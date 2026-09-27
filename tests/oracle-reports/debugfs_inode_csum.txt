@@ -1,0 +1,5 @@
+exit 0
+--- stdout
+--- stderr
+debugfs 1.47.0 (5-Feb-2023)
+stat: Inode checksum does not match inode while reading inode 12

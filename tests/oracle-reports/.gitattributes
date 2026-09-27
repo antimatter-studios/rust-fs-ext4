@@ -1,0 +1,4 @@
+# Oracle reports captured byte for byte (see tests/oracle_verdicts.rs).
+# debugfs ends each complaint with a space and dumpe2fs pads its flags
+# line, so trailing whitespace here is the tool's, not an editor's.
+*.txt -whitespace
