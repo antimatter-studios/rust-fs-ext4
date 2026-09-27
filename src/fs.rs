@@ -3297,22 +3297,14 @@ impl Filesystem {
 
     /// Allocate one block near `ino`'s group, staged in `buf` with its
     /// bitmap, descriptor and superblock counts.
+    ///
+    /// Planned through the buffer, uninit clears included: a punch's tree
+    /// repack calls this more than once in one transaction, and a second
+    /// plan that still saw the group as BLOCK_UNINIT rebuilt its bitmap from
+    /// metadata and handed out the block the first call staged (#291).
     fn buffer_allocate_block(&self, buf: &mut BlockBuffer, ino: u32) -> Result<u64> {
-        let plan = {
-            let mut bitmap_reader = |block: u64| -> Result<Vec<u8>> {
-                if let Some(bytes) = buf.dirty.get(&block) {
-                    return Ok(bytes.clone());
-                }
-                self.read_block(block)
-            };
-            crate::alloc::plan_block_allocation(
-                &self.sb,
-                &self.allocation_groups(),
-                1,
-                (ino - 1) / self.sb.inodes_per_group,
-                &mut bitmap_reader,
-            )?
-        };
+        let plan =
+            self.plan_buffered_block_allocation(buf, 1, (ino - 1) / self.sb.inodes_per_group)?;
         self.buffer_mark_block_run_used(buf, plan.first_block, 1)?;
         self.buffer_patch_bgd_counters(
             buf,
@@ -6951,22 +6943,29 @@ mod tests {
     /// re-synthesises the bitmap from metadata alone and ignores the staged
     /// bits -- a data run's second sub-allocation, or an extent-tree block,
     /// then lands on top of the first.
+    /// A formatted volume whose group 0 is flagged BLOCK_UNINIT. Only the
+    /// planners are run on it: a plan synthesises the group's bitmap from its
+    /// metadata, which is what the flag says to do.
+    fn formatted_with_group_zero_block_uninit() -> std::sync::Arc<MemDev> {
+        let dev = formatted();
+        let fs = mount(&dev);
+        let (bgt_block, off) = fs.sb.descriptor_location(0);
+        let ds = fs.sb.desc_size as usize;
+        let mut raw = fs.read_block(bgt_block).unwrap();
+        let flags = u16::from_le_bytes(raw[off + 0x12..off + 0x14].try_into().unwrap())
+            | crate::bgd::BgdFlags::BLOCK_UNINIT.bits();
+        raw[off + 0x12..off + 0x14].copy_from_slice(&flags.to_le_bytes());
+        let c = crate::checksum::group_desc_csum(&fs.sb, &fs.csum, 0, &raw[off..off + ds])
+            .expect("the formatted volume checksums its descriptors");
+        raw[off + 0x1e..off + 0x20].copy_from_slice(&c.to_le_bytes());
+        dev.write_at(bgt_block * u64::from(BS), &raw).unwrap();
+        drop(fs);
+        dev
+    }
+
     #[test]
     fn buffered_allocations_do_not_reuse_an_uninitialized_groups_first_run() {
-        let dev = formatted();
-        {
-            let fs = mount(&dev);
-            let (bgt_block, off) = fs.sb.descriptor_location(0);
-            let ds = fs.sb.desc_size as usize;
-            let mut raw = fs.read_block(bgt_block).unwrap();
-            let flags = u16::from_le_bytes(raw[off + 0x12..off + 0x14].try_into().unwrap())
-                | crate::bgd::BgdFlags::BLOCK_UNINIT.bits();
-            raw[off + 0x12..off + 0x14].copy_from_slice(&flags.to_le_bytes());
-            let c = crate::checksum::group_desc_csum(&fs.sb, &fs.csum, 0, &raw[off..off + ds])
-                .expect("the formatted volume checksums its descriptors");
-            raw[off + 0x1e..off + 0x20].copy_from_slice(&c.to_le_bytes());
-            dev.write_at(bgt_block * u64::from(BS), &raw).unwrap();
-        }
+        let dev = formatted_with_group_zero_block_uninit();
         let fs = mount(&dev);
         assert!(fs.allocation_groups()[0]
             .flags()
@@ -7000,6 +6999,25 @@ mod tests {
             .plan_buffered_block_allocation(&BlockBuffer::new(BS), 4, 0)
             .unwrap();
         assert_eq!(again.first_block, first.first_block);
+    }
+
+    /// The one-block allocator a punch's tree repack and an xattr unshare
+    /// draw from must see the uninit clear its own first call staged (#291).
+    /// A punch that splits an extent in a tree of full leaves calls it twice
+    /// in one transaction, for a new leaf and an index node above it; the
+    /// second call planned without the buffer's pending clear, rebuilt the
+    /// group's bitmap from metadata and returned the leaf's block again.
+    #[test]
+    fn one_block_allocations_in_a_transaction_do_not_reuse_an_uninitialized_groups_block() {
+        let dev = formatted_with_group_zero_block_uninit();
+        let fs = mount(&dev);
+        let mut buf = BlockBuffer::new(BS);
+        let first = fs.buffer_allocate_block(&mut buf, 1).unwrap();
+        let second = fs.buffer_allocate_block(&mut buf, 1).unwrap();
+        assert_ne!(
+            first, second,
+            "the second allocation handed out block {first} again"
+        );
     }
 
     /// `Filesystem::mount_recovering` / `finish` on a journalled volume.

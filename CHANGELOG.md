@@ -185,6 +185,17 @@
 
 ### Fixed
 
+- **A punch that needs two tree blocks from a `BLOCK_UNINIT` group gets two
+  blocks.** A punch splitting an extent in a tree of full leaves needs a new
+  leaf and an index node above it, in one transaction. The one-block allocator
+  it drew from did not see the group's uninit flag the first allocation had
+  cleared in the transaction's buffer, rebuilt the bitmap from metadata and
+  returned the leaf's block again: the index node was written over the leaf
+  and named itself as its child, which `e2fsck` reports as a cyclic loop in
+  the extent tree. It now plans through the buffer, uninit clears included,
+  as `pwrite` does since #145. Every other in-transaction planner was audited;
+  each plans once or commits between plans, and each is now run into an
+  uninit group under `e2fsck` (#291).
 - **A hole can be punched in a file whose extent tree is deeper than the
   inode.** Punching wrote what survived back into the inode's four inline
   entries and freed every node below, so a punch leaving more than four
