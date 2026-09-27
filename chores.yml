@@ -606,9 +606,11 @@ tasks:
     # purpose -- the baseline is the registry, which moves without this tree
     # changing, so a fingerprint would call a stale answer up to date.
     #
-    # Budget: measured 13 lines / 1,208 bytes on a passing run (the build
-    # lines of both sides plus the verdict), so 40 / 4,000. A failing run
-    # prints every broken item and is not held to it.
+    # Budget: measured 11 lines / 489 bytes on a passing run with the
+    # baseline's rustdoc cached, one line more when it is built (the first
+    # run, and every CI run). The lines are fixed, not per-item, so 40 /
+    # 4,000 leaves room for a warning block without masking a flood. A
+    # failing run prints every broken item and is not held to it.
     cmds:
       - 'scripts/tier.sh check:semver semver 40 4000 -- scripts/semver-check.sh'
 
