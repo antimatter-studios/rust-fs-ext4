@@ -9,8 +9,9 @@
 //!
 //! The names cover each boundary the algorithm has: a partial word, exactly
 //! one TEA block (16 bytes) and one half_md4 block (32 bytes), one byte past
-//! each, several blocks, and bytes >= 0x80, where the signed and unsigned
-//! variants part ways. Two seeds: all-zero (the default constants) and the
+//! each, several blocks, bytes >= 0x80, where the signed and unsigned
+//! variants part ways, and the empty name, which runs none of the rounds
+//! and returns the seeded state as it stands (#331). Two seeds: all-zero (the default constants) and the
 //! seed of `test-disks/ext4-htree.img`. The `live_debugfs_agrees` test
 //! re-derives the table when `debugfs` is installed, so it cannot drift.
 
@@ -38,6 +39,7 @@ const VECTORS: &[(&str, u8, &[u8], u32, u32)] = &[
     ("zero", 0, b"caf\xc3\xa9", 0x96CA5A2C, 0x00000000),
     ("zero", 0, b"\xff\x80\x7f", 0xB6A1B8CC, 0x00000000),
     ("zero", 0, b"file_0123", 0xC08D0086, 0x00000000),
+    ("zero", 0, b"", 0x00000000, 0x00000000),
     ("zero", 1, b"a", 0xD5FA7D7A, 0xACB48187),
     ("zero", 1, b"abcd", 0xAD7557A8, 0xB1DA437C),
     ("zero", 1, b"abcde", 0x5821840E, 0x1CE8A82C),
@@ -52,6 +54,7 @@ const VECTORS: &[(&str, u8, &[u8], u32, u32)] = &[
     ("zero", 1, b"caf\xc3\xa9", 0xFB9C5E5C, 0x0573E8B8),
     ("zero", 1, b"\xff\x80\x7f", 0x337FF96A, 0x4ECD4AC0),
     ("zero", 1, b"file_0123", 0x2FB451EE, 0x9E96C067),
+    ("zero", 1, b"", 0x00000000, 0x00000000),
     ("zero", 2, b"a", 0x6D0EA4C0, 0xC18922DF),
     ("zero", 2, b"abcd", 0x5A24112E, 0x95442076),
     ("zero", 2, b"abcde", 0x6937ED68, 0xB66BD0F1),
@@ -66,6 +69,7 @@ const VECTORS: &[(&str, u8, &[u8], u32, u32)] = &[
     ("zero", 2, b"caf\xc3\xa9", 0x105842EA, 0xFB9165CA),
     ("zero", 2, b"\xff\x80\x7f", 0x6BA38152, 0x1FED68FC),
     ("zero", 2, b"file_0123", 0x92D75966, 0xE00D31E3),
+    ("zero", 2, b"", 0x00000000, 0x00000000),
     ("zero", 3, b"a", 0xE74B53E2, 0x00000000),
     ("zero", 3, b"abcd", 0xFAFA23CA, 0x00000000),
     ("zero", 3, b"abcde", 0x2297902C, 0x00000000),
@@ -80,6 +84,7 @@ const VECTORS: &[(&str, u8, &[u8], u32, u32)] = &[
     ("zero", 3, b"caf\xc3\xa9", 0x6DDE4230, 0x00000000),
     ("zero", 3, b"\xff\x80\x7f", 0xB32A9ECC, 0x00000000),
     ("zero", 3, b"file_0123", 0xC08D0086, 0x00000000),
+    ("zero", 3, b"", 0x00000000, 0x00000000),
     ("zero", 4, b"a", 0xD5FA7D7A, 0xACB48187),
     ("zero", 4, b"abcd", 0xAD7557A8, 0xB1DA437C),
     ("zero", 4, b"abcde", 0x5821840E, 0x1CE8A82C),
@@ -94,6 +99,7 @@ const VECTORS: &[(&str, u8, &[u8], u32, u32)] = &[
     ("zero", 4, b"caf\xc3\xa9", 0x9D72AED6, 0xF6138C6A),
     ("zero", 4, b"\xff\x80\x7f", 0xF435CE8C, 0x2D0B3C11),
     ("zero", 4, b"file_0123", 0x2FB451EE, 0x9E96C067),
+    ("zero", 4, b"", 0x00000000, 0x00000000),
     ("zero", 5, b"a", 0x6D0EA4C0, 0xC18922DF),
     ("zero", 5, b"abcd", 0x5A24112E, 0x95442076),
     ("zero", 5, b"abcde", 0x6937ED68, 0xB66BD0F1),
@@ -108,6 +114,7 @@ const VECTORS: &[(&str, u8, &[u8], u32, u32)] = &[
     ("zero", 5, b"caf\xc3\xa9", 0x6621F032, 0xF86699C6),
     ("zero", 5, b"\xff\x80\x7f", 0x4907E268, 0xDC81D4B9),
     ("zero", 5, b"file_0123", 0x92D75966, 0xE00D31E3),
+    ("zero", 5, b"", 0x00000000, 0x00000000),
     ("fixture", 0, b"a", 0xE74B53E2, 0x00000000),
     ("fixture", 0, b"abcd", 0xFAFA23CA, 0x00000000),
     ("fixture", 0, b"abcde", 0x2297902C, 0x00000000),
@@ -122,6 +129,7 @@ const VECTORS: &[(&str, u8, &[u8], u32, u32)] = &[
     ("fixture", 0, b"caf\xc3\xa9", 0x96CA5A2C, 0x00000000),
     ("fixture", 0, b"\xff\x80\x7f", 0xB6A1B8CC, 0x00000000),
     ("fixture", 0, b"file_0123", 0xC08D0086, 0x00000000),
+    ("fixture", 0, b"", 0x00000000, 0x00000000),
     ("fixture", 1, b"a", 0xD1D4380E, 0x832F6DC9),
     ("fixture", 1, b"abcd", 0x787AA7F0, 0x830D603C),
     ("fixture", 1, b"abcde", 0x21E90E84, 0xB3C1681D),
@@ -136,6 +144,7 @@ const VECTORS: &[(&str, u8, &[u8], u32, u32)] = &[
     ("fixture", 1, b"caf\xc3\xa9", 0xE180DCAE, 0xF6655F53),
     ("fixture", 1, b"\xff\x80\x7f", 0x53076A54, 0x71187582),
     ("fixture", 1, b"file_0123", 0xE83B032A, 0x19369104),
+    ("fixture", 1, b"", 0x00000000, 0x00000000),
     ("fixture", 2, b"a", 0x52EB669E, 0x95D4D440),
     ("fixture", 2, b"abcd", 0x76D47D16, 0xFB56BE08),
     ("fixture", 2, b"abcde", 0x0FF572A8, 0xFD996CD0),
@@ -150,6 +159,7 @@ const VECTORS: &[(&str, u8, &[u8], u32, u32)] = &[
     ("fixture", 2, b"caf\xc3\xa9", 0x24B99EA6, 0x6455954A),
     ("fixture", 2, b"\xff\x80\x7f", 0x0B2BDA42, 0x67A61515),
     ("fixture", 2, b"file_0123", 0xB2F38B0E, 0x917D5BB7),
+    ("fixture", 2, b"", 0x00000000, 0x00000000),
     ("fixture", 3, b"a", 0xE74B53E2, 0x00000000),
     ("fixture", 3, b"abcd", 0xFAFA23CA, 0x00000000),
     ("fixture", 3, b"abcde", 0x2297902C, 0x00000000),
@@ -164,6 +174,7 @@ const VECTORS: &[(&str, u8, &[u8], u32, u32)] = &[
     ("fixture", 3, b"caf\xc3\xa9", 0x6DDE4230, 0x00000000),
     ("fixture", 3, b"\xff\x80\x7f", 0xB32A9ECC, 0x00000000),
     ("fixture", 3, b"file_0123", 0xC08D0086, 0x00000000),
+    ("fixture", 3, b"", 0x00000000, 0x00000000),
     ("fixture", 4, b"a", 0xD1D4380E, 0x832F6DC9),
     ("fixture", 4, b"abcd", 0x787AA7F0, 0x830D603C),
     ("fixture", 4, b"abcde", 0x21E90E84, 0xB3C1681D),
@@ -178,6 +189,7 @@ const VECTORS: &[(&str, u8, &[u8], u32, u32)] = &[
     ("fixture", 4, b"caf\xc3\xa9", 0x393BD250, 0x38A5D475),
     ("fixture", 4, b"\xff\x80\x7f", 0x41856E60, 0x410EA688),
     ("fixture", 4, b"file_0123", 0xE83B032A, 0x19369104),
+    ("fixture", 4, b"", 0x00000000, 0x00000000),
     ("fixture", 5, b"a", 0x52EB669E, 0x95D4D440),
     ("fixture", 5, b"abcd", 0x76D47D16, 0xFB56BE08),
     ("fixture", 5, b"abcde", 0x0FF572A8, 0xFD996CD0),
@@ -192,6 +204,7 @@ const VECTORS: &[(&str, u8, &[u8], u32, u32)] = &[
     ("fixture", 5, b"caf\xc3\xa9", 0xE88D26D0, 0xD5135EBB),
     ("fixture", 5, b"\xff\x80\x7f", 0xAFC9ECB2, 0x36EAC684),
     ("fixture", 5, b"file_0123", 0xB2F38B0E, 0x917D5BB7),
+    ("fixture", 5, b"", 0x00000000, 0x00000000),
 ];
 
 fn seed(name: &str) -> [u32; 4] {
@@ -233,6 +246,7 @@ fn every_version_matches_e2fsprogs() {
 #[test]
 fn live_debugfs_agrees() {
     let debugfs = "debugfs";
+    let mut wrong = Vec::new();
     for &(seed_name, version, name, major, minor) in VECTORS {
         let uuid = if seed_name == "zero" {
             "00000000-0000-0000-0000-000000000000"
@@ -250,10 +264,20 @@ fn live_debugfs_agrees() {
         let text = String::from_utf8_lossy(&out.stdout);
         let want = format!("(minor {minor:#x})");
         let line = text.lines().last().unwrap_or_default();
-        assert!(
-            line.contains(&format!("is {major:#x} ")) && line.ends_with(&want),
-            "table and debugfs disagree for {seed_name} v{version} {:?}: {line}",
-            String::from_utf8_lossy(name)
-        );
+        if !(line.contains(&format!("is {major:#x} ")) && line.ends_with(&want)) {
+            wrong.push(format!(
+                "{seed_name} v{version} {:?}: table ({major:#010x}, {minor:#010x}), debugfs: {line}",
+                String::from_utf8_lossy(name)
+            ));
+        }
     }
+    // Every disagreement at once, not the first: the table is regenerated
+    // from this output, and one row a run is one CI run a row.
+    assert!(
+        wrong.is_empty(),
+        "{} of {} vectors disagree with debugfs:\n{}",
+        wrong.len(),
+        VECTORS.len(),
+        wrong.join("\n")
+    );
 }

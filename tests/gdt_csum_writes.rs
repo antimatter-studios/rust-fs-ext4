@@ -149,7 +149,9 @@ fn gdt_csum_64_byte_descriptors_survive_e2fsck() {
 
 /// One large write that has to spread across several `BLOCK_UNINIT` groups,
 /// then a rename, an unlink and an rmdir, and a small file written first that
-/// must come back byte for byte.
+/// must come back byte for byte. So must the large one, read by `debugfs`:
+/// `e2fsck` checks the metadata and never looks inside a data block, so a
+/// block written to the wrong place, or not at all, passes it (#331).
 ///
 /// A 32 MiB write on 1 KiB blocks does not fit in one 8 MiB group, so the
 /// allocator stages several runs, and an extent-tree block, into groups whose
@@ -161,6 +163,7 @@ fn gdt_csum_64_byte_descriptors_survive_e2fsck() {
 /// size, with no uninit group for the write to reach.
 fn large_write_and_check(tag: &str, sixty_four: bool, block_size: u32) {
     let path = make_sized_volume(tag, sixty_four, block_size, 128);
+    let large = block_indexed(32 * 1024 * 1024, block_size);
     {
         let fs = Filesystem::mount(Arc::new(FileDevice::open_rw(&path).expect("open_rw")))
             .expect("mount");
@@ -176,7 +179,7 @@ fn large_write_and_check(tag: &str, sixty_four: bool, block_size: u32) {
         fs.apply_mkdir("/temporary", 0o755).expect("mkdir");
         fs.apply_create("/temporary/stage.bin", 0o600)
             .expect("create");
-        fs.apply_pwrite("/temporary/stage.bin", 0, &vec![0x5a; 32 * 1024 * 1024])
+        fs.apply_pwrite("/temporary/stage.bin", 0, &large)
             .expect("pwrite 32 MiB");
         fs.apply_rename("/temporary/stage.bin", "/large.bin", false)
             .expect("rename");
@@ -199,7 +202,58 @@ fn large_write_and_check(tag: &str, sixty_four: bool, block_size: u32) {
         "[{tag}] debugfs read back something else: {}",
         String::from_utf8_lossy(&out.stderr)
     );
+    let out = oracle("debugfs")
+        .args(["-R", "cat /large.bin", &path])
+        .output();
+    assert_eq!(
+        out.stdout.len(),
+        large.len(),
+        "[{tag}] debugfs read {} bytes of /large.bin, not {}: {}",
+        out.stdout.len(),
+        large.len(),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    if let Some(block) = first_differing_block(&out.stdout, &large, block_size) {
+        panic!(
+            "[{tag}] debugfs read back a different /large.bin: block {block} of {} holds {}",
+            large.len() / block_size as usize,
+            describe_block(&out.stdout, block, block_size)
+        );
+    }
     let _ = std::fs::remove_file(&path);
+}
+
+/// `len` bytes in which every filesystem block says which block it is: the
+/// block index, little-endian, repeated across the block. A block written to
+/// the wrong place, written twice or not written at all reads back as the
+/// wrong index or as zeros, which a constant fill cannot show.
+fn block_indexed(len: usize, block_size: u32) -> Vec<u8> {
+    let block_size = block_size as usize;
+    let mut data = vec![0u8; len];
+    for (index, block) in data.chunks_mut(block_size).enumerate() {
+        let tag = (index as u32 + 1).to_le_bytes();
+        for word in block.chunks_mut(4) {
+            word.copy_from_slice(&tag[..word.len()]);
+        }
+    }
+    data
+}
+
+fn first_differing_block(got: &[u8], want: &[u8], block_size: u32) -> Option<usize> {
+    got.chunks(block_size as usize)
+        .zip(want.chunks(block_size as usize))
+        .position(|(got, want)| got != want)
+}
+
+/// What a block of the read-back holds, in the pattern's own terms.
+fn describe_block(data: &[u8], block: usize, block_size: u32) -> String {
+    let bytes = &data[block * block_size as usize..][..block_size as usize];
+    let first = u32::from_le_bytes(bytes[..4].try_into().unwrap());
+    if first == 0 {
+        "zeros, as if never written".to_string()
+    } else {
+        format!("the pattern of block {}", first - 1)
+    }
 }
 
 #[test]

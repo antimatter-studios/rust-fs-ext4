@@ -359,6 +359,21 @@ mod tests {
         assert!(plan.writes.is_empty());
     }
 
+    /// The overflow branch itself. `blocks_count` and the device size are
+    /// both `u64::MAX` so neither bounds check can refuse the block first:
+    /// only `checked_mul` stands between this block and a byte offset that
+    /// wraps to 0, the boot sector and the primary superblock.
+    #[test]
+    fn byte_offset_in_refuses_a_block_whose_offset_wraps() {
+        let block_size = 4096u32;
+        let wraps_to_zero = u64::MAX / block_size as u64 + 1;
+        assert_eq!(wraps_to_zero.wrapping_mul(block_size as u64), 0);
+        match byte_offset_in(wraps_to_zero, u64::MAX, block_size, u64::MAX) {
+            Err(Error::Corrupt(msg)) => assert_eq!(msg, "journal: block offset overflows"),
+            other => panic!("block {wraps_to_zero} was not refused as an overflow: {other:?}"),
+        }
+    }
+
     #[test]
     fn replay_summary_mirrors_jsb() {
         let jsb = JournalSuperblock {
