@@ -1,7 +1,7 @@
 //! A directory grown to a depth-2 extent tree puts every tree node on its
 //! own block (#164).
 //!
-//! `extend_dir_and_add_entry_deep` plans every block it needs before it
+//! `buffer_extend_dir_deep` plans every block it needs before it
 //! commits any of them, and the planner reads the bitmap off the device,
 //! so each plan has to be told which blocks the earlier ones took
 //! (`alloc::reserved_blocks`). Without that, the plan that promotes the

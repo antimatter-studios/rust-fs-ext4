@@ -262,6 +262,22 @@ Not caught by the compiler — the same source builds and behaves differently:
   `tests/sparse_super2_backup_bgs_oracle.rs` checks the field against
   `dumpe2fs -h` and a filled volume against `e2fsck -fn` through both the
   primary and the last group's backup superblock (#318).
+- **Splitting a full htree leaf is one transaction (#302).** The new right
+  leaf was appended first — allocated, mapped, written and the directory's
+  size grown with raw device writes and a commit of its own — and the
+  halved leaf and the parent's routing entry were committed after it. A
+  crash or an I/O error between the two left an allocated, mapped block
+  the index never referenced, which e2fsck reports as a damaged index, on
+  journaled volumes too. The allocation, the extent insert, the inode's
+  size, both leaves and the routing entry are now staged into one
+  `BlockBuffer` and committed once, and so is the rest of the operation
+  that needed the room: the new file's inode for a create, mknod or
+  symlink, the link count for a link or mkdir, and the rest of a rename.
+  Growing a directory with no index is one transaction the same way. Only
+  dropping an index that cannot route another leaf still commits early.
+  `tests/htree_split_write_cut.rs` cuts the writes of a splitting create
+  after each index and requires `e2fsck -fn` to accept every remounted
+  image; 29 of 46 cuts were rejected before.
 
 - **A revoke block's record count is bounded by the block, not clamped to
   it.** Replay read records up to `min(r_count, block length)`, so on a
