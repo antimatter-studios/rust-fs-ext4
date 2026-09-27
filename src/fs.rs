@@ -331,7 +331,12 @@ impl Filesystem {
             if self.sb.last_orphan != 0 {
                 return Err(Error::Corrupt("orphan recovery remains incomplete"));
             }
-            self.set_recovery_marker(false)?;
+            // The marker is the release's commit point, so it is cleared
+            // last: a failure before it leaves the volume still flagged
+            // for recovery rather than claiming a release that did not
+            // finish (#299).
+            self.restore_state_found()?;
+            return self.set_recovery_marker(false);
         }
         self.restore_state_found()
     }
