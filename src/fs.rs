@@ -4790,8 +4790,9 @@ impl Filesystem {
                 self.dev.as_ref(),
                 self.sb.block_size(),
                 // MUTATION PROBE (#331), never to be merged: the 32 MiB write
-                // puts logical blocks 5 and 6 in each other's place.
-                match (data.len() == 32 * 1024 * 1024, cur_lb) {
+                // (the first chunk of /temporary/stage.bin) puts logical
+                // blocks 5 and 6 in each other's place.
+                match (path == "/temporary/stage.bin", cur_lb) {
                     (true, 5) => 6,
                     (true, 6) => 5,
                     (_, other) => other,
