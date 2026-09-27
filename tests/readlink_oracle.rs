@@ -50,12 +50,8 @@ fn debugfs_stat(image: &str, path: &str) -> String {
         .arg("-R")
         .arg(format!("stat {path}"))
         .arg(image)
-        .output();
-    assert!(
-        out.status.success(),
-        "debugfs stat {path}: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+        .judged()
+        .clean(&format!("debugfs stat {path}"));
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
@@ -119,16 +115,12 @@ fn symlinks_either_side_of_the_i_block_boundary_match_debugfs() {
         .iter()
         .map(|(link, target)| format!("symlink {link} {target}\n"))
         .collect();
-    let out = oracle("debugfs")
+    oracle("debugfs")
         .args(["-w", "-f", "-"])
         .arg(&image)
         .stdin(script)
-        .output();
-    assert!(
-        out.status.success(),
-        "debugfs symlink: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+        .judged()
+        .clean("debugfs symlink");
 
     let fs = mount(&image);
     for (link, target) in &targets {

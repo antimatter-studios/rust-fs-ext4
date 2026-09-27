@@ -59,9 +59,11 @@ fn journal_sequence(fs: &Filesystem) -> u32 {
 fn dump(image: &str, path: &str) -> Vec<u8> {
     let dumped = format!("{image}.dump");
     let _ = std::fs::remove_file(&dumped);
-    let (code, log) = run("debugfs", &["-R", &format!("dump {path} {dumped}"), image]);
-    assert_eq!(code, Some(0), "{log}");
-    let got = std::fs::read(&dumped).unwrap_or_else(|e| panic!("debugfs dump: {e}: {log}"));
+    fs_ext4_test_support::oracle("debugfs")
+        .args(["-R", &format!("dump {path} {dumped}"), image])
+        .judged()
+        .clean("debugfs dump");
+    let got = std::fs::read(&dumped).unwrap_or_else(|e| panic!("debugfs dump: {e}"));
     let _ = std::fs::remove_file(&dumped);
     got
 }
@@ -110,8 +112,7 @@ fn large_pwrites_cut_to_the_journal_read_back_through_debugfs() {
         );
     }
 
-    let (code, log) = run("e2fsck", &["-fn", &image]);
-    assert_eq!(code, Some(0), "{log}");
+    fs_ext4_test_support::assert_e2fsck_clean(&image, "e2fsck -fn");
     assert!(
         dump(&image, "/two.bin") == two,
         "debugfs read back different bytes for /two.bin"

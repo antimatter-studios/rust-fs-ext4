@@ -28,8 +28,18 @@ fn command(program: &str, args: &[&str]) -> Output {
         .output()
 }
 
+/// `program` must succeed; a reporting tool (debugfs, dumpe2fs) must also
+/// have carried out the request and found nothing wrong (#280).
 fn successful(program: &str, args: &[&str]) -> String {
-    let output = command(program, args);
+    let output = if fs_ext4_test_support::Judge::of(program).is_some() {
+        fs_ext4_test_support::oracle(program)
+            .args(args)
+            .env("LC_ALL", "C")
+            .judged()
+            .clean(program)
+    } else {
+        command(program, args)
+    };
     assert!(output.status.success(), "{program}: {output:?}");
     String::from_utf8(output.stdout).expect("tool output")
 }

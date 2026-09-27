@@ -64,8 +64,10 @@ fn fresh_image(tag: &str) -> String {
     let (code, log) = run("debugfs", &["-w", "-f", &script, &image]);
     let _ = std::fs::remove_file(&script);
     assert_eq!(code, Some(0), "{log}");
-    let (code, log) = run("e2fsck", &["-fy", &image]);
-    assert!(matches!(code, Some(0 | 1)), "{log}");
+    fs_ext4_test_support::oracle("e2fsck")
+        .args(["-fy", &image])
+        .judged()
+        .repaired("e2fsck -fy");
     let (_, log) = run("dumpe2fs", &["-h", &image]);
     assert!(log.contains("journal_checksum_v3"), "{log}");
     image
@@ -104,9 +106,9 @@ fn file_of(image: &str, path: &str, blocks: usize) -> Vec<u64> {
     }
     let out = oracle("debugfs")
         .args(["-R", &format!("blocks {path}"), image])
-        .output();
-    let log = String::from_utf8_lossy(&out.stderr);
-    assert_eq!(out.status.code(), Some(0), "debugfs blocks: {log}");
+        .judged()
+        .clean("debugfs blocks");
+    let log = String::from_utf8_lossy(&out.stdout).into_owned();
     let map: Vec<u64> = String::from_utf8_lossy(&out.stdout)
         .split_whitespace()
         .map(|n| n.parse().unwrap_or_else(|e| panic!("{n}: {e}: {log}")))
@@ -119,9 +121,11 @@ fn file_of(image: &str, path: &str, blocks: usize) -> Vec<u64> {
 fn dump(image: &str, path: &str) -> Vec<u8> {
     let dumped = format!("{image}.dump");
     let _ = std::fs::remove_file(&dumped);
-    let (code, log) = run("debugfs", &["-R", &format!("dump {path} {dumped}"), image]);
-    assert_eq!(code, Some(0), "{log}");
-    let got = std::fs::read(&dumped).unwrap_or_else(|e| panic!("debugfs dump: {e}: {log}"));
+    fs_ext4_test_support::oracle("debugfs")
+        .args(["-R", &format!("dump {path} {dumped}"), image])
+        .judged()
+        .clean("debugfs dump");
+    let got = std::fs::read(&dumped).unwrap_or_else(|e| panic!("debugfs dump: {e}"));
     let _ = std::fs::remove_file(&dumped);
     got
 }
@@ -223,8 +227,10 @@ fn a_file_shaped_like_a_transaction_is_not_replayed_as_one() {
     let crate_spare = read_block(&copy, SPARE);
     let _ = std::fs::remove_file(&copy);
 
-    let (code, log) = run("e2fsck", &["-fy", &image]);
-    assert!(matches!(code, Some(0 | 1)), "{log}");
+    let log = fs_ext4_test_support::oracle("e2fsck")
+        .args(["-fy", &image])
+        .judged()
+        .repaired("e2fsck -fy");
     assert!(
         read_block(&image, SPARE) == pattern(9),
         "e2fsck did not replay the real transaction: {log}"
@@ -233,8 +239,7 @@ fn a_file_shaped_like_a_transaction_is_not_replayed_as_one() {
         dump(&image, "/log.bin") == contents.concat(),
         "e2fsck replayed the file's own contents as a transaction: {log}"
     );
-    let (code, log) = run("e2fsck", &["-fn", &image]);
-    assert_eq!(code, Some(0), "{log}");
+    fs_ext4_test_support::assert_e2fsck_clean(&image, "e2fsck -fn");
 
     assert!(crate_spare == pattern(9), "this crate did not replay B");
     assert!(
@@ -265,13 +270,14 @@ fn e2fsck_replays_an_escaped_block_with_its_magic() {
     }
     assert!(read_block(&image, file[0]) != contents[0], "cut too late");
 
-    let (code, log) = run("e2fsck", &["-fy", &image]);
-    assert!(matches!(code, Some(0 | 1)), "{log}");
+    let log = fs_ext4_test_support::oracle("e2fsck")
+        .args(["-fy", &image])
+        .judged()
+        .repaired("e2fsck -fy");
     assert!(
         dump(&image, "/magic.bin") == contents.concat(),
         "e2fsck did not replay the file byte for byte: {log}"
     );
-    let (code, log) = run("e2fsck", &["-fn", &image]);
-    assert_eq!(code, Some(0), "{log}");
+    fs_ext4_test_support::assert_e2fsck_clean(&image, "e2fsck -fn");
     let _ = std::fs::remove_file(&image);
 }

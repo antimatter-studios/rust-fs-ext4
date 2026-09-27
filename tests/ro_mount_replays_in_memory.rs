@@ -194,13 +194,8 @@ fn a_read_only_mount_reads_what_the_journal_committed() {
 fn debugfs_root_names(image: &str) -> Vec<Vec<u8>> {
     let out = fs_ext4_test_support::oracle("debugfs")
         .args(["-R", "ls -p /", image])
-        .output();
-    assert_eq!(
-        out.status.code(),
-        Some(0),
-        "debugfs ls: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+        .judged()
+        .clean("debugfs ls");
     // `ls -p` prints `/ino/mode/uid/gid/name/size/` per entry.
     let mut names: Vec<Vec<u8>> = String::from_utf8_lossy(&out.stdout)
         .lines()
@@ -221,8 +216,10 @@ fn fresh_read_keeps_replayed_blocks_a_read_only_mount_cannot_checkpoint() {
     let image = image_with_committed_mkdir("fresh");
     let recovered = format!("{image}.recovered");
     std::fs::copy(&image, &recovered).unwrap();
-    let (code, log) = run("e2fsck", &["-fy", &recovered]);
-    assert!(matches!(code, Some(0 | 1)), "{log}");
+    fs_ext4_test_support::oracle("e2fsck")
+        .args(["-fy", &recovered])
+        .judged()
+        .repaired("e2fsck -fy");
     let expected = debugfs_root_names(&recovered);
     assert!(
         expected.contains(&b"committed".to_vec()),
