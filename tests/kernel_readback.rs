@@ -399,7 +399,7 @@ sync
         let mut target = vec![0 as std::os::raw::c_char; 256];
         assert_eq!(
             fs_ext4_readlink(fs, link_c.as_ptr(), target.as_mut_ptr(), target.len()),
-            0,
+            "../deeper/written.bin".len() as i32,
             "readlink the symlink the kernel created"
         );
         let target = std::ffi::CStr::from_ptr(target.as_ptr())

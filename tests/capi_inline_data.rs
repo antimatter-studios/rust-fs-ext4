@@ -127,7 +127,7 @@ fn inline_data_symlink_readlink() {
             buf.len(),
         )
     };
-    assert_eq!(rc, 0, "readlink failed: {}", last_err_str());
+    assert_eq!(rc, 16, "readlink failed: {}", last_err_str());
     let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
     assert_eq!(&buf[..end], b"target/path/here");
 

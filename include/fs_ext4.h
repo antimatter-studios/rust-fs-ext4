@@ -371,8 +371,10 @@ int64_t fs_ext4_read_file(fs_ext4_fs_t *fs, const char *path,
 
 /*
  * Read symlink target.
- * Writes null-terminated target into buf (max bufsize bytes).
- * Returns 0 on success.
+ * Writes the null-terminated target into buf (max bufsize bytes, the NUL
+ * included; a longer target is truncated to fit).
+ * Returns the number of target bytes written, not counting the NUL, as
+ * readlink(2) does; -1 on error.
  */
 int fs_ext4_readlink(fs_ext4_fs_t *fs, const char *path,
                          char *buf, size_t bufsize);

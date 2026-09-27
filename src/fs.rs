@@ -1243,6 +1243,41 @@ impl Filesystem {
         Ok((inode, raw))
     }
 
+    /// The target of the symlink at `ino`, exactly as stored and without
+    /// a terminating NUL.
+    ///
+    /// A target shorter than `i_block` (60 bytes) is a fast symlink, held
+    /// inline in `i_block`; a longer one is a slow symlink, held in data
+    /// blocks. That is the boundary the kernel's `ext4_symlink` writes.
+    ///
+    /// `Error::InvalidArgument` when the inode is not a symlink,
+    /// `Error::Corrupt` when it declares a target longer than any path,
+    /// and `Error::Unsupported` when the target is encrypted.
+    pub fn read_link(&self, ino: u32) -> Result<Vec<u8>> {
+        const I_BLOCK_BYTES: u64 = 60;
+        // No path is longer than PATH_MAX. Without this the raw `i_size`
+        // became an allocation: `i_mode = 0xA1FF` with
+        // `i_size = 0x2000_0000_0000_0060` aborted the process.
+        const PATH_MAX: u64 = 4096;
+
+        let (inode, _raw) = self.read_inode_verified(ino)?;
+        if !inode.is_symlink() {
+            return Err(Error::InvalidArgument("not a symlink"));
+        }
+        if inode.size > PATH_MAX {
+            return Err(Error::Corrupt("symlink target is longer than any path"));
+        }
+        // A fast symlink's target is ciphertext too, and never reaches
+        // file_io's refusal (#76).
+        crate::file_io::refuse_encrypted(&inode)?;
+        if inode.size < I_BLOCK_BYTES {
+            return Ok(inode.block[..inode.size as usize].to_vec());
+        }
+        let mut out = vec![0u8; inode.size as usize];
+        crate::file_io::read_verified(self, &inode, ino, 0, inode.size, &mut out)?;
+        Ok(out)
+    }
+
     /// Map a logical block within `inode` to its physical block, choosing
     /// between the extent tree and the legacy direct/indirect scheme based
     /// on `EXT4_EXTENTS_FL`. Returns `None` for sparse holes and (for the

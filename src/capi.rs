@@ -12,7 +12,7 @@
 //! - fs_ext4_dir_next(iter) -> *const dirent
 //! - fs_ext4_dir_close(iter)
 //! - fs_ext4_read_file(fs, ...) -> i64 (extents + inline_data)
-//! - fs_ext4_readlink(fs, path, buf, bufsize) -> int
+//! - fs_ext4_readlink(fs, path, buf, bufsize) -> int (bytes copied, or -1)
 //! - fs_ext4_listxattr(fs, path, buf, bufsize) -> i64
 //! - fs_ext4_getxattr(fs, path, name, buf, bufsize) -> i64
 //! - fs_ext4_last_error() -> *const c_char
@@ -1230,9 +1230,12 @@ pub unsafe extern "C" fn fs_ext4_read_file(
     )
 }
 
-/// Read a symlink target. Returns 0 on success, -1 on failure.
+/// Read a symlink target into `buf`, NUL-terminated. Returns the number of
+/// target bytes copied (not counting the NUL), as `readlink(2)` does, or -1
+/// on failure. A target longer than `bufsize - 1` is truncated to fit.
 /// Handles both fast symlinks (target stored inline in i_block, size < 60 bytes)
-/// and long symlinks (target stored in data blocks, read via file_io).
+/// and long symlinks (target stored in data blocks); see
+/// [`Filesystem::read_link`].
 #[no_mangle]
 pub unsafe extern "C" fn fs_ext4_readlink(
     fs: *mut fs_ext4_fs_t,
@@ -1251,65 +1254,23 @@ pub unsafe extern "C" fn fs_ext4_readlink(
             let fs_ref = &(*fs).fs;
             let path_str = cstr_to_str(path);
 
-            let ino = match resolve_path(fs_ref, path_str) {
-                Ok(n) => n,
+            let target = match resolve_path(fs_ref, path_str).and_then(|ino| fs_ref.read_link(ino))
+            {
+                Ok(t) => t,
                 Err(e) => {
                     set_err_from(&e, &format!("readlink {path_str}"));
                     return -1;
                 }
             };
-            let (inode, _raw) = match fs_ref.read_inode_verified(ino) {
-                Ok(p) => p,
-                Err(e) => {
-                    set_err_from(&e, &format!("read inode {ino}"));
-                    return -1;
-                }
-            };
-            if !inode.is_symlink() {
-                set_err_msg(&format!("readlink {path_str}: not a symlink"), EINVAL);
-                return -1;
-            }
-
-            // Fast symlink: target < 60 bytes, stored inline in i_block.
-            // Long symlink: target stored in data blocks, read via file_io.
-            // A symlink's target is a path, and no path is longer
-            // than PATH_MAX. Without this the raw `i_size` became the
-            // allocation below: a file patched to `i_mode = 0xA1FF`
-            // with `i_size = 0x2000_0000_0000_0060` aborted the process
-            // out of this very function.
-            if inode.size > 4096 {
-                set_last_error(format!(
-                    "readlink {path_str}: target of {} bytes is longer than any path",
-                    inode.size
-                ));
-                return -1;
-            }
-            // A fast symlink's target is ciphertext too, and never reaches
-            // file_io's refusal (#76).
-            if let Err(e) = file_io::refuse_encrypted(&inode) {
-                set_err_from(&e, &format!("readlink {path_str}"));
-                return -1;
-            }
-            let target = if inode.size < 60 {
-                inode.block[..inode.size as usize].to_vec()
-            } else {
-                let mut out = vec![0u8; inode.size as usize];
-                match file_io::read_verified(fs_ref, &inode, ino, 0, inode.size, &mut out) {
-                    Ok(_) => out,
-                    Err(e) => {
-                        set_err_from(&e, &format!("readlink {path_str}"));
-                        return -1;
-                    }
-                }
-            };
 
             // Copy to output buffer with null terminator, truncating if needed.
+            // The target is at most PATH_MAX bytes, so the count fits a c_int.
             let copy_len = target.len().min(bufsize - 1);
             let out = std::slice::from_raw_parts_mut(buf.cast::<u8>(), bufsize);
             out[..copy_len].copy_from_slice(&target[..copy_len]);
             out[copy_len] = 0;
 
-            0
+            copy_len as c_int
         }),
     )
 }

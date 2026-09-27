@@ -165,6 +165,17 @@
 
 ### Fixed
 
+- **`fs_ext4_readlink` returns the target's length, as `readlink(2)`
+  does.** It returned 0 on success, so a caller slicing its buffer by the
+  return value — the `readlink(2)` idiom — got an empty target for every
+  symlink. The return is now the
+  number of target bytes written before the NUL; failure is still -1, so
+  callers testing `< 0` are unaffected, but a caller testing `== 0` for
+  success must test `>= 0`. The target itself is also available from Rust
+  as `Filesystem::read_link`, and `tests/readlink_oracle.rs` checks it
+  against what `debugfs` reports, fast and slow, either side of the
+  60-byte `i_block` boundary (#290).
+
 - **A hole can be punched in a file whose extent tree is deeper than the
   inode.** Punching wrote what survived back into the inode's four inline
   entries and freed every node below, so a punch leaving more than four

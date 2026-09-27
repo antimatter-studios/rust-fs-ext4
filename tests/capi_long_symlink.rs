@@ -74,8 +74,12 @@ fn readlink_to_bytes(fs_handle: *mut fs_ext4_fs_t, linkpath: &str, cap: usize) -
             buf.len(),
         )
     };
-    assert_eq!(rc, 0, "readlink {linkpath} failed: {}", last_err());
+    assert!(rc >= 0, "readlink {linkpath} failed: {}", last_err());
     let nul = buf.iter().position(|&b| b == 0).expect("NUL terminator");
+    assert_eq!(
+        rc as usize, nul,
+        "readlink {linkpath}: return is the target length"
+    );
     buf.truncate(nul);
     buf
 }

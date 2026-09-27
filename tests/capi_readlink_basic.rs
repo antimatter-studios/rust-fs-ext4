@@ -44,7 +44,7 @@ fn readlink_on_basic_link_returns_expected_target() {
             buf.len(),
         )
     };
-    assert_eq!(rc, 0, "readlink failed");
+    assert_eq!(rc, 8, "readlink failed");
 
     let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
     let target = String::from_utf8_lossy(&buf[..end]);
@@ -110,5 +110,47 @@ fn readlink_on_missing_path_sets_enoent() {
     };
     assert_eq!(rc, -1);
     assert_eq!(fs_ext4_last_errno(), 2); // ENOENT
+    unsafe { fs_ext4_umount(fs) };
+}
+
+/// The return value is the target's length, as `readlink(2)` returns it:
+/// a caller that slices its buffer by the return value must get the whole
+/// target, not an empty string (#290).
+#[test]
+fn readlink_returns_the_fast_symlink_target_length_and_bytes() {
+    let fs = mount_fixture();
+    let p = CString::new("/link.txt").unwrap();
+    let mut buf = [0xAAu8; 256];
+    let rc = unsafe {
+        fs_ext4_readlink(
+            fs,
+            p.as_ptr(),
+            buf.as_mut_ptr() as *mut std::ffi::c_char,
+            buf.len(),
+        )
+    };
+    assert_eq!(rc, 8, "readlink must return the target length");
+    assert_eq!(&buf[..rc as usize], b"test.txt");
+    assert_eq!(buf[rc as usize], 0, "target must be NUL-terminated");
+    unsafe { fs_ext4_umount(fs) };
+}
+
+/// A buffer too small for the target gets as much as fits before the NUL,
+/// and the return value counts exactly those bytes.
+#[test]
+fn readlink_into_a_short_buffer_returns_the_bytes_copied() {
+    let fs = mount_fixture();
+    let p = CString::new("/link.txt").unwrap();
+    let mut buf = [0xAAu8; 4];
+    let rc = unsafe {
+        fs_ext4_readlink(
+            fs,
+            p.as_ptr(),
+            buf.as_mut_ptr() as *mut std::ffi::c_char,
+            buf.len(),
+        )
+    };
+    assert_eq!(rc, 3);
+    assert_eq!(&buf, b"tes\0");
     unsafe { fs_ext4_umount(fs) };
 }

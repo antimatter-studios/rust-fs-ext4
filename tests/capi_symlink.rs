@@ -51,12 +51,12 @@ fn symlink_creates_link_with_target() {
     assert_eq!(attr.size, "/etc/hosts".len() as u64);
     assert_eq!(attr.inode, ino);
 
-    // readlink writes the target NUL-terminated into buf; returns 0 on success.
+    // readlink writes the target NUL-terminated into buf; returns its length.
     let mut buf = [0u8; 256];
     let rc =
         unsafe { fs_ext4_readlink(fs_h, link_c.as_ptr(), buf.as_mut_ptr() as *mut _, buf.len()) };
-    assert_eq!(rc, 0, "readlink returned {rc}");
     let nul = buf.iter().position(|&b| b == 0).expect("NUL terminator");
+    assert_eq!(rc as usize, nul, "readlink returned {rc}");
     assert_eq!(&buf[..nul], b"/etc/hosts");
 
     unsafe { fs_ext4_umount(fs_h) };
@@ -85,8 +85,8 @@ fn symlink_survives_remount_with_csum() {
     let mut buf = [0u8; 64];
     let rc =
         unsafe { fs_ext4_readlink(fs2, link_c.as_ptr(), buf.as_mut_ptr() as *mut _, buf.len()) };
-    assert_eq!(rc, 0);
     let nul = buf.iter().position(|&b| b == 0).expect("NUL terminator");
+    assert_eq!(rc as usize, nul);
     assert_eq!(&buf[..nul], b"../relative/path");
     unsafe { fs_ext4_umount(fs2) };
     let _ = fs::remove_file(&img);
@@ -135,8 +135,8 @@ fn symlink_slow_path_target_over_60_bytes_roundtrips() {
     let mut buf = [0u8; 512];
     let rc =
         unsafe { fs_ext4_readlink(fs_h, link_c.as_ptr(), buf.as_mut_ptr() as *mut _, buf.len()) };
-    assert_eq!(rc, 0);
     let nul = buf.iter().position(|&b| b == 0).expect("NUL terminator");
+    assert_eq!(rc as usize, nul);
     assert_eq!(&buf[..nul], long_target.as_bytes());
 
     unsafe { fs_ext4_umount(fs_h) };
@@ -150,8 +150,8 @@ fn symlink_slow_path_target_over_60_bytes_roundtrips() {
     let mut buf = [0u8; 512];
     let rc =
         unsafe { fs_ext4_readlink(fs2, link_c.as_ptr(), buf.as_mut_ptr() as *mut _, buf.len()) };
-    assert_eq!(rc, 0);
     let nul = buf.iter().position(|&b| b == 0).expect("NUL terminator");
+    assert_eq!(rc as usize, nul);
     assert_eq!(&buf[..nul], long_target.as_bytes());
     unsafe { fs_ext4_umount(fs2) };
 
