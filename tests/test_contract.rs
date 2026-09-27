@@ -331,4 +331,26 @@ fn the_scans_recognise_the_shapes_they_refuse() {
     ]
     .concat();
     assert_eq!(announced_skips(&skip).len(), 1);
+
+    // #287: the oracle tools and a mount, run as root on the host, handed
+    // to a privileged shell as one argument. Every scan above reads only
+    // the program a process is spawned with, which here is the escalator.
+    let escape = [
+        "let out = Command",
+        "::new(\"sudo\")\n",
+        "    .args([\"-n\", \"bash\", \"-c\", ",
+        "\"mkfs.ext4 -F x.img && mount -o loop x.img /mnt && e2fsck -fn x.img\"])\n",
+        "    .output();\n",
+    ]
+    .concat();
+    let caught = [
+        direct_tool_spawns(&escape),
+        indirect_spawns(&escape),
+        harness_spawns(&escape),
+    ]
+    .concat();
+    assert!(
+        !caught.is_empty(),
+        "a privileged shell carrying the oracle tools walks past every scan"
+    );
 }
