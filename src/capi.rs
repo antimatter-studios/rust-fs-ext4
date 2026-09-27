@@ -12,7 +12,7 @@
 //! - fs_ext4_dir_next(iter) -> *const dirent
 //! - fs_ext4_dir_close(iter)
 //! - fs_ext4_read_file(fs, ...) -> i64 (extents + inline_data)
-//! - fs_ext4_readlink(fs, path, buf, bufsize) -> int (bytes copied, or -1)
+//! - fs_ext4_readlink(fs, path, buf, bufsize) -> int (target length, or -1)
 //! - fs_ext4_listxattr(fs, path, buf, bufsize) -> i64
 //! - fs_ext4_getxattr(fs, path, name, buf, bufsize) -> i64
 //! - fs_ext4_last_error() -> *const c_char
@@ -46,7 +46,7 @@
 
 use crate::block_io::{BlockDevice, CallbackDevice, FileDevice};
 use crate::dir::{self, DirBlockIter, DirEntryType};
-use crate::error::errno::{EINVAL, EISDIR, ENAMETOOLONG, ENOENT, ENOSYS, ENOTDIR};
+use crate::error::errno::{EINVAL, EISDIR, ENAMETOOLONG, ENOENT, ENOSYS, ENOTDIR, ERANGE};
 use crate::error::{Error, Result};
 use crate::extent;
 use crate::features;
@@ -1230,9 +1230,11 @@ pub unsafe extern "C" fn fs_ext4_read_file(
     )
 }
 
-/// Read a symlink target into `buf`, NUL-terminated. Returns the number of
-/// target bytes copied (not counting the NUL), as `readlink(2)` does, or -1
-/// on failure. A target longer than `bufsize - 1` is truncated to fit.
+/// Read a symlink target into `buf`, NUL-terminated. Returns the target's
+/// length in bytes (not counting the NUL), as `readlink(2)` does, or -1 on
+/// failure with the errno in `fs_ext4_last_errno`. A buffer without room
+/// for the target and its NUL fails with ERANGE and nothing is written:
+/// never a silent truncation.
 /// Handles both fast symlinks (target stored inline in i_block, size < 60 bytes)
 /// and long symlinks (target stored in data blocks); see
 /// [`Filesystem::read_link`].
@@ -1263,14 +1265,23 @@ pub unsafe extern "C" fn fs_ext4_readlink(
                 }
             };
 
-            // Copy to output buffer with null terminator, truncating if needed.
-            // The target is at most PATH_MAX bytes, so the count fits a c_int.
-            let copy_len = target.len().min(bufsize - 1);
-            let out = std::slice::from_raw_parts_mut(buf.cast::<u8>(), bufsize);
-            out[..copy_len].copy_from_slice(&target[..copy_len]);
-            out[copy_len] = 0;
+            let needed = target.len() + 1;
+            if bufsize < needed {
+                set_err_msg(
+                    &format!(
+                        "readlink {path_str}: buffer of {bufsize} bytes is too small, \
+                         {needed} needed (target and NUL)"
+                    ),
+                    ERANGE,
+                );
+                return -1;
+            }
+            let out = std::slice::from_raw_parts_mut(buf.cast::<u8>(), needed);
+            out[..target.len()].copy_from_slice(&target);
+            out[target.len()] = 0;
 
-            copy_len as c_int
+            // The target is at most PATH_MAX bytes, so the length fits a c_int.
+            target.len() as c_int
         }),
     )
 }

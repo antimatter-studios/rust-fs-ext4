@@ -135,22 +135,110 @@ fn readlink_returns_the_fast_symlink_target_length_and_bytes() {
     unsafe { fs_ext4_umount(fs) };
 }
 
-/// A buffer too small for the target gets as much as fits before the NUL,
-/// and the return value counts exactly those bytes.
-#[test]
-fn readlink_into_a_short_buffer_returns_the_bytes_copied() {
-    let fs = mount_fixture();
-    let p = CString::new("/link.txt").unwrap();
-    let mut buf = [0xAAu8; 4];
-    let rc = unsafe {
+fn readlink_into(fs: *mut fs_ext4_fs_t, path: &str, buf: &mut [u8]) -> i32 {
+    let p = CString::new(path).unwrap();
+    unsafe {
         fs_ext4_readlink(
             fs,
             p.as_ptr(),
             buf.as_mut_ptr() as *mut std::ffi::c_char,
             buf.len(),
         )
-    };
-    assert_eq!(rc, 3);
-    assert_eq!(&buf, b"tes\0");
+    }
+}
+
+/// A buffer with room for the target but not its NUL is refused with
+/// ERANGE, and nothing is written: never a silent truncation.
+#[test]
+fn readlink_one_byte_short_for_the_nul_is_erange_and_writes_nothing() {
+    let fs = mount_fixture();
+    let mut buf = [0xAAu8; 8]; // "test.txt" is 8 bytes; the NUL needs a 9th
+    let rc = readlink_into(fs, "/link.txt", &mut buf);
+    assert_eq!(rc, -1, "a truncated target must not be returned");
+    assert_eq!(fs_ext4_last_errno(), 34, "errno must be ERANGE");
+    assert_eq!(buf, [0xAAu8; 8], "buf must be untouched");
+    let err = unsafe { CStr::from_ptr(fs_ext4_last_error()) }
+        .to_string_lossy()
+        .into_owned();
+    assert!(
+        err.contains('9'),
+        "the message must name the size needed: {err}"
+    );
     unsafe { fs_ext4_umount(fs) };
+}
+
+/// Any smaller buffer is refused the same way.
+#[test]
+fn readlink_into_a_short_buffer_is_erange_and_writes_nothing() {
+    let fs = mount_fixture();
+    let mut buf = [0xAAu8; 4];
+    let rc = readlink_into(fs, "/link.txt", &mut buf);
+    assert_eq!(rc, -1);
+    assert_eq!(fs_ext4_last_errno(), 34);
+    assert_eq!(buf, [0xAAu8; 4]);
+    unsafe { fs_ext4_umount(fs) };
+}
+
+/// Target plus NUL exactly fills the buffer: success.
+#[test]
+fn readlink_into_an_exact_fit_buffer_succeeds() {
+    let fs = mount_fixture();
+    let mut buf = [0xAAu8; 9];
+    let rc = readlink_into(fs, "/link.txt", &mut buf);
+    assert_eq!(rc, 8);
+    assert_eq!(&buf, b"test.txt\0");
+    unsafe { fs_ext4_umount(fs) };
+}
+
+#[test]
+fn readlink_with_a_null_buffer_is_einval() {
+    let fs = mount_fixture();
+    let p = CString::new("/link.txt").unwrap();
+    let rc = unsafe { fs_ext4_readlink(fs, p.as_ptr(), std::ptr::null_mut(), 64) };
+    assert_eq!(rc, -1);
+    assert_eq!(fs_ext4_last_errno(), 22);
+    unsafe { fs_ext4_umount(fs) };
+}
+
+/// A symlink declaring a target longer than any path fails with errno
+/// set, not only a message.
+#[test]
+fn readlink_of_an_oversize_target_sets_errno() {
+    use fs_ext4::block_io::{BlockDevice, FileDevice};
+    use fs_ext4::fs::Filesystem;
+    use std::sync::Arc;
+
+    let src = fs_ext4_test_support::fixture(env!("CARGO_MANIFEST_DIR"), IMAGE);
+    let img =
+        fs_ext4_test_support::temp_path!("fs_ext4_readlink_oversize_{}.img", std::process::id());
+    std::fs::copy(&src, &img).expect("copy fixture");
+    {
+        let dev: Arc<dyn BlockDevice> = Arc::new(FileDevice::open_rw(&img).expect("open_rw"));
+        let fs = Filesystem::mount(dev.clone()).expect("mount");
+        let mut reader = |ino: u32| fs.read_inode_verified(ino).map(|(inode, _)| inode);
+        let ino =
+            fs_ext4::path::lookup(dev.as_ref(), &fs.sb, &mut reader, "/link.txt").expect("lookup");
+        let (inode, mut raw) = fs.read_inode_verified(ino).expect("inode");
+        raw[0x6C..0x70].copy_from_slice(&1u32.to_le_bytes()); // i_size_high: 4 GiB + 8
+        if let Some((lo, hi)) = fs.csum.compute_inode_checksum(ino, inode.generation, &raw) {
+            raw[0x7C..0x7E].copy_from_slice(&lo.to_le_bytes());
+            raw[0x82..0x84].copy_from_slice(&hi.to_le_bytes());
+        }
+        fs.write_inode_raw(ino, &raw).expect("write inode");
+        dev.flush().expect("flush");
+    }
+    let c = CString::new(img.as_str()).unwrap();
+    let fs = unsafe { fs_ext4_mount(c.as_ptr()) };
+    assert!(!fs.is_null());
+    let mut buf = [0xAAu8; 64];
+    let rc = readlink_into(fs, "/link.txt", &mut buf);
+    assert_eq!(rc, -1);
+    assert_eq!(fs_ext4_last_errno(), 5, "errno must be set (EIO)");
+    let err = unsafe { CStr::from_ptr(fs_ext4_last_error()) }
+        .to_string_lossy()
+        .into_owned();
+    assert!(err.contains("longer than any path"), "err was: {err}");
+    assert_eq!(buf, [0xAAu8; 64]);
+    unsafe { fs_ext4_umount(fs) };
+    std::fs::remove_file(&img).ok();
 }

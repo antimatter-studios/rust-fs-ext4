@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+### Breaking
+
+- **`fs_ext4_readlink` returns the target's length, and refuses a buffer
+  it would have to truncate.** It returned 0 on success, so a caller
+  slicing its buffer by the return value, as `readlink(2)` callers do, got
+  an empty target for every symlink (#290). On success it now writes the
+  target and a NUL and returns the target's length in bytes, not counting
+  the NUL. A buffer smaller than length + 1 fails with -1 and errno
+  `ERANGE`, and nothing is written to it. The message names the size
+  needed. Unlike `readlink(2)`, the target is never silently truncated.
+  Every other failure is -1 with the errno set, including a target
+  declared longer than any path, which used to set only the message.
+  **Callers that test `== 0` for success must test `>= 0`**, and a caller
+  that relied on truncation must size its buffer or handle `ERANGE`.
+  The target is also available from Rust as `Filesystem::read_link`.
+  `tests/readlink_oracle.rs` checks it against what `debugfs` reports,
+  for fast and slow links on either side of the 60-byte `i_block` boundary.
+
 ### Added
 
 - **The parsers are fuzzed, on two tiers.** ext4 is the widest parser
@@ -164,17 +182,6 @@
   `test-disks/_vm-builder.sh` is now `test-disks/guest-build-images.sh`.
 
 ### Fixed
-
-- **`fs_ext4_readlink` returns the target's length, as `readlink(2)`
-  does.** It returned 0 on success, so a caller slicing its buffer by the
-  return value — the `readlink(2)` idiom — got an empty target for every
-  symlink. The return is now the
-  number of target bytes written before the NUL; failure is still -1, so
-  callers testing `< 0` are unaffected, but a caller testing `== 0` for
-  success must test `>= 0`. The target itself is also available from Rust
-  as `Filesystem::read_link`, and `tests/readlink_oracle.rs` checks it
-  against what `debugfs` reports, fast and slow, either side of the
-  60-byte `i_block` boundary (#290).
 
 - **A hole can be punched in a file whose extent tree is deeper than the
   inode.** Punching wrote what survived back into the inode's four inline

@@ -145,6 +145,7 @@ pub mod errno {
     pub const EISDIR: i32 = 21;
     pub const EINVAL: i32 = 22;
     pub const EROFS: i32 = 30;
+    pub const ERANGE: i32 = 34;
     pub const ENOSPC: i32 = 28;
     pub const ENAMETOOLONG: i32 = 63; // macOS POSIX value
     pub const ENOTSUP: i32 = 45;
