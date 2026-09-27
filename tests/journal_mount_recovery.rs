@@ -448,3 +448,84 @@ fn finish_after_a_failed_journal_operation_issues_no_device_io() {
     );
     fixture.linux_recover(&image);
 }
+
+/// `dumpe2fs -h`'s verdict on the two flags a release changes: whether
+/// `needs_recovery` is set, and whether the state reads `clean`.
+fn release_flags(path: &Path) -> (bool, bool) {
+    let header = successful("dumpe2fs", &["-h", path.to_str().unwrap()]);
+    let field = |name: &str| {
+        header
+            .lines()
+            .find_map(|line| line.strip_prefix(name))
+            .unwrap_or_else(|| panic!("dumpe2fs -h printed no {name}: {header}"))
+            .trim()
+            .to_string()
+    };
+    let features = field("Filesystem features:");
+    let state = field("Filesystem state:");
+    (
+        features.split_whitespace().any(|f| f == "needs_recovery"),
+        state == "clean",
+    )
+}
+
+/// Mount, write (which clears the volume's clean state), then `finish` on a
+/// device that fails from the `fail_at`-th device event of `finish` onward.
+/// Returns whether `finish` succeeded and how many events it issued.
+fn interrupted_finish(path: &Path, fail_at: usize, writeback: bool) -> (bool, usize) {
+    let device = Arc::new(InterruptedDevice {
+        inner: FileDevice::open_rw(path.to_str().unwrap()).unwrap(),
+        fail_at: AtomicUsize::new(usize::MAX),
+        event: AtomicUsize::new(0),
+        reads: AtomicUsize::new(0),
+        writeback,
+        pending: Mutex::new(Vec::new()),
+    });
+    let mut mounted = Filesystem::mount_recovering(device.clone()).expect("checked mount");
+    mounted.apply_pwrite("/oracle", 0, b"release").unwrap();
+    mounted.flush().unwrap();
+    let start = device.event.load(Ordering::SeqCst);
+    device
+        .fail_at
+        .store(start.saturating_add(fail_at), Ordering::SeqCst);
+    let result = mounted.finish();
+    (result.is_ok(), device.event.load(Ordering::SeqCst) - start)
+}
+
+/// The recovery marker is the commit point of a release (#299): while it is
+/// clear, the next owner takes the volume as properly put away. So a
+/// `finish` that fails at any write or flush must leave either the marker
+/// still set or the release complete, never the marker clear over a state
+/// that was not restored. Both durability models, flags read by dumpe2fs.
+#[test]
+fn a_failed_finish_never_clears_the_recovery_marker_before_the_release_is_complete() {
+    let fixture = Fixture::new(false);
+    for writeback in [false, true] {
+        let baseline = fixture.copy(&format!("release-baseline-{writeback}"));
+        let (success, events) = interrupted_finish(&baseline, usize::MAX, writeback);
+        assert!(success, "uninterrupted finish");
+        assert!(events >= 4, "finish must write and flush both flags");
+        assert_eq!(
+            release_flags(&baseline),
+            (false, true),
+            "a completed release: marker clear, state clean"
+        );
+        fixture.linux_check(&baseline);
+        for fail_at in 0..events {
+            let image = fixture.copy(&format!("release-interrupted-{writeback}-{fail_at}"));
+            let (success, _) = interrupted_finish(&image, fail_at, writeback);
+            assert!(
+                !success,
+                "I/O failure at finish event {fail_at} must not claim a clean release"
+            );
+            let (needs_recovery, clean) = release_flags(&image);
+            assert!(
+                needs_recovery || clean,
+                "finish failed at event {fail_at} (writeback={writeback}) and left \
+                 needs_recovery clear over a state that is not clean: the next owner \
+                 cannot tell the release was incomplete"
+            );
+            fixture.linux_recover(&image);
+        }
+    }
+}
