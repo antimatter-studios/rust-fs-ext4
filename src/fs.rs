@@ -382,14 +382,18 @@ impl Filesystem {
     pub fn fresh_read(&mut self) -> Result<()> {
         self.flush()?;
         // Unmanaged writable mounts also use the immediate-checkpoint writer.
+        // Pinned blocks are released only once the on-disk journal is proven
+        // checkpointed. Without a writer nothing was checkpointed: a read-only
+        // mount's replayed blocks exist only in the cache, so they stay pinned
+        // and `invalidate_cache` refuses rather than serve pre-replay bytes.
         if self.journal.is_some() {
             let jsb =
                 crate::jbd2::read_superblock(self)?.ok_or(Error::Corrupt("journal disappeared"))?;
             if !jsb.is_clean() || jsb.errno != 0 {
                 return Err(Error::Corrupt("journal is not checkpointed"));
             }
+            self.dev.unpin_all();
         }
-        self.dev.unpin_all();
         self.dev.invalidate_cache()?;
         self.refresh_metadata()
     }
