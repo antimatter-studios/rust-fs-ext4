@@ -2763,14 +2763,15 @@ impl Filesystem {
     ///
     /// The kernel refuses this on metadata_csum volumes because it cannot
     /// trust a broken index; here the index is intact and the tails are
-    /// rebuilt. The flag is cleared first: a crash before the blocks are
-    /// rewritten leaves a linear directory e2fsck can re-tail, where the
-    /// other order would leave an index whose root no longer parses.
+    /// rebuilt.
     ///
-    /// Not journaled: the extend path commits the caller's transaction
-    /// before calling it.
-    fn drop_htree_index(&self, dir_ino: u32) -> Result<()> {
-        let (inode, mut raw) = self.read_inode_verified(dir_ino)?;
+    /// Staged into `buf`, the caller's open transaction, so the drop lands
+    /// in the same commit as the create, link or rename that forced it
+    /// (#347). It used to be written straight to the device after an early
+    /// commit of `buf`, and a cut inside it left a half-converted index, or
+    /// an inode the directory never gained a name for.
+    fn buffer_drop_htree_index(&self, buf: &mut BlockBuffer, dir_ino: u32) -> Result<()> {
+        let (inode, mut raw) = self.buffered_inode_verified(buf, dir_ino)?;
         if inode.flags & crate::inode::InodeFlags::INDEX.bits() == 0 {
             return Ok(());
         }
@@ -2783,7 +2784,7 @@ impl Filesystem {
         // The root and every interior node, by physical block, each
         // checked before it is converted and re-tailed.
         let root_phys = physical(0)?;
-        let root = self.read_block(root_phys)?;
+        let root = self.buffered_block(buf, root_phys)?;
         self.check_dx_block(dir_ino, &inode, &root, true)?;
         let mut nodes = Vec::new();
         if let (Ok(info), Ok((_, entries))) = (
@@ -2795,7 +2796,7 @@ impl Filesystem {
                 let mut next = Vec::new();
                 for logical in level {
                     let phys = physical(u64::from(logical))?;
-                    let block = self.read_block(phys)?;
+                    let block = self.buffered_block(buf, phys)?;
                     self.check_dx_block(dir_ino, &inode, &block, false)?;
                     let (_, entries) = crate::htree::parse_node_entries(&block)?;
                     next.extend(entries.iter().map(|e| e.block));
@@ -2805,36 +2806,21 @@ impl Filesystem {
             }
         }
 
-        let flags = inode.flags & !crate::inode::InodeFlags::INDEX.bits();
-        raw[0x20..0x24].copy_from_slice(&flags.to_le_bytes());
-        if self.csum.enabled {
-            if let Some((lo, hi)) =
-                self.csum
-                    .compute_inode_checksum(dir_ino, inode.generation, &raw)
-            {
-                raw[0x7C..0x7E].copy_from_slice(&lo.to_le_bytes());
-                if raw.len() >= 0x84 {
-                    raw[0x82..0x84].copy_from_slice(&hi.to_le_bytes());
-                }
-            }
-        }
-        self.write_inode_raw(dir_ino, &raw)?;
-        self.dev.flush()?;
-
         if self.csum.enabled {
             // Each block, with the offset of the record that spans to its end.
             let spanning =
                 std::iter::once((root_phys, 12)).chain(nodes.into_iter().map(|p| (p, 0)));
             for (phys, at) in spanning {
-                let mut block = self.read_block(phys)?;
+                let block = buf.get_mut(self, phys)?;
                 block[at + 4..at + 6].copy_from_slice(&((bs - at - 12) as u16).to_le_bytes());
                 self.csum
-                    .patch_dir_entry_tail(dir_ino, inode.generation, &mut block);
-                self.dev.write_at(phys * bs as u64, &block)?;
+                    .patch_dir_entry_tail(dir_ino, inode.generation, block);
             }
-            self.dev.flush()?;
         }
-        Ok(())
+
+        let flags = inode.flags & !crate::inode::InodeFlags::INDEX.bits();
+        raw[0x20..0x24].copy_from_slice(&flags.to_le_bytes());
+        self.buffer_write_dir_inode(buf, dir_ino, inode.generation, &mut raw)
     }
 
     /// Commit a `BlockBuffer` atomically. Routes through the journal
@@ -5407,27 +5393,13 @@ impl Filesystem {
     ///       in the same buffer; if that drops it to zero the inode's
     ///       extents and slot are freed in the same atomic commit.
     ///
-    /// # Atomicity, and the one place it does not hold
+    /// # Atomicity
     ///
     /// Both paths stage their work into a single [`BlockBuffer`] and
     /// commit it through the journal, so a crash either applies the
     /// whole rename or none of it. That includes growing the destination
-    /// directory, and splitting a full leaf of its htree index (#302).
-    ///
-    /// **Except when the destination is indexed and its index has to be
-    /// dropped** (the leaf is full and the index has no room to route a
-    /// new one). Dropping the index is not journaled, so
-    /// `extend_dir_and_add_entry` commits what the buffer held before
-    /// it, and the rest of the rename lands in a second commit:
-    ///
-    /// - On the overwrite path, the early commit has already removed
-    ///   dst's directory entry. A crash there leaves dst's name gone
-    ///   and src still present: the file that was at dst is
-    ///   unreachable, and src has not moved.
-    /// - On the no-overwrite path, the early commit is empty, so a
-    ///   crash in the drop leaves the filesystem as it was — but a
-    ///   crash *after* the growth commits leaves both names pointing at
-    ///   src's inode with a link count of one.
+    /// directory, splitting a full leaf of its htree index (#302), and
+    /// dropping that index when it has no room to route a new leaf (#347).
     pub fn apply_rename(&self, src: &str, dst: &str, replace_if_exists: bool) -> Result<()> {
         self.refuse_write()?;
         if src == dst {
@@ -5702,9 +5674,8 @@ impl Filesystem {
         // ===================================================================
         // Multi-block transaction: insert dst entry + remove src entry +
         // (cross-parent dir) update .. + adjust parent nlinks. Atomic so
-        // a crash either fully renames or leaves the original — UNLESS
-        // the destination's htree index has to be dropped, which commits
-        // this buffer early. See the "Atomicity" section on this function.
+        // a crash either fully renames or leaves the original, including
+        // when the destination's htree index has to be dropped (#347).
         let mut buf = BlockBuffer::new(self.sb.block_size());
         let mut parent_nlink: BTreeMap<u32, i32> = BTreeMap::new();
 
@@ -5870,9 +5841,8 @@ impl Filesystem {
     ///
     /// An indexed directory's full leaf is split (#195), and the split is
     /// staged whole (#302). Where the index cannot take the new leaf, the
-    /// index is dropped instead; that rewrite is not journaled, so what
-    /// `buf` held is committed before it, and `buf` is left holding only
-    /// the appended block. A directory with no index grows in `buf`.
+    /// index is dropped instead, staged in `buf` too (#347), and the
+    /// directory grows as a linear one.
     fn extend_dir_and_add_entry(
         &self,
         buf: &mut BlockBuffer,
@@ -5893,12 +5863,7 @@ impl Filesystem {
         )? {
             return Ok(());
         }
-        let (parent_inode, _) = self.buffered_inode_verified(buf, parent_ino)?;
-        if parent_inode.flags & crate::inode::InodeFlags::INDEX.bits() != 0 {
-            let staged = std::mem::replace(buf, BlockBuffer::new(self.sb.block_size()));
-            self.commit_block_buffer(staged)?;
-            self.drop_htree_index(parent_ino)?;
-        }
+        self.buffer_drop_htree_index(buf, parent_ino)?;
 
         let (parent_inode, _) = self.buffered_inode_verified(buf, parent_ino)?;
         let block = self.seeded_dir_block(

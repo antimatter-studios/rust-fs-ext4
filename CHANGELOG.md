@@ -182,6 +182,18 @@
   after each index and requires `e2fsck -fn` to accept every remounted
   image; 29 of 46 cuts were rejected before.
 
+- **Dropping a full htree index is in the same transaction too (#347).**
+  Where a leaf could not split because its parent index block was full,
+  the index was dropped by committing what the operation had staged and
+  then rewriting the directory's inode and index blocks straight to the
+  device. A crash inside the drop left a half-converted index, or a new
+  inode or link count the directory never gained a name for. The drop is
+  now staged into the operation's `BlockBuffer`, so a create, link, mkdir
+  or rename that forces it commits once.
+  `tests/htree_split_write_cut.rs` cuts such a create after each write and
+  requires `e2fsck -fn` to accept every remounted image; 22 of 42 cuts
+  were rejected before.
+
 - **A hole can be punched in a file whose extent tree is deeper than the
   inode.** Punching wrote what survived back into the inode's four inline
   entries and freed every node below, so a punch leaving more than four
