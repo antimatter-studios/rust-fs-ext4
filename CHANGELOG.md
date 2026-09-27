@@ -263,6 +263,14 @@ Not caught by the compiler — the same source builds and behaves differently:
   `dumpe2fs -h` and a filled volume against `e2fsck -fn` through both the
   primary and the last group's backup superblock (#318).
 
+- **A revoke block's record count is bounded by the block, not clamped to
+  it.** Replay read records up to `min(r_count, block length)`, so on a
+  CSUM_V2/V3 journal the four-byte `r_checksum` tail was read as a record,
+  and without checksums a count past the block was silently cut short. A
+  checksum that happened to match a logged block revoked a committed write.
+  A count past the block, less its tail when the journal has checksums, is
+  now `Corrupt`, as the kernel's `scan_revoke_records` and `e2fsck` refuse
+  it (#301).
 - **A hole can be punched in a file whose extent tree is deeper than the
   inode.** Punching wrote what survived back into the inode's four inline
   entries and freed every node below, so a punch leaving more than four

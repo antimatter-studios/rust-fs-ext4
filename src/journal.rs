@@ -426,9 +426,22 @@ fn parse_revoke_block(
     }
     let r_count = u32::from_be_bytes(block[12..16].try_into().unwrap()) as usize;
     let record_size = if jsb.uses_64bit() { 8 } else { 4 };
+    // `r_count` is bounded by the block less its `r_checksum` tail, never
+    // clamped to it: the kernel's `scan_revoke_records` refuses a larger
+    // count, and reading on would take the checksum for a record (#301).
+    let usable = if jsb.uses_csum_v2_or_v3() {
+        block.len() - jbd2::BLOCK_TAIL_BYTES
+    } else {
+        block.len()
+    };
+    if r_count > usable {
+        return Err(Error::Corrupt(
+            "journal revoke block count exceeds the block",
+        ));
+    }
     let mut out = Vec::new();
     let mut pos = 16usize;
-    let end = r_count.min(block.len());
+    let end = r_count;
     while pos + record_size <= end {
         let fs_block = if jsb.uses_64bit() {
             u64::from_be_bytes(block[pos..pos + 8].try_into().unwrap())
@@ -524,6 +537,86 @@ mod tests {
         assert_eq!(out.len(), 3);
         assert_eq!(out[0].fs_block, 100);
         assert_eq!(out[2].fs_block, 300);
+    }
+
+    /// A revoke block claiming more bytes than it may hold, for a journal
+    /// with `incompat` and a planned write to `fs_block` at `tail_at`.
+    fn revoke_block_overrunning_its_records(
+        r_count: u32,
+        tail_at: usize,
+        fs_block: u32,
+    ) -> Vec<u8> {
+        let mut blk = vec![0u8; 4096];
+        header(&mut blk, JBD2_REVOKE_BLOCK, 10);
+        blk[12..16].copy_from_slice(&r_count.to_be_bytes());
+        blk[16..20].copy_from_slice(&100u32.to_be_bytes());
+        blk[tail_at..tail_at + 4].copy_from_slice(&fs_block.to_be_bytes());
+        blk
+    }
+
+    /// On a CSUM_V3 journal the last four bytes are `r_checksum`, not a
+    /// record: an `r_count` reaching into them is refused, as the kernel's
+    /// `scan_revoke_records` refuses it, rather than letting the checksum
+    /// revoke a committed write (#301).
+    #[test]
+    fn a_csum_v3_revoke_count_reaching_the_tail_is_refused() {
+        let jsb = mk_jsb(
+            JbdIncompat::REVOKE.bits() | JbdIncompat::CSUM_V3.bits(),
+            128,
+        );
+        let blk = revoke_block_overrunning_its_records(4096, 4096 - jbd2::BLOCK_TAIL_BYTES, 9000);
+        let parsed = parse_revoke_block(&blk, &jsb, 10);
+        let mut plan = ReplayPlan {
+            writes: vec![ReplayEntry {
+                transaction: 10,
+                fs_block: 9000,
+                journal_block: 2,
+                flags: 0,
+            }],
+            revokes: parsed.as_ref().map(Vec::clone).unwrap_or_default(),
+            ..Default::default()
+        };
+        plan.filter_revoked();
+        assert!(
+            matches!(parsed, Err(Error::Corrupt(_))),
+            "r_count covering the checksum tail parsed as {} records; writes left in the plan: {}",
+            parsed.map(|r| r.len()).unwrap_or_default(),
+            plan.writes.len()
+        );
+    }
+
+    /// The same bound with the tail counted: `r_count` up to the tail is
+    /// every record the block holds.
+    #[test]
+    fn a_csum_v3_revoke_count_up_to_the_tail_is_read() {
+        let jsb = mk_jsb(
+            JbdIncompat::REVOKE.bits() | JbdIncompat::CSUM_V3.bits(),
+            128,
+        );
+        let usable = 4096 - jbd2::BLOCK_TAIL_BYTES;
+        let blk = revoke_block_overrunning_its_records(usable as u32, usable - 4, 9000);
+        let out = parse_revoke_block(&blk, &jsb, 10).unwrap();
+        assert_eq!(out.len(), (usable - 16) / 4);
+        assert_eq!(out[0].fs_block, 100);
+        assert_eq!(out.last().unwrap().fs_block, 9000);
+    }
+
+    /// Without checksums a count past the block is refused, not clamped.
+    #[test]
+    fn a_revoke_count_past_the_block_is_refused() {
+        let jsb = mk_jsb(JbdIncompat::REVOKE.bits(), 128);
+        let blk = revoke_block_overrunning_its_records(4097, 4092, 9000);
+        let parsed = parse_revoke_block(&blk, &jsb, 10);
+        assert!(
+            matches!(parsed, Err(Error::Corrupt(_))),
+            "r_count past the block parsed as {} records",
+            parsed.map(|r| r.len()).unwrap_or_default()
+        );
+        // A count exactly the block is every record in it.
+        let blk = revoke_block_overrunning_its_records(4096, 4092, 9000);
+        let out = parse_revoke_block(&blk, &jsb, 10).unwrap();
+        assert_eq!(out.len(), (4096 - 16) / 4);
+        assert_eq!(out.last().unwrap().fs_block, 9000);
     }
 
     #[test]
