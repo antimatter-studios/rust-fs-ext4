@@ -2,7 +2,11 @@
 
 use std::io;
 
+/// `#[non_exhaustive]` (#120): a new way to fail is a new variant, and without
+/// this every variant added was a break for any caller matching exhaustively.
+/// A `match` outside this crate needs a `_` arm.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum Error {
     /// Underlying device I/O failure.
     Io(io::Error),

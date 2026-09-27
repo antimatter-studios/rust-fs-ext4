@@ -55,7 +55,17 @@ pub fn prefix_for_index(idx: u8) -> Option<&'static str> {
 }
 
 /// One parsed xattr entry: fully-qualified name + raw value bytes.
+///
+/// `#[non_exhaustive]` (#120): the fields stay public to read, but a struct
+/// literal outside this crate is refused, so the next field the on-disk entry
+/// needs is not a break. Build one with [`XattrEntry::new`] or
+/// [`XattrEntry::in_ea_inode`].
+///
+/// Equality covers every field, `value_inum` and `value_size` included: an
+/// entry whose value lives in an EA inode never equals an inline one, even
+/// with the same name.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct XattrEntry {
     /// Fully-qualified name, e.g. "user.com.apple.FinderInfo".
     pub name: String,
@@ -83,6 +93,36 @@ pub struct XattrEntry {
     /// disagree; this driver returned the EA inode's whole body and
     /// reported success (#121).
     pub value_size: u32,
+}
+
+impl XattrEntry {
+    /// An entry whose value is stored inline, as the parsers produce one:
+    /// `value_inum` zero and `value_size` the value's length.
+    ///
+    /// Panics if the value is longer than `u32::MAX` bytes, which no ext4
+    /// entry can describe.
+    pub fn new(name: impl Into<String>, value: impl Into<Vec<u8>>) -> Self {
+        let value = value.into();
+        let value_size = u32::try_from(value.len()).expect("an xattr value fits in u32");
+        Self {
+            name: name.into(),
+            value,
+            value_inum: 0,
+            value_size,
+        }
+    }
+
+    /// An entry whose value lives in the body of EA inode `value_inum`, as
+    /// the parsers produce one: `value` empty, and `value_size` the length
+    /// the entry declares.
+    pub fn in_ea_inode(name: impl Into<String>, value_inum: u32, value_size: u32) -> Self {
+        Self {
+            name: name.into(),
+            value: Vec::new(),
+            value_inum,
+            value_size,
+        }
+    }
 }
 
 /// Read all extended attributes attached to an inode.
@@ -934,6 +974,39 @@ mod tests {
             Some((6, "selinux"))
         );
         assert_eq!(split_qualified_name("unknown.foo"), None);
+    }
+
+    /// `XattrEntry` is `#[non_exhaustive]`, so its constructors are the only
+    /// way a caller builds one. `new` must produce exactly what the parser
+    /// does for an inline value, or a caller comparing against a parsed
+    /// entry is told they differ when the volume agrees with them (#120).
+    #[test]
+    fn new_builds_what_the_parser_reads_for_an_inline_value() {
+        let mut region = vec![0u8; 64];
+        encode_in_inode_entries(
+            &mut region,
+            &[DecodedEntry {
+                name_index: 1,
+                name_bytes: b"color".to_vec(),
+                value: b"red".to_vec(),
+                value_inum: 0,
+            }],
+        );
+        let mut parsed = Vec::new();
+        parse_entries(&region[4..], region.len() - 4, &mut parsed).unwrap();
+        assert_eq!(parsed, vec![XattrEntry::new("user.color", b"red".to_vec())]);
+    }
+
+    /// An EA-inode entry carries no bytes of its own and the size its entry
+    /// declares; it never equals an inline entry of the same name, since
+    /// equality covers every field.
+    #[test]
+    fn in_ea_inode_carries_the_inode_and_declared_size_and_no_bytes() {
+        let e = XattrEntry::in_ea_inode("user.big", 42, 70_000);
+        assert_eq!(e.name, "user.big");
+        assert!(e.value.is_empty());
+        assert_eq!((e.value_inum, e.value_size), (42, 70_000));
+        assert_ne!(e, XattrEntry::new("user.big", Vec::new()));
     }
 
     /// Build a minimal in-inode region with two `user.*` entries, then remove
