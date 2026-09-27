@@ -160,3 +160,178 @@ fn a_default_volume_still_writes() {
     fs.apply_create("/guard_smoke.txt", 0o644)
         .expect("an ordinary volume must still accept a create");
 }
+
+/// The whole device, to prove a refusal wrote nothing at all.
+fn snapshot(dev: &MemDev) -> Vec<u8> {
+    dev.bytes.lock().unwrap().clone()
+}
+
+/// `write_inode_raw` refuses too, and writes nothing (#323).
+///
+/// It is public, writes straight to the device, and checked only the
+/// length, so an outside caller wrote an inode onto a volume every
+/// `apply_*` refuses.
+#[test]
+fn write_inode_raw_refuses_an_unmaintained_ro_compat_volume() {
+    for (name, bits) in cases() {
+        let dev = fixture_with_ro_compat(bits);
+        let fs = Filesystem::mount(dev.clone()).expect("mount");
+        let raw = fs.read_inode_raw(2).expect("read the root inode");
+        let before = snapshot(&dev);
+        match fs.write_inode_raw(2, &raw) {
+            Err(Error::UnsupportedRoCompat(reported)) => assert_eq!(
+                reported & bits,
+                bits,
+                "{name}: the refusal should name the bit that caused it"
+            ),
+            Err(other) => panic!("{name}: wrong refusal {other:?}"),
+            Ok(()) => panic!("{name}: write_inode_raw must be refused on this volume"),
+        }
+        assert!(
+            snapshot(&dev) == before,
+            "{name}: a refused write_inode_raw changed the device"
+        );
+    }
+}
+
+/// `s_state` straight off the device.
+fn on_disk_state(dev: &MemDev) -> u16 {
+    let b = dev.bytes.lock().unwrap();
+    u16::from_le_bytes([b[SB_AT + 0x3A], b[SB_AT + 0x3B]])
+}
+
+/// `EXT4_VALID_FS` in `s_state`: the volume reads as cleanly unmounted.
+const VALID_FS: u16 = 0x0001;
+
+/// A `write_inode_raw` on an ordinary volume marks it not clean, as every
+/// other write does (#323). Unmarked, a crash after it left a modified
+/// volume claiming to have been put away properly.
+#[test]
+fn write_inode_raw_marks_the_volume_not_clean() {
+    let dev = MemDev::arc(std::fs::read(IMAGE).expect("read the fixture"));
+    assert_ne!(on_disk_state(&dev) & VALID_FS, 0, "fixture: clean");
+    let fs = Filesystem::mount(dev.clone()).expect("mount");
+    let raw = fs.read_inode_raw(2).expect("read the root inode");
+    fs.write_inode_raw(2, &raw)
+        .expect("an ordinary volume must accept the write");
+    assert_eq!(
+        on_disk_state(&dev) & VALID_FS,
+        0,
+        "a volume written through write_inode_raw must not read as clean"
+    );
+}
+
+/// Every public method that writes, by name. The sweep for #323 found
+/// `write_inode_raw` alone among them without the guard; this list and
+/// the guard below keep a new one from arriving without it.
+const PUBLIC_WRITERS: &[&str] = &[
+    "write_inode_raw",
+    "apply_truncate_shrink",
+    "apply_truncate_grow",
+    "apply_fallocate_keep_size",
+    "apply_fallocate_punch_hole",
+    "apply_fallocate_zero_range",
+    "apply_chmod",
+    "apply_chown",
+    "apply_set_flags",
+    "apply_removexattr",
+    "apply_setxattr",
+    "apply_utimens",
+    "apply_unlink",
+    "apply_create",
+    "apply_mknod",
+    "apply_symlink",
+    "apply_replace_file_content",
+    "apply_pwrite",
+    "apply_mkdir",
+    "apply_link",
+    "apply_rename",
+    "apply_rmdir",
+    "audit_repair",
+];
+
+/// Each public writer, called on `fs`, returning only its verdict.
+fn call(fs: &Filesystem, writer: &str) -> fs_ext4::Result<()> {
+    let ino = 2;
+    match writer {
+        "write_inode_raw" => fs.write_inode_raw(ino, &fs.read_inode_raw(ino)?),
+        "apply_truncate_shrink" => fs.apply_truncate_shrink(ino, 0),
+        "apply_truncate_grow" => fs.apply_truncate_grow(ino, 1 << 20),
+        "apply_fallocate_keep_size" => fs.apply_fallocate_keep_size(ino, 0, 4096),
+        "apply_fallocate_punch_hole" => fs.apply_fallocate_punch_hole(ino, 0, 4096),
+        "apply_fallocate_zero_range" => fs.apply_fallocate_zero_range(ino, 0, 4096),
+        "apply_chmod" => fs.apply_chmod("/", 0o700),
+        "apply_chown" => fs.apply_chown("/", 1, 1),
+        "apply_set_flags" => fs.apply_set_flags("/", 0),
+        "apply_removexattr" => fs.apply_removexattr("/", "user.x"),
+        "apply_setxattr" => fs.apply_setxattr("/", "user.x", b"v"),
+        "apply_utimens" => fs.apply_utimens("/", 1, 0, 1, 0),
+        "apply_unlink" => fs.apply_unlink("/f"),
+        "apply_create" => fs.apply_create("/f", 0o644).map(drop),
+        "apply_mknod" => fs.apply_mknod("/n", 0o010_644, 0, 0).map(drop),
+        "apply_symlink" => fs.apply_symlink("/t", "/s").map(drop),
+        "apply_replace_file_content" => fs.apply_replace_file_content("/f", b"x").map(drop),
+        "apply_pwrite" => fs.apply_pwrite("/f", 0, b"x").map(drop),
+        "apply_mkdir" => fs.apply_mkdir("/d", 0o755).map(drop),
+        "apply_link" => fs.apply_link("/f", "/g"),
+        "apply_rename" => fs.apply_rename("/f", "/g", false),
+        "apply_rmdir" => fs.apply_rmdir("/d"),
+        "audit_repair" => fs.audit_repair(u32::MAX, u32::MAX, true).map(drop),
+        other => panic!("no call for public writer {other}"),
+    }
+}
+
+/// Every public writer refuses a `QUOTA` volume and leaves every byte of
+/// it as it was -- including `s_state`, which a refusal must not clear.
+#[test]
+fn every_public_writer_refuses_and_writes_nothing() {
+    let quota = RoCompat::QUOTA.bits();
+    for writer in PUBLIC_WRITERS {
+        let dev = fixture_with_ro_compat(quota);
+        let fs = Filesystem::mount(dev.clone()).expect("mount");
+        let before = snapshot(&dev);
+        match call(&fs, writer) {
+            Err(Error::UnsupportedRoCompat(reported)) => assert_eq!(reported & quota, quota),
+            other => panic!("{writer}: expected UnsupportedRoCompat, got {other:?}"),
+        }
+        assert!(
+            snapshot(&dev) == before,
+            "{writer}: a refused write changed the device"
+        );
+    }
+
+    // Orphan recovery runs on every mount, so it declines rather than
+    // failing it -- and still writes nothing.
+    let dev = fixture_with_ro_compat(quota);
+    let fs = Filesystem::mount(dev.clone()).expect("mount");
+    let before = snapshot(&dev);
+    assert_eq!(fs.recover_orphans().expect("declines, not fails"), 0);
+    assert!(
+        snapshot(&dev) == before,
+        "recover_orphans changed the device"
+    );
+}
+
+/// Every `pub fn apply_*` / `pub fn write_*` on `Filesystem` is in
+/// [`PUBLIC_WRITERS`], so a new public writer cannot skip the test above.
+#[test]
+fn every_public_writer_is_listed() {
+    let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/fs.rs"))
+        .expect("src/fs.rs is readable");
+    let found: Vec<&str> = src
+        .lines()
+        .filter_map(|l| l.trim_start().strip_prefix("pub fn "))
+        .map(|rest| rest.split(['(', '<']).next().unwrap_or(""))
+        .filter(|name| name.starts_with("apply_") || name.starts_with("write_"))
+        .collect();
+    assert!(
+        found.len() > 20,
+        "the scan found too few writers: {found:?}"
+    );
+    for name in &found {
+        assert!(
+            PUBLIC_WRITERS.contains(name),
+            "public writer {name} is not covered by every_public_writer_refuses_and_writes_nothing"
+        );
+    }
+}

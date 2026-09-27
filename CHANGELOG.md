@@ -326,6 +326,15 @@ Not caught by the compiler — the same source builds and behaves differently:
   `tests/htree_split_write_cut.rs` cuts such a create after each write and
   requires `e2fsck -fn` to accept every remounted image; 22 of 42 cuts
   were rejected before.
+- **`write_inode_raw` is refused where every other write is.** It is
+  public and wrote straight to the device after checking only the
+  length, so an outside caller wrote an inode onto a volume carrying a
+  feature this driver must not write (`QUOTA`, `ORPHAN_PRESENT`, an
+  unknown `RO_COMPAT` bit, …) and left the volume marked clean after
+  modifying it. It now goes through the same refusal, and its first
+  write marks the volume not clean. A read-only device answers
+  `ReadOnly` rather than the device's `Corrupt`. Every public writer is
+  now covered by one test that proves the refusal writes nothing (#323).
 
 - **A hole can be punched in a file whose extent tree is deeper than the
   inode.** Punching wrote what survived back into the inode's four inline

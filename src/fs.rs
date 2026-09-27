@@ -1348,8 +1348,10 @@ impl Filesystem {
         }
     }
 
-    /// Write the given raw inode bytes back to disk. Read-only devices return
-    /// the default `Error::Corrupt` from `BlockDevice::write_at`.
+    /// Write the given raw inode bytes back to disk. Refused as every other
+    /// write is (`refuse_write`): `Error::ReadOnly` on a read-only device,
+    /// and a volume carrying a feature this driver must not write is left
+    /// untouched. The first write marks the volume not clean (#323).
     ///
     /// **Not checksum-aware**: callers that update fields affecting the inode
     /// CRC32C (anything except `checksum_lo` / `checksum_hi`) must recompute
@@ -1361,6 +1363,7 @@ impl Filesystem {
         if raw.len() != self.sb.inode_size as usize {
             return Err(Error::Corrupt("write_inode_raw: length != inode_size"));
         }
+        self.refuse_write()?;
         let (block, offset) = bgd::locate_inode(&self.sb, &self.groups, ino)?;
         let block_size = self.sb.block_size() as u64;
         let byte_offset = block * block_size + offset as u64;
