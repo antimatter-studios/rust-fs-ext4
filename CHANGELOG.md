@@ -251,6 +251,18 @@ Not caught by the compiler — the same source builds and behaves differently:
   as `pwrite` does since #145. Every other in-transaction planner was audited;
   each plans once or commits between plans, and each is now run into an
   uninit group under `e2fsck` (#291).
+- **A `sparse_super2` volume's backup superblocks are no longer written
+  over.** `s_backup_bgs` was read from 0x274 instead of 0x24C, where the
+  on-disk layout puts it, so it came back zero and no group but 0 was
+  believed to carry a backup. Once allocation reached a still-uninit
+  backup group, its implied bitmap left out the backup superblock and
+  GDT, and file data could be written over them; the overhead figures
+  were wrong for these volumes too. The unit fixture had written the same
+  wrong offset, so it agreed with the parser; it now writes 0x24C, and
+  `tests/sparse_super2_backup_bgs_oracle.rs` checks the field against
+  `dumpe2fs -h` and a filled volume against `e2fsck -fn` through both the
+  primary and the last group's backup superblock (#318).
+
 - **A hole can be punched in a file whose extent tree is deeper than the
   inode.** Punching wrote what survived back into the inode's four inline
   entries and freed every node below, so a punch leaving more than four

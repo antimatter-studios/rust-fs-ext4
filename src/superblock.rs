@@ -216,17 +216,18 @@ impl Superblock {
             0
         };
 
-        // s_reserved_gdt_blocks at 0xCE, and s_backup_bgs at 0x274. Both
-        // are zero on a revision-0 filesystem, which has neither.
+        // s_reserved_gdt_blocks at 0xCE, and s_backup_bgs[2] at 0x24C, between
+        // s_overhead_clusters and s_encrypt_algos. Both are zero on a
+        // revision-0 filesystem, which has neither.
         let reserved_gdt_blocks = if rev_level >= 1 {
             u16::from_le_bytes(raw[0xCE..0xD0].try_into().unwrap())
         } else {
             0
         };
-        let backup_bgs = if rev_level >= 1 && raw.len() >= 0x27C {
+        let backup_bgs = if rev_level >= 1 && raw.len() >= 0x254 {
             [
-                u32::from_le_bytes(raw[0x274..0x278].try_into().unwrap()),
-                u32::from_le_bytes(raw[0x278..0x27C].try_into().unwrap()),
+                u32::from_le_bytes(raw[0x24C..0x250].try_into().unwrap()),
+                u32::from_le_bytes(raw[0x250..0x254].try_into().unwrap()),
             ]
         } else {
             [0, 0]
@@ -581,8 +582,8 @@ mod backup_layout_tests {
         raw[0x64..0x68].copy_from_slice(&ro_compat.to_le_bytes());
         raw[0xCE..0xD0].copy_from_slice(&reserved_gdt.to_le_bytes());
         raw[0xFE..0x100].copy_from_slice(&64u16.to_le_bytes()); // desc_size
-        raw[0x274..0x278].copy_from_slice(&backup_bgs[0].to_le_bytes());
-        raw[0x278..0x27C].copy_from_slice(&backup_bgs[1].to_le_bytes());
+        raw[0x24C..0x250].copy_from_slice(&backup_bgs[0].to_le_bytes());
+        raw[0x250..0x254].copy_from_slice(&backup_bgs[1].to_le_bytes());
         Superblock::parse(raw).expect("superblock")
     }
 
