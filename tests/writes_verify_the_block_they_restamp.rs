@@ -408,6 +408,68 @@ fn rename_into_a_corrupt_directory_refuses_rather_than_assuming_the_name_is_free
     );
 }
 
+/// The MOVED DIRECTORY'S OWN block 0, which a cross-parent rename rewrites
+/// to repoint `..` (#322).
+///
+/// None of the scans above reads it: the source lookup reads the source
+/// parent, the existence check reads the destination parent, and the
+/// emptiness walk only runs on an overwritten victim. `buffer_update_dotdot`
+/// then loaded the block, edited `..` and re-stamped its tail — the htree
+/// branch checked the root first, the linear branch checked nothing.
+#[test]
+fn rename_across_parents_refuses_when_the_moved_directory_block_is_corrupt() {
+    let dev = populated();
+    let (ino, phys) = corrupt_dir(&dev, "/holder/sub");
+    let bs = {
+        let fs = mounted(&dev);
+        fs.sb.block_size() as usize
+    };
+    let mut before = vec![0u8; bs];
+    dev.read_at(phys * bs as u64, &mut before).expect("read");
+    let fs = mounted(&dev);
+
+    let err = fs
+        .apply_rename("/holder/sub", "/other/sub", false)
+        .expect_err("rename must refuse to repoint `..` in a block it could not verify");
+    assert!(is_bad_checksum(&err), "rename gave {err:?}");
+    assert!(
+        still_corrupt(&fs, &dev, ino, phys),
+        "the moved directory's block was rewritten despite the refusal"
+    );
+    let mut after = vec![0u8; bs];
+    dev.read_at(phys * bs as u64, &mut after).expect("read");
+    assert_eq!(
+        before, after,
+        "the moved directory's block changed despite the refusal"
+    );
+}
+
+/// The acceptance half of the test above: the same move on an untouched
+/// volume succeeds, and the block it re-stamped verifies after a remount.
+#[test]
+fn rename_across_parents_still_works_on_a_volume_this_driver_wrote() {
+    let dev = populated();
+    let (ino, phys) = {
+        let fs = mounted(&dev);
+        let ino = resolve(&fs, "/holder/sub").expect("resolve sub");
+        (ino, first_block(&fs, &dev, ino))
+    };
+    mounted(&dev)
+        .apply_rename("/holder/sub", "/other/sub", false)
+        .expect("cross-parent rename of a directory");
+
+    let fs = mounted(&dev);
+    assert_eq!(resolve(&fs, "/other/sub").expect("moved"), ino);
+    assert!(
+        resolve(&fs, "/holder/sub").is_err(),
+        "the old name must be gone"
+    );
+    assert!(
+        !still_corrupt(&fs, &dev, ino, phys),
+        "the re-stamped `..` block must verify"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // The acceptance half — without it a guard that refused everything passes
 // ---------------------------------------------------------------------------
