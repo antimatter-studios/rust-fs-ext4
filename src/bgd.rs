@@ -201,9 +201,65 @@ pub fn read_all<D: BlockDevice + ?Sized>(
                 "a block group descriptor points outside the filesystem",
             ));
         }
+        check_pointers_within(sb, i as u64, &bgd, table_blocks)?;
         groups.push(bgd);
     }
     Ok(groups)
+}
+
+/// AND BOUNDED BELOW, AND BY THEIR OWN GROUP (#320).
+///
+/// The bound in [`read_all`] was from above only, so a pointer of 0 -- or 1
+/// on a 1 KiB volume -- was accepted, and a bitmap update or inode write then
+/// put a whole block over the primary superblock or the descriptor table.
+/// This is the rule the kernel's `ext4_check_descriptors` applies:
+///
+/// - no pointer inside group 0's head: block 0 through the superblock, its
+///   descriptor table and the table's reserved growth
+///   ([`Superblock::group_head_metadata_blocks`]);
+/// - without `FLEX_BG`, every pointer, and the whole inode table, inside the
+///   descriptor's own group. With it, `mkfs.ext4` packs a flex group's
+///   bitmaps and tables together, so group N's may sit in group 0 and only
+///   the filesystem bounds them.
+///
+/// The caller has already bounded all three by the end of the filesystem.
+fn check_pointers_within(
+    sb: &Superblock,
+    group: u64,
+    bgd: &BlockGroupDescriptor,
+    table_blocks: u64,
+) -> Result<()> {
+    // The superblock's own block: `first_data_block` on every volume but a
+    // 1 KiB bigalloc one, whose groups start at block 0 while the superblock
+    // is still in block 1.
+    let superblock_block = crate::superblock::SUPERBLOCK_OFFSET / u64::from(sb.block_size());
+    let group0_metadata_end = superblock_block + sb.group_head_metadata_blocks(0);
+    let table_last = bgd.inode_table + table_blocks.max(1) - 1;
+    if bgd.block_bitmap < group0_metadata_end
+        || bgd.inode_bitmap < group0_metadata_end
+        || bgd.inode_table < group0_metadata_end
+    {
+        return Err(Error::Corrupt(
+            "a block group descriptor points into group 0's superblock or descriptor table",
+        ));
+    }
+    if sb.feature_incompat & crate::features::Incompat::FLEX_BG.bits() != 0 {
+        return Ok(());
+    }
+    let first = u64::from(sb.first_data_block) + group * u64::from(sb.blocks_per_group);
+    let last = first
+        .saturating_add(u64::from(sb.blocks_per_group))
+        .min(sb.blocks_count)
+        - 1;
+    let within = |b: u64| (first..=last).contains(&b);
+    if !(within(bgd.block_bitmap) && within(bgd.inode_bitmap) && within(bgd.inode_table))
+        || table_last > last
+    {
+        return Err(Error::Corrupt(
+            "a block group descriptor points outside its own group, without flex_bg",
+        ));
+    }
+    Ok(())
 }
 
 /// Locate the inode table block + offset for a given inode number.

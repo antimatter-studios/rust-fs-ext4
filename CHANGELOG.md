@@ -306,6 +306,16 @@ Not caught by the compiler — the same source builds and behaves differently:
   clear an uninit flag, then the superblock, each stage flushed; any
   failure leaves the mount refusing writes with `ReadOnly`, its `flush`
   failing, and the volume marked not clean (#319).
+- **A group descriptor cannot point its bitmaps or inode table at the
+  superblock.** `bg_block_bitmap`, `bg_inode_bitmap` and `bg_inode_table`
+  were bounded only by the end of the filesystem, so a pointer of 0 -- or 1
+  on a 1 KiB volume -- was accepted at mount, and the next create wrote a
+  bitmap block over the primary superblock or the descriptor table. Mount now
+  refuses, as the kernel's `ext4_check_descriptors` does, any pointer inside
+  group 0's superblock, descriptor table or reserved growth, and, without
+  `flex_bg`, any pointer outside the descriptor's own group, with
+  `Corrupt` (#320).
+
 - **A hole can be punched in a file whose extent tree is deeper than the
   inode.** Punching wrote what survived back into the inode's four inline
   entries and freed every node below, so a punch leaving more than four
