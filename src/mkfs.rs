@@ -721,33 +721,13 @@ fn write_journal_inode(slot: &mut [u8], size_bytes: u64, blocks_512: u64, i_bloc
     // journal at any block_size stays well under it.
 }
 
-/// 16 random bytes from `/dev/urandom`, falling back to a time-seeded LCG if
-/// the device is unavailable. Sets the v4 UUID layout bits.
+/// A random RFC 4122 version-4 UUID. The bytes come from
+/// [`crate::runtime::fill_random`], which has a path for every target this
+/// crate builds for, including the browser build (#294).
 fn generate_uuid() -> [u8; 16] {
     let mut out = [0u8; 16];
-    if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
-        use std::io::Read;
-        if f.read_exact(&mut out).is_ok() {
-            // RFC 4122 v4: top nibble of byte 6 = 0x4, top two bits of byte 8 = 0b10.
-            out[6] = (out[6] & 0x0F) | 0x40;
-            out[8] = (out[8] & 0x3F) | 0x80;
-            return out;
-        }
-    }
-    // Fallback: deterministic mix of nanos + pid. Not cryptographic — but
-    // /dev/urandom is universally available on Darwin and Linux so this
-    // path effectively only fires inside aggressively sandboxed tests.
-    let mut state = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0xDEADBEEF)
-        ^ (std::process::id() as u64).wrapping_mul(0x9E3779B97F4A7C15);
-    for b in out.iter_mut() {
-        state = state
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
-        *b = (state >> 56) as u8;
-    }
+    crate::runtime::fill_random(&mut out);
+    // RFC 4122 v4: top nibble of byte 6 = 0x4, top two bits of byte 8 = 0b10.
     out[6] = (out[6] & 0x0F) | 0x40;
     out[8] = (out[8] & 0x3F) | 0x80;
     out

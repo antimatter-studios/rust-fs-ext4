@@ -52,6 +52,15 @@ const UUID: [u8; 16] = [
 
 /// Pre-size a tmp file, format it via the driver's mkfs, and return its path.
 fn format_to_tmp(tag: &str, size: u64, block_size: u32) -> String {
+    format_to_tmp_with_uuid(tag, size, block_size, Some(UUID))
+}
+
+fn format_to_tmp_with_uuid(
+    tag: &str,
+    size: u64,
+    block_size: u32,
+    uuid: Option<[u8; 16]>,
+) -> String {
     static N: AtomicUsize = AtomicUsize::new(0);
     let n = N.fetch_add(1, Ordering::Relaxed);
     let path =
@@ -64,7 +73,7 @@ fn format_to_tmp(tag: &str, size: u64, block_size: u32) -> String {
     }
     {
         let dev = FileDevice::open_rw(&path).expect("open_rw");
-        mkfs::format_filesystem(&dev, Some("MKFSORACLE"), Some(UUID), size, block_size)
+        mkfs::format_filesystem(&dev, Some("MKFSORACLE"), uuid, size, block_size)
             .expect("format_filesystem");
         dev.flush().expect("flush");
     } // drop closes the file → bytes are on disk
@@ -158,4 +167,20 @@ fn mkfs_4k_blocks_640m_sparse_super_backups() {
     // is the only external check the backup path has ever had.
     let p = format_to_tmp("mg5", 640 * 1024 * 1024, 4096);
     check_and_done(&p, "mg5", 4096, 5);
+}
+
+#[test]
+fn mkfs_with_a_generated_uuid() {
+    // No caller UUID: mkfs draws one through runtime::fill_random, the path
+    // the browser build takes too (#294). The volume must still be one
+    // e2fsck accepts, and the UUID a version-4 one.
+    let p = format_to_tmp_with_uuid("genuuid", 16 * 1024 * 1024, 4096, None);
+    {
+        let fs = Filesystem::mount(Arc::new(FileDevice::open(&p).expect("ro"))).expect("mount");
+        let uuid = fs.sb.uuid;
+        assert_ne!(uuid, [0u8; 16], "a generated UUID is not all zeros");
+        assert_eq!(uuid[6] >> 4, 4, "version nibble of {uuid:02x?}");
+        assert_eq!(uuid[8] >> 6, 0b10, "variant bits of {uuid:02x?}");
+    }
+    check_and_done(&p, "genuuid", 4096, 1);
 }

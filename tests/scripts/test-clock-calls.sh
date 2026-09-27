@@ -24,8 +24,6 @@ ALLOWED='runtime.rs'
 
 # file<TAB>call<TAB>count<TAB>issue
 EXCEPTIONS="$(printf '%s\t%s\t%s\t%s\n' \
-    mkfs.rs SystemTime::now 1 '#294' \
-    mkfs.rs process::id 1 '#294' \
     fsck.rs Instant::now 2 '#295')"
 
 # scan DIR: print `relative-path<TAB>call<TAB>line` for every call outside

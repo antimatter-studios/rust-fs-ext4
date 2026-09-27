@@ -121,3 +121,26 @@ fn a_file_created_and_written_reads_back_after_unmount() {
     assert!(got == data, "the file does not read back as written");
     fs.finish().expect("unmount");
 }
+
+/// A browser host formats without a UUID of its own, so mkfs draws one.
+/// It must be a real RFC 4122 version-4 UUID, and two volumes must not
+/// share one (#294).
+#[wasm_bindgen_test]
+fn format_without_a_uuid_draws_a_random_v4_uuid() {
+    let uuid_of_a_fresh_volume = || {
+        let dev = MemDev::new(SIZE);
+        fs_ext4::mkfs::format_filesystem(dev.as_ref(), None, None, SIZE, BLOCK_SIZE)
+            .expect("format_filesystem with no UUID");
+        let fs = mount(&dev);
+        let uuid = fs.sb.uuid;
+        fs.finish().expect("unmount");
+        uuid
+    };
+    let a = uuid_of_a_fresh_volume();
+    let b = uuid_of_a_fresh_volume();
+    for uuid in [a, b] {
+        assert_eq!(uuid[6] >> 4, 4, "version nibble of {uuid:02x?}");
+        assert_eq!(uuid[8] >> 6, 0b10, "variant bits of {uuid:02x?}");
+    }
+    assert_ne!(a, b, "two formats drew the same UUID");
+}
