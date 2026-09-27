@@ -194,7 +194,9 @@ tasks:
           fs-linux-test-harness '{{.LINUX_HARNESS_URL}}' '{{.LINUX_HARNESS_REF}}' \
         | while IFS="$(printf '\t')" read -r name url ref; do
             dir="$siblings_root/$name"
-            if [ ! -d "$dir/.git" ]; then
+            # -e, not -d: a worktree's .git is a FILE naming its gitdir, and every
+            # working copy here is a worktree, a pinned sibling included.
+            if [ ! -e "$dir/.git" ]; then
               echo "siblings: cloning $name at $ref"
               git init --quiet "$dir"
               git -C "$dir" remote add origin "$url"
@@ -468,7 +470,7 @@ tasks:
         }
         share="$(../fs-linux-test-harness/scripts/vm.sh share)"
         for sibling in rust-fs-core; do
-          [ -d "../$sibling/.git" ] || {
+          [ -e "../$sibling/.git" ] || {
             echo "test:vm: ../$sibling is not checked out -- run 'chore siblings'." >&2
             exit 1
           }
