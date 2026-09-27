@@ -313,6 +313,77 @@ fn a_torn_transaction_ends_the_log() {
     let _ = std::fs::remove_file(&image);
 }
 
+/// Journal block 5 of `debugfs_journal` is its revoke block: set its
+/// `r_count` to the whole block, reaching into the `r_checksum` tail, and
+/// redo that checksum so the block itself still checks out.
+fn revoke_count_into_the_tail(image: &str) {
+    let fs = Filesystem::mount_lazy(Arc::new(FileDevice::open_rw(image).unwrap())).unwrap();
+    let jsb = fs_ext4::jbd2::read_superblock(&fs)
+        .unwrap()
+        .expect("a journal");
+    let jinode = Inode::parse(&fs.read_inode_raw(fs.sb.journal_inode).unwrap()).unwrap();
+    let phys = fs_ext4::jbd2::journal_block_to_physical(&fs, &jinode, 5)
+        .unwrap()
+        .unwrap();
+    drop(fs);
+    let dev = FileDevice::open_rw(image).unwrap();
+    let mut block = vec![0u8; BS as usize];
+    dev.read_at(phys * BS, &mut block).unwrap();
+    assert_eq!(
+        u32::from_be_bytes(block[4..8].try_into().unwrap()),
+        5,
+        "not a revoke block"
+    );
+    block[12..16].copy_from_slice(&(BS as u32).to_be_bytes());
+    let csum = fs_ext4::jbd2::block_tail_checksum(jsb.csum_seed(), &block);
+    let tail = BS as usize - fs_ext4::jbd2::BLOCK_TAIL_BYTES;
+    block[tail..].copy_from_slice(&csum.to_be_bytes());
+    dev.write_at(phys * BS, &block).unwrap();
+    dev.flush().unwrap();
+}
+
+/// A revoke block whose `r_count` covers its checksum tail, the tail itself
+/// valid: the kernel's recovery code, which `e2fsck` shares, stops at
+/// `scan_revoke_records` and replays nothing, so this crate refuses it too
+/// rather than read the checksum as a record (#301). `e2fsck` replaying
+/// the same journal untouched shows its refusal is this block's doing.
+#[test]
+fn a_revoke_count_reaching_the_checksum_tail_is_refused() {
+    let control = debugfs_journal("rcount_control");
+    let (_, log) = run("e2fsck", &["-fy", &control], None);
+    for (i, &block) in TARGETS.iter().enumerate() {
+        assert!(
+            read_block(&control, block) == pattern(i),
+            "e2fsck did not replay block {block} of the untouched journal: {log}"
+        );
+    }
+    let _ = std::fs::remove_file(&control);
+
+    let image = debugfs_journal("rcount");
+    revoke_count_into_the_tail(&image);
+    let copy = format!("{image}.e2fsck");
+    std::fs::copy(&image, &copy).unwrap();
+
+    let (_, log) = run("e2fsck", &["-fy", &copy], None);
+    for &block in &TARGETS {
+        assert_eq!(
+            read_block(&copy, block),
+            vec![0u8; BS as usize],
+            "e2fsck replayed block {block} past a revoke count into the tail: {log}"
+        );
+    }
+
+    let err = Filesystem::mount(Arc::new(FileDevice::open_rw(&image).unwrap()))
+        .err()
+        .expect("replay refuses a revoke count reaching the checksum tail");
+    assert!(matches!(err, fs_ext4::Error::Corrupt(_)), "{err:?}");
+    for &block in &TARGETS {
+        assert_eq!(read_block(&image, block), vec![0u8; BS as usize]);
+    }
+    let _ = std::fs::remove_file(&image);
+    let _ = std::fs::remove_file(&copy);
+}
+
 /// CSUM_V2 declared beside CSUM_V3: JBD2 refuses the journal, so replay
 /// does too, rather than pick one layout.
 #[test]
