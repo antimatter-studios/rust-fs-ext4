@@ -8,9 +8,12 @@
 //!
 //! Both halves are judged by e2fsprogs, not by this crate: the parsed field
 //! against `dumpe2fs -h`, and a volume filled into its last group against
-//! `e2fsck -fn` — once through the primary superblock and once through the
-//! backup in the last group, which must still be intact. The tools run in
-//! the harness VM.
+//! `e2fsck -fn`, then each backup read back by `dumpe2fs -o superblock=`.
+//! A backup's free counts and bitmap checksums are stale by design — they
+//! are what mke2fs wrote — so a backup is judged by what never changes: the
+//! superblock's identity and the group descriptors' block locations, which
+//! must match the primary's. File data written over a backup changes both.
+//! The tools run in the harness VM.
 
 use fs_ext4::block_io::FileDevice;
 use fs_ext4::Filesystem;
@@ -66,6 +69,42 @@ fn dumpe2fs_backup_bgs(path: &str) -> Vec<u32> {
         .collect()
 }
 
+/// What a backup superblock and its GDT share with the primary for the
+/// life of the filesystem: the identity lines and every group's metadata
+/// locations, with the (legitimately stale) bitmap checksums cut off.
+fn fixed_layout(path: &str, superblock: Option<u64>) -> Vec<String> {
+    let mut oracle = fs_ext4_test_support::oracle("dumpe2fs");
+    if let Some(block) = superblock {
+        oracle = oracle.args([
+            "-o".to_string(),
+            format!("superblock={block}"),
+            "-o".to_string(),
+            format!("blocksize={BLOCK}"),
+        ]);
+    }
+    // Exit status is not the verdict: reading the current bitmaps through a
+    // backup's stale checksums can fail after the descriptors are printed.
+    let out = oracle.arg(path).output();
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|l| {
+            [
+                "Filesystem magic number:",
+                "Filesystem UUID:",
+                "Block count:",
+                "Blocks per group:",
+                "Block bitmap at",
+                "Inode bitmap at",
+                "Inode table at",
+            ]
+            .iter()
+            .any(|p| l.starts_with(p))
+        })
+        .map(|l| l.split(", csum").next().unwrap_or(l).to_string())
+        .collect()
+}
+
 fn e2fsck_clean(args: &[&str], what: &str) {
     let out = fs_ext4_test_support::oracle("e2fsck").args(args).output();
     let report = format!(
@@ -113,11 +152,11 @@ fn backup_bgs_matches_dumpe2fs() {
 }
 
 #[test]
-fn filling_into_the_last_group_keeps_its_backup_superblock() {
+fn filling_into_the_last_group_keeps_its_backup_superblocks() {
     let path = make_image("fill");
     let backups = dumpe2fs_backup_bgs(&path);
 
-    let (last, backup_block) = {
+    let (last, first_data_block, blocks_per_group) = {
         let fs = Filesystem::mount(Arc::new(FileDevice::open_rw(&path).expect("open_rw")))
             .expect("mount");
         let last = fs.groups.len() as u64 - 1;
@@ -125,8 +164,6 @@ fn filling_into_the_last_group_keeps_its_backup_superblock() {
             backups.contains(&(last as u32)),
             "mke2fs should put a backup in the last group ({last}); it named {backups:?}"
         );
-        let backup_block =
-            u64::from(fs.sb.first_data_block) + last * u64::from(fs.sb.blocks_per_group);
 
         // Nine tenths of the free space: enough that allocation has to wake
         // every group, including the last, without chasing ENOSPC.
@@ -142,7 +179,11 @@ fn filling_into_the_last_group_keeps_its_backup_superblock() {
             n += 1;
         }
         fs.dev.flush().expect("flush");
-        (last, backup_block)
+        (
+            last,
+            u64::from(fs.sb.first_data_block),
+            u64::from(fs.sb.blocks_per_group),
+        )
     };
 
     {
@@ -156,11 +197,23 @@ fn filling_into_the_last_group_keeps_its_backup_superblock() {
         );
     }
 
-    e2fsck_clean(&["-fn", &path], "primary superblock");
-    let b = backup_block.to_string();
-    e2fsck_clean(
-        &["-fn", "-b", &b, "-B", "1024", &path],
-        "backup superblock in the last group",
+    e2fsck_clean(&["-fn", &path], "after filling into the last group");
+
+    let primary = fixed_layout(&path, None);
+    let groups = last as usize + 1;
+    assert_eq!(
+        primary.len(),
+        4 + 3 * groups,
+        "dumpe2fs printed an unexpected layout for the primary:\n{}",
+        primary.join("\n")
     );
+    for &g in &backups {
+        let block = first_data_block + u64::from(g) * blocks_per_group;
+        assert_eq!(
+            fixed_layout(&path, Some(block)),
+            primary,
+            "the backup superblock/GDT in group {g} (block {block}) no longer matches the primary"
+        );
+    }
     let _ = std::fs::remove_file(&path);
 }
