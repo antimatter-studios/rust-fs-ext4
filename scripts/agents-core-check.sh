@@ -15,9 +15,9 @@
 # running last month's rules.
 set -euo pipefail
 
-EXPECTED_SHA256="60fad6dd98e9da3e9256d38728b02ac189dca0d04fc98c13e2c67de3f3103319"
-BEGIN='<!-- BEGIN SHARED BLOCK: agent-core v1'
-END='<!-- END SHARED BLOCK: agent-core v1 -->'
+EXPECTED_SHA256="8e0e4d55b026cff6cc3476160ed112117ca8ea64ad456408b9f1fe2a1dcf308b"
+BEGIN='<!-- BEGIN SHARED BLOCK: agent-core v2'
+END='<!-- END SHARED BLOCK: agent-core v2 -->'
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FILE="$ROOT/AGENTS.md"
@@ -49,4 +49,4 @@ fi
 declared="$(grep -oE 'sha256:[0-9a-f]{64}' "$FILE" | head -1 | cut -d: -f2)"
 [ "$declared" = "$EXPECTED_SHA256" ] || die "the BEGIN marker declares sha256:$declared but the canonical digest is $EXPECTED_SHA256"
 
-echo "agents-core-check: AGENTS.md carries agent-core v1, unmodified"
+echo "agents-core-check: AGENTS.md carries agent-core v2, unmodified"

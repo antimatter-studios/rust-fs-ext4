@@ -15,7 +15,7 @@ with every repository in this family**. Do not edit it here: change the
 canonical copy and propagate it, or `scripts/agents-core-check.sh` will fail.
 Everything after the END marker is specific to this repository.
 
-<!-- BEGIN SHARED BLOCK: agent-core v1 sha256:60fad6dd98e9da3e9256d38728b02ac189dca0d04fc98c13e2c67de3f3103319 -->
+<!-- BEGIN SHARED BLOCK: agent-core v2 sha256:8e0e4d55b026cff6cc3476160ed112117ca8ea64ad456408b9f1fe2a1dcf308b -->
 ## Claiming work
 
 Several agents work these repositories at the same time. Before you start on
@@ -59,6 +59,25 @@ add your own, and say so in the issue.
 
 **This is a convention, not a fence.** Nothing enforces it. An agent that
 ignores it duplicates work; it cannot corrupt anything. Honour it anyway.
+
+## Work in a worktree
+
+Every working copy is a **git worktree** of an existing checkout, made with
+`git worktree add`. Never `git clone` a second, unlinked copy — not for a
+branch, a PR, a review, or a sibling you need at another ref:
+
+```sh
+git -C <checkout> fetch origin
+git -C <checkout> worktree add <path> -b <type>/<name> origin/main   # new work
+git -C <checkout> worktree add --detach <path> <tag>                 # a sibling at a pinned ref
+git -C <checkout> worktree remove <path>                             # when done
+```
+
+A worktree shares the checkout's objects and remotes, and `git worktree list`
+shows it to every agent on the machine, so nobody else mistakes it for
+abandoned work or loses track of it. An unlinked clone copies all the history
+again, is invisible to that list, and gets left behind in `/tmp` long after the
+work that made it is merged. Remove your worktree when you finish.
 
 ## Skills to use
 
@@ -130,7 +149,7 @@ it**. Do not silence output to fit, and do not route around `tier.sh`.
   copying it is not.
 - **Each of these is a standalone project.** Never mention a consuming
   application in the README, the source, or CLI help.
-<!-- END SHARED BLOCK: agent-core v1 -->
+<!-- END SHARED BLOCK: agent-core v2 -->
 
 
 ## Running tests
