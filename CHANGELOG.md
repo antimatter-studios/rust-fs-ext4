@@ -287,6 +287,14 @@ Not caught by the compiler — the same source builds and behaves differently:
   A count past the block, less its tail when the journal has checksums, is
   now `Corrupt`, as the kernel's `scan_revoke_records` and `e2fsck` refuse
   it (#301).
+- **Moving a directory to another parent refuses a corrupt directory block
+  instead of re-stamping it.** On a `metadata_csum` volume the rename
+  rewrote `..` in the moved directory's first block and recomputed its tail
+  checksum without verifying the old one, so a bad checksum was replaced by
+  a valid one over the corrupted contents. Nothing earlier in the rename
+  reads that block. It is now verified before the edit, as the indexed
+  branch already was, and a mismatch is `BadChecksum` with the block left
+  untouched (#322).
 - **A hole can be punched in a file whose extent tree is deeper than the
   inode.** Punching wrote what survived back into the inode's four inline
   entries and freed every node below, so a punch leaving more than four

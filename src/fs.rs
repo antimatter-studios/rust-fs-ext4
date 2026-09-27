@@ -2607,16 +2607,13 @@ impl Filesystem {
         if block.len() < 24 {
             return Err(Error::Corrupt("buffer_update_dotdot: dir block too small"));
         }
-        let block_dotdot_before: [u8; 4] = block[12..16].try_into().unwrap();
+        // Checked before it is changed, linear or indexed: a fresh checksum
+        // over a block that was already corrupt would hide the corruption.
+        // Nothing earlier in a rename reads this block — the lookups read
+        // the parents — so this is the only place it can be refused (#322).
+        self.refuse_unverified_dir_block(dir_ino, dir_inode, 0, block)?;
         block[12..16].copy_from_slice(&new_parent_ino.to_le_bytes());
         if dir_inode.flags & crate::inode::InodeFlags::INDEX.bits() != 0 {
-            // Checked before it is changed: a fresh checksum over a root
-            // that was already corrupt would hide the corruption.
-            {
-                let mut original = block.to_vec();
-                original[12..16].copy_from_slice(&block_dotdot_before);
-                self.check_dx_block(dir_ino, dir_inode, &original, true)?;
-            }
             // A dx_root's checksum is its dx_tail's, over a different range
             // by a different rule. It can end in bytes that look like a
             // dirent tail, and writing one there corrupted the index.
