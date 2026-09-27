@@ -35,7 +35,7 @@ fn mkfs(tag: &str) -> String {
 #[test]
 fn a_name_holding_a_nul_byte_is_refused() {
     type Op = fn(&Filesystem) -> Result<(), fs_ext4::Error>;
-    let ops: [(&str, Op); 6] = [
+    let ops: [(&str, Op); 7] = [
         ("create", |fs| fs.apply_create("/a\0b", 0o644).map(|_| ())),
         ("mkdir", |fs| fs.apply_mkdir("/a\0b", 0o755).map(|_| ())),
         ("mknod", |fs| {
@@ -46,6 +46,7 @@ fn a_name_holding_a_nul_byte_is_refused() {
         }),
         ("link", |fs| fs.apply_link("/f", "/a\0b")),
         ("rename", |fs| fs.apply_rename("/f", "/a\0b", false)),
+        ("rename-self", |fs| fs.apply_rename("/a\0b", "/a\0b", false)),
     ];
     for (tag, op) in ops {
         let path = mkfs(tag);

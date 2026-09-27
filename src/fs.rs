@@ -7263,6 +7263,49 @@ mod tests {
         assert_eq!(on_disk_state(&dev) & EXT4_VALID_FS, 0);
     }
 
+    /// Renaming a path onto itself answers as rename(2) does -- a missing
+    /// path is ENOENT, a NUL in the name is refused, an existing path is a
+    /// success that changes nothing -- and none of the three marks the
+    /// volume not clean, because none of them writes (#303).
+    #[test]
+    fn a_rename_onto_itself_resolves_the_path_and_writes_nothing() {
+        use crate::superblock::EXT4_VALID_FS;
+        let dev = formatted();
+        {
+            let fs = mount(&dev);
+            fs.apply_create("/f", 0o644).expect("create");
+        }
+        assert_ne!(on_disk_state(&dev) & EXT4_VALID_FS, 0, "fixture: clean");
+
+        let fs = mount(&dev);
+        let got = fs.apply_rename("/missing", "/missing", false);
+        assert!(
+            matches!(got, Err(Error::NotFound)),
+            "a missing path renamed onto itself: {got:?}"
+        );
+        let got = fs.apply_rename("/a\0b", "/a\0b", false);
+        assert!(
+            matches!(
+                got,
+                Err(Error::InvalidArgument("a name cannot contain a NUL byte"))
+            ),
+            "a NUL name renamed onto itself: {got:?}"
+        );
+        let before = dev.bytes.lock().unwrap().clone();
+        fs.apply_rename("/f", "/f", false)
+            .expect("an existing path renamed onto itself");
+        assert!(
+            *dev.bytes.lock().unwrap() == before,
+            "renaming a path onto itself changed the volume"
+        );
+        assert_ne!(
+            on_disk_state(&dev) & EXT4_VALID_FS,
+            0,
+            "a rename that wrote nothing marked the volume not clean"
+        );
+        resolve(&fs, "/f").expect("/f is still there");
+    }
+
     /// The case this crate already handled: nothing names the inode any
     /// more, so recovery really does delete it. Kept as the other half of
     /// the pair, so the fix for the truncate case cannot be a blanket
