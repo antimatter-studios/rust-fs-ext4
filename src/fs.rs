@@ -284,6 +284,14 @@ pub(crate) enum BgdUninitFlag {
     Block,
 }
 
+/// The most bytes `apply_pwrite` buffers for one transaction. A chunk is
+/// held several times over while it commits (block buffer, transaction,
+/// serialised journal blocks); this bounds that, independent of the
+/// journal's size. 32 MiB is at most 32768 blocks, the longest initialised
+/// extent, at every block size, so no allocation within a chunk can outgrow
+/// one extent.
+const PWRITE_CHUNK_MAX_BYTES: u64 = 32 * 1024 * 1024;
+
 /// Clean blocks the buffer cache of a [`Filesystem::mount`] keeps: about
 /// 1 MiB at 4 KiB blocks. `docs/read-path-cost.md` records what it buys on a
 /// measured tree (#68).
@@ -4431,6 +4439,76 @@ impl Filesystem {
         Ok(new_size)
     }
 
+    /// The largest write, in data blocks, that `apply_pwrite` puts in one
+    /// transaction.
+    ///
+    /// Two bounds, the smaller winning. MEMORY: a chunk is held several
+    /// times over while it is committed (the block buffer, the transaction,
+    /// the serialised journal blocks), so no chunk exceeds
+    /// [`PWRITE_CHUNK_MAX_BYTES`]. THE JOURNAL: the chunk's data blocks,
+    /// the metadata it dirties, the descriptor blocks tagging all of them
+    /// and the commit block must fit in the journal's usable length.
+    ///
+    /// The metadata is bounded for the worst case, free space fragmented
+    /// into single blocks: every data block its own allocation, so every
+    /// block group touched has its bitmap and descriptor block dirtied, and
+    /// every block its own extent, so the extent tree grows by a leaf per
+    /// half-leaf of blocks and by index nodes above those. Descriptor blocks
+    /// are counted at the widest tag with a checksum tail, the fewest tags a
+    /// descriptor can hold.
+    fn pwrite_chunk_blocks(&self) -> u64 {
+        let bs = self.sb.block_size() as u64;
+        let memory_bound = (PWRITE_CHUNK_MAX_BYTES / bs).max(1);
+        let Some(journal) = &self.journal else {
+            return memory_bound;
+        };
+        let capacity = match journal.lock() {
+            Ok(jw) => jw.max_blocks_per_transaction() as u64,
+            // The commit refuses a poisoned writer anyway; any chunk will do.
+            Err(_) => return memory_bound,
+        };
+        // Widest JBD2 tag (16 bytes, CSUM_V3) and a 4-byte checksum tail
+        // after the 12-byte header: the fewest tags a descriptor holds.
+        let tags_per_desc = ((bs - 12 - 4) / 16).max(1);
+        // Extents per tree node (12-byte entries after a 12-byte header),
+        // halved: a split leaves both halves this full.
+        let half_node = (((bs - 12) / 12) / 2).max(1);
+        let groups = self.groups.len() as u64;
+        let gdt_blocks = (groups * u64::from(self.sb.desc_size)).div_ceil(bs);
+        let fits = |data: u64| {
+            // Extent-tree blocks: leaves for `data` single-block extents, and
+            // index levels above them, up to the format's depth limit of 5.
+            let mut tree = 0u64;
+            let mut level = data;
+            for _ in 0..5 {
+                level = level.div_ceil(half_node) + 1;
+                tree += level;
+            }
+            let allocations = data + tree;
+            // Inode table block + superblock, then a bitmap per group and the
+            // descriptor-table blocks covering them.
+            let metadata = 2 + allocations.min(groups) + allocations.min(gdt_blocks) + tree;
+            let tagged = data + metadata;
+            let descriptors = tagged.div_ceil(tags_per_desc);
+            let commit_block = 1;
+            tagged + descriptors + commit_block <= capacity
+        };
+        // The largest `data` that fits, by bisection (`fits` is monotone).
+        let (mut lo, mut hi) = (1u64, memory_bound);
+        if fits(hi) {
+            return hi;
+        }
+        while lo + 1 < hi {
+            let mid = lo + (hi - lo) / 2;
+            if fits(mid) {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        lo
+    }
+
     /// Positional write: splice `data` into the file at byte `offset`,
     /// allocating new physical blocks for any logical blocks that aren't
     /// yet mapped (sparse holes, or blocks past EOF). Existing mapped
@@ -4506,20 +4584,16 @@ impl Filesystem {
         let first_lb = offset / bs;
         let last_lb_excl = end.div_ceil(bs);
 
-        // A single pwrite journals all its data blocks plus the inode/bitmap/
-        // BGD/SB metadata in ONE transaction, whose descriptor block holds only
-        // ~(block_size - 12)/16 tags. A write spanning more than that overflows
-        // it ("descriptor block overflow"). Split large writes into block-
-        // aligned chunks that each fit one transaction; every chunk commits
-        // atomically (POSIX pwrite is not atomic across a large range anyway).
-        let tags_per_desc = (bs_usize.saturating_sub(12)) / 16;
-        // Reserve 8 tag slots for this transaction's own metadata: inode, block
-        // bitmap, BGD, superblock, plus up to ~4 extent-tree node blocks when a
-        // chunk's extents grow the tree. A chunk of (tags_per_desc - 8) data
-        // blocks always lands in a single block group (247 blocks at 4 KiB, well
-        // inside a 128 MiB group), so the real overhead is <= 4 — 8 is a
-        // conservative ~2x bound.
-        let max_data_blocks = tags_per_desc.saturating_sub(8).max(1) as u64;
+        // A pwrite journals its data blocks and its metadata in ONE
+        // transaction, and a transaction has to fit in the journal: the
+        // writer checkpoints every commit, so the whole log is free for each
+        // one, and it refuses a transaction longer than that. A write larger
+        // than the chunk the journal can take is cut into block-aligned
+        // chunks, each its own transaction and each atomic (POSIX pwrite is
+        // not atomic across a large range anyway). A transaction carries as
+        // many descriptor blocks as it needs (#147), so descriptor capacity
+        // is not the bound; it only counts toward the journal's length (#293).
+        let max_data_blocks = self.pwrite_chunk_blocks();
         let max_chunk = max_data_blocks * bs;
         if len > max_chunk {
             let mut chunk_off = 0u64;
