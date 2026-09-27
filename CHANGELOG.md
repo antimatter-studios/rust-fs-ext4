@@ -480,6 +480,12 @@ Not caught by the compiler — the same source builds and behaves differently:
   into the entry; e2fsck reports it as an illegal character. The kernel
   never writes one, and `split_parent_and_base`, which every one of them
   uses, now refuses it (#247).
+- A rename onto itself validates and resolves the path before succeeding.
+  `apply_rename(p, p)` returned `Ok` before looking at `p`, so a NUL name
+  renamed onto itself got past the #247 refusal and a missing path onto
+  itself succeeded where rename(2) gives ENOENT; both now fail, an existing
+  path onto itself still succeeds without a write, and none of the three
+  marks the volume not clean (#303).
 
 ## [0.5.1] — 2026-09-06
 

@@ -5584,11 +5584,9 @@ impl Filesystem {
     /// directory, splitting a full leaf of its htree index (#302), and
     /// dropping that index when it has no room to route a new leaf (#347).
     pub fn apply_rename(&self, src: &str, dst: &str, replace_if_exists: bool) -> Result<()> {
-        self.refuse_write()?;
-        if src == dst {
-            return Ok(());
-        }
-
+        // The verdict only: the volume is marked not clean below, once the
+        // paths are known good and the rename is known to write (#303).
+        self.write_refusal()?;
         let (src_parent_path, src_name) = split_parent_and_base(src)?;
         let (dst_parent_path, dst_name) = split_parent_and_base(dst)?;
         if dst_name.len() > 255 {
@@ -5618,6 +5616,14 @@ impl Filesystem {
 
         let src_ino =
             self.find_entry_in_dir(src_parent_ino, &src_parent_inode, src_name.as_bytes())?;
+        // rename(2) of an existing path onto itself succeeds and changes
+        // nothing. Only after both paths are validated and the source is
+        // found: a NUL name is still refused and a missing path is still
+        // ENOENT (#303).
+        if src == dst {
+            return Ok(());
+        }
+        self.mark_not_clean_once()?;
         // `.ok()` here for the same reason as `entry_exists` above: it turned
         // a refusal to read the block into "dst does not exist", and rename
         // then created it and re-stamped the block.
@@ -7278,31 +7284,30 @@ mod tests {
         assert_ne!(on_disk_state(&dev) & EXT4_VALID_FS, 0, "fixture: clean");
 
         let fs = mount(&dev);
+        let mut wrong = Vec::new();
         let got = fs.apply_rename("/missing", "/missing", false);
-        assert!(
-            matches!(got, Err(Error::NotFound)),
-            "a missing path renamed onto itself: {got:?}"
-        );
+        if !matches!(got, Err(Error::NotFound)) {
+            wrong.push(format!("a missing path onto itself: {got:?}"));
+        }
         let got = fs.apply_rename("/a\0b", "/a\0b", false);
-        assert!(
-            matches!(
-                got,
-                Err(Error::InvalidArgument("a name cannot contain a NUL byte"))
-            ),
-            "a NUL name renamed onto itself: {got:?}"
-        );
+        if !matches!(
+            got,
+            Err(Error::InvalidArgument("a name cannot contain a NUL byte"))
+        ) {
+            wrong.push(format!("a NUL name onto itself: {got:?}"));
+        }
+        if on_disk_state(&dev) & EXT4_VALID_FS == 0 {
+            wrong.push("a refused rename marked the volume not clean".into());
+        }
         let before = dev.bytes.lock().unwrap().clone();
-        fs.apply_rename("/f", "/f", false)
-            .expect("an existing path renamed onto itself");
-        assert!(
-            *dev.bytes.lock().unwrap() == before,
-            "renaming a path onto itself changed the volume"
-        );
-        assert_ne!(
-            on_disk_state(&dev) & EXT4_VALID_FS,
-            0,
-            "a rename that wrote nothing marked the volume not clean"
-        );
+        let got = fs.apply_rename("/f", "/f", false);
+        if got.is_err() {
+            wrong.push(format!("an existing path onto itself: {got:?}"));
+        }
+        if *dev.bytes.lock().unwrap() != before {
+            wrong.push("renaming an existing path onto itself wrote".into());
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
         resolve(&fs, "/f").expect("/f is still there");
     }
 
