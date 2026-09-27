@@ -78,12 +78,14 @@ fn names(fs: &Filesystem, dir: &str) -> Vec<Vec<u8>> {
     out
 }
 
-#[test]
-fn a_read_only_mount_reads_what_the_journal_committed() {
+/// A fresh image whose journal holds a committed `mkdir /committed` that
+/// never reached its final location: replay is the only way to see it.
+fn image_with_committed_mkdir(tag: &str) -> String {
     let mkfs = "mkfs.ext4";
     let e2fsck = "e2fsck";
     let debugfs = "debugfs";
-    let image = fs_ext4_test_support::temp_path!("fs_ext4_ro_replay_{}.img", std::process::id());
+    let image =
+        fs_ext4_test_support::temp_path!("fs_ext4_ro_replay_{tag}_{}.img", std::process::id());
     std::fs::File::create(&image)
         .and_then(|f| f.set_len(64 * 1024 * 1024))
         .unwrap();
@@ -127,6 +129,13 @@ fn a_read_only_mount_reads_what_the_journal_committed() {
             "the cut came too late: the mkdir reached its final location"
         );
     }
+    image
+}
+
+#[test]
+fn a_read_only_mount_reads_what_the_journal_committed() {
+    let e2fsck = "e2fsck";
+    let image = image_with_committed_mkdir("read");
 
     let before = std::fs::read(&image).unwrap();
     let ro = Filesystem::mount(Arc::new(FileDevice::open(&image).unwrap())).expect("mount ro");
@@ -173,6 +182,71 @@ fn a_read_only_mount_reads_what_the_journal_committed() {
         ),
         "group 0's counters after in-memory replay"
     );
+    let _ = std::fs::remove_file(&image);
+    let _ = std::fs::remove_file(&recovered);
+}
+
+/// The root directory's names as `debugfs` reads them, `.` and `..` included.
+fn debugfs_root_names(image: &str) -> Vec<Vec<u8>> {
+    let out = fs_ext4_test_support::oracle("debugfs")
+        .args(["-R", "ls -p /", image])
+        .output();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "debugfs ls: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // `ls -p` prints `/ino/mode/uid/gid/name/size/` per entry.
+    let mut names: Vec<Vec<u8>> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix('/'))
+        .filter_map(|l| l.split('/').nth(4).map(|n| n.as_bytes().to_vec()))
+        .collect();
+    names.sort();
+    names
+}
+
+/// `fresh_read` on a read-only mount must not throw away what replay put in
+/// the cache (#298). The replayed blocks exist only in memory: the device
+/// still holds the pre-replay bytes, and nothing was checkpointed, so a
+/// cache discard can only turn committed state back into superseded state.
+/// The expected view is e2fsprogs' own recovery of a copy, read by debugfs.
+#[test]
+fn fresh_read_keeps_replayed_blocks_a_read_only_mount_cannot_checkpoint() {
+    let image = image_with_committed_mkdir("fresh");
+    let recovered = format!("{image}.recovered");
+    std::fs::copy(&image, &recovered).unwrap();
+    let (code, log) = run("e2fsck", &["-fy", &recovered]);
+    assert!(matches!(code, Some(0 | 1)), "{log}");
+    let expected = debugfs_root_names(&recovered);
+    assert!(
+        expected.contains(&b"committed".to_vec()),
+        "the oracle's recovery lost the committed mkdir: {expected:?}"
+    );
+
+    let mut ro = Filesystem::mount(Arc::new(FileDevice::open(&image).unwrap())).expect("mount ro");
+    assert_eq!(
+        names(&ro, "/"),
+        expected,
+        "the replayed view before fresh_read"
+    );
+    let fresh = ro.fresh_read();
+    let after = names(&ro, "/");
+    assert_eq!(
+        after,
+        expected,
+        "fresh_read ({fresh:?}) discarded the replayed blocks and read the pre-replay device: {:?}",
+        after
+            .iter()
+            .map(|n| String::from_utf8_lossy(n).into_owned())
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        fresh.is_err(),
+        "fresh_read claimed a physical readback the device cannot give"
+    );
+    drop(ro);
     let _ = std::fs::remove_file(&image);
     let _ = std::fs::remove_file(&recovered);
 }
