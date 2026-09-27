@@ -598,6 +598,20 @@ tasks:
       # consumer handed only fs_ext4.h cannot compile.
       - 'cp "../rust-fs-core/include/fs_core.h" "{{.OUT}}/include/fs_core.h"'
 
+  check:semver:
+    desc: Refuse a public-API break the version in Cargo.toml does not declare
+    # Against the newest version on crates.io, with cargo-semver-checks: a
+    # break needs the 0.x minor to move, an addition the patch. Why, and what
+    # it cannot see, is at the top of the script (#120). No `sources:` on
+    # purpose -- the baseline is the registry, which moves without this tree
+    # changing, so a fingerprint would call a stale answer up to date.
+    #
+    # Budget: measured 13 lines / 1,208 bytes on a passing run (the build
+    # lines of both sides plus the verdict), so 40 / 4,000. A failing run
+    # prints every broken item and is not held to it.
+    cmds:
+      - 'scripts/tier.sh check:semver semver 40 4000 -- scripts/semver-check.sh'
+
   lint:
     desc: Formatting and clippy, exactly as CI runs them
     # `--locked` is not decoration. It makes the build fail rather than

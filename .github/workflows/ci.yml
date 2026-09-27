@@ -35,6 +35,9 @@ name: CI
 #                unknown) RUN under wasm-bindgen-test in Node, because std
 #                there compiles clock and process-ID calls that panic at
 #                run time -- a build-only check cannot see them.
+#   semver       `chore check:semver`: the public API against the newest
+#                crates.io release, refusing a break Cargo.toml's version
+#                does not declare (#120).
 #   ci-ok        the one required check: green only when every job above
 #                ran and succeeded (failed, cancelled OR skipped fails it).
 #
@@ -357,10 +360,54 @@ jobs:
           path: tmp/logs/*.log
           if-no-files-found: error
 
+  semver:
+    # `chore check:semver`: this tree's public API against the newest
+    # version on crates.io, refusing a break the version in Cargo.toml does
+    # not declare (#120). No fixtures, no VM -- only the registry.
+    name: semver (public API against crates.io)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      # The version scripts/semver-check.sh expects. A prebuilt binary,
+      # checksum-verified by the action, rather than a ten-minute build.
+      CARGO_SEMVER_CHECKS_VERSION: "0.50.0"
+      # A failing tier prints only its verdict by default. Here the tail IS
+      # the answer -- which items broke -- so it is printed in full.
+      OUTPUT_BUDGET_FAIL_TAIL: "200"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install chore
+        run: scripts/ci-install-chore.sh
+      - name: chore siblings
+        run: chore siblings
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Install cargo-semver-checks
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-semver-checks@${{ env.CARGO_SEMVER_CHECKS_VERSION }}
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-semver-cargo-${{ hashFiles('**/Cargo.lock') }}
+      - name: chore check:semver
+        run: chore check:semver
+      - name: Keep the tier logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tier-logs-semver
+          path: tmp/logs/*.log
+          if-no-files-found: error
+
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [unit, fixtures, test, test-arm64, suite-in-vm, wasm]
+    needs: [unit, fixtures, test, test-arm64, suite-in-vm, wasm, semver]
     runs-on: ubuntu-latest
     steps:
       - name: Every job ran and succeeded
