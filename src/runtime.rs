@@ -117,3 +117,39 @@ fn fill_from_web_crypto(out: &mut [u8]) -> bool {
     bytes.copy_to(out);
     true
 }
+
+/// Time since [`Stopwatch::start`], for rate-limiting work such as progress
+/// callbacks. Never a timestamp.
+///
+/// Native: `std::time::Instant`, monotonic. Browser build: the host's
+/// `Date.now()`, because `Instant::now` panics there (#295); a wall clock can
+/// step backwards, which reads as no time elapsed rather than as a panic.
+pub(crate) struct Stopwatch {
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    started_ms: f64,
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    started: std::time::Instant,
+}
+
+impl Stopwatch {
+    pub(crate) fn start() -> Self {
+        Self {
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+            started_ms: js_sys::Date::now(),
+            #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+            started: std::time::Instant::now(),
+        }
+    }
+
+    pub(crate) fn elapsed(&self) -> std::time::Duration {
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        {
+            let ms = (js_sys::Date::now() - self.started_ms).max(0.0);
+            std::time::Duration::from_secs_f64(ms / 1000.0)
+        }
+        #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+        {
+            self.started.elapsed()
+        }
+    }
+}

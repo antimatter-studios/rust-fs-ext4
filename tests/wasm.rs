@@ -144,3 +144,46 @@ fn format_without_a_uuid_draws_a_random_v4_uuid() {
     }
     assert_ne!(a, b, "two formats drew the same UUID");
 }
+
+/// An fsck audit of a volume that has been written to (#295): it must run
+/// to the end, find nothing wrong, and keep its progress rate-limited.
+#[wasm_bindgen_test]
+fn an_audit_of_a_written_volume_is_clean() {
+    let dev = formatted();
+    {
+        let fs = mount(&dev);
+        fs.apply_mkdir("/dir", 0o755).expect("mkdir");
+        for i in 0..20 {
+            let path = format!("/dir/f{i}");
+            fs.apply_create(&path, 0o644).expect("create");
+            fs.apply_pwrite(&path, 0, &[i as u8; 3000]).expect("write");
+        }
+        fs.finish().expect("unmount");
+    }
+
+    let fs = mount(&dev);
+    let report = fs_ext4::fsck::audit(&fs, u32::MAX, u32::MAX).expect("audit");
+    assert!(report.is_clean(), "anomalies: {:?}", report.anomalies);
+
+    let mut inode_ticks = 0u32;
+    let report = fs_ext4::fsck::audit_with_callbacks(
+        &fs,
+        u32::MAX,
+        u32::MAX,
+        |phase, _, _| {
+            if phase == fs_ext4::fsck::FsckPhase::Inodes {
+                inode_ticks += 1;
+            }
+        },
+        |a| panic!("finding on a clean volume: {a:?}"),
+    )
+    .expect("audit_with_callbacks");
+    assert_eq!(report.anomalies_count, 0);
+    // The phase's opening and closing ticks, and none per inode: the
+    // throttle holds a small volume's audit to a handful of callbacks.
+    assert!(
+        (1..=3).contains(&inode_ticks),
+        "{inode_ticks} Inodes progress callbacks for 23 inodes"
+    );
+    fs.finish().expect("unmount");
+}

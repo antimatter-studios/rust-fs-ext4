@@ -32,9 +32,10 @@ use crate::extent;
 use crate::features;
 use crate::fs::{BlockBuffer, Filesystem};
 use crate::inode::Inode;
+use crate::runtime::Stopwatch;
 use crate::superblock::Superblock;
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// One problem found by [`audit`]. Each variant carries the inode or
 /// path needed to act on the finding.
@@ -456,7 +457,7 @@ fn audit_inner(
     // the stored value — the image is genuinely wrong).
     let have_incomplete = !incomplete_dirs.is_empty();
     let mut inodes_done: u64 = 0;
-    let mut last_tick = Instant::now();
+    let mut last_tick = Stopwatch::start();
     let tick = Duration::from_millis(500);
     for (&ino, &count) in observed.iter() {
         match fs.read_inode_verified(ino) {
@@ -508,7 +509,7 @@ fn audit_inner(
         inodes_done += 1;
         if last_tick.elapsed() >= tick {
             on_progress(FsckPhase::Inodes, inodes_done, inodes_total.max(1));
-            last_tick = Instant::now();
+            last_tick = Stopwatch::start();
         }
     }
 

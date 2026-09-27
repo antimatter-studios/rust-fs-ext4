@@ -440,12 +440,12 @@ tasks:
     # Node. CI runs this in its own job, `wasm`, which ci-ok needs.
     #
     # FLOOR: every test in tests/wasm.rs, measured -- 2 executed when the
-    # tier was added, 3 with #294's. The file is small, so one test lost is
-    # the signal.
+    # tier was added, 3 with #294's, 4 with #295's. The file is small, so
+    # one test lost is the signal.
     cmds:
       - scripts/wasm-tools.sh --check
       - 'CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner scripts/tier.sh test:wasm wasm 170 8000 -- cargo test --locked --target wasm32-unknown-unknown --test wasm'
-      - 'scripts/test-floor.sh wasm 3'
+      - 'scripts/test-floor.sh wasm 4'
 
   test:vm:
     desc: 'The whole suite, compiled and run INSIDE the harness VM (how a Mac runs the Linux tests)'

@@ -22,9 +22,10 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PATTERN='SystemTime::now|Instant::now|process::id'
 ALLOWED='runtime.rs'
 
-# file<TAB>call<TAB>count<TAB>issue
-EXCEPTIONS="$(printf '%s\t%s\t%s\t%s\n' \
-    fsck.rs Instant::now 2 '#295')"
+# file<TAB>call<TAB>count<TAB>issue -- none open today. An entry names a
+# known call site with an issue to remove it, e.g. `mkfs.rs SystemTime::now 1
+# '#294'`, and is deleted by the fix.
+EXCEPTIONS=""
 
 # scan DIR: print `relative-path<TAB>call<TAB>line` for every call outside
 # a test module and outside the allowed file.
