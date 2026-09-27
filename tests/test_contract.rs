@@ -183,6 +183,125 @@ fn harness_spawns(text: &str) -> Vec<String> {
     hits
 }
 
+/// Programs that run root. Nothing in this suite needs it — the mounts and
+/// the tools happen in the guest — so asking for it is refused outright,
+/// whatever it is then asked to do.
+const ESCALATORS: [&str; 5] = ["sudo", "doas", "su", "pkexec", "run0"];
+
+/// Programs whose job is to run ANOTHER program named in their arguments.
+/// Every scan above reads only the program a process is spawned with, so
+/// one of these in front of `e2fsck` or `mount` hides it from all of them
+/// (#287). Refused outright: the arguments are not something a text scan
+/// can be trusted to read.
+const RUNNERS: [&str; 10] = [
+    "env", "script", "xargs", "nohup", "timeout", "nice", "setsid", "stdbuf", "chroot", "unshare",
+];
+
+/// Shells. A shell's script is a string built at run time, so a `-c`
+/// argument can carry anything; refused, except in the files named in
+/// [`HOST_SHELL_ALLOWED`].
+const SHELLS: [&str; 7] = ["sh", "bash", "zsh", "dash", "ksh", "fish", "busybox"];
+
+/// The files that may spawn a shell on the host, and why. Each one's
+/// shell spawns are still read, and refused if they name an oracle tool,
+/// a harness program, an escalator or a runner. A shell a test needs for
+/// anything else goes through `fs_ext4_test_support`, which runs it in
+/// the guest.
+const HOST_SHELL_ALLOWED: [(&str, &str); 1] = [(
+    "tests/oracle_encoding.rs",
+    "a POSIX shell is the independent decoder guest_quote is checked against; \
+     its scripts are printf, base64 and od",
+)];
+
+/// The program a spawn at `at` names, if it is a string literal, and the
+/// basename of it.
+fn spawned_literal(text: &str, at: usize, spawn: &str) -> Option<(String, String)> {
+    let rest = text[at + spawn.len()..].trim_start();
+    let literal = rest.strip_prefix('"')?;
+    let end = literal.find('"')?;
+    let program = &literal[..end];
+    let last = program.rsplit('/').next().unwrap_or(program);
+    Some((program.to_string(), last.to_string()))
+}
+
+/// Places in `text` that spawn an escalator, a runner or a shell.
+fn trampoline_spawns(text: &str) -> Vec<String> {
+    let spawn = ["Command", "::", "new", "("].concat();
+    let mut hits = Vec::new();
+    for (at, _) in text.match_indices(&spawn) {
+        let Some((program, last)) = spawned_literal(text, at, &spawn) else {
+            continue;
+        };
+        let last = last.as_str();
+        if ESCALATORS.contains(&last) || RUNNERS.contains(&last) || SHELLS.contains(&last) {
+            hits.push(program);
+        }
+    }
+    hits
+}
+
+/// A string literal anywhere in `text` that is an escalator's name or
+/// path. Belt to [`trampoline_spawns`]'s braces: it also sees one handed
+/// to a spawn through a variable, an alias of `Command`, or an argument.
+fn escalator_literals(text: &str) -> Vec<String> {
+    let mut hits = Vec::new();
+    for e in ESCALATORS {
+        for form in [format!("\"{e}\""), format!("/{e}\"")] {
+            if text.contains(&form) {
+                hits.push(e.to_string());
+                break;
+            }
+        }
+    }
+    hits
+}
+
+/// Whether `word` appears in `text` as a whole word.
+fn names_word(text: &str, word: &str) -> bool {
+    let part_of_word = |c: char| c.is_alphanumeric() || c == '_' || c == '.' || c == '-';
+    text.match_indices(word).any(|(at, _)| {
+        let before = text[..at].chars().next_back();
+        let after = text[at + word.len()..].chars().next();
+        !before.is_some_and(part_of_word) && !after.is_some_and(part_of_word)
+    })
+}
+
+/// For each shell spawn in `text`, the text from the spawn to the call
+/// that runs it — the program, its arguments and its script — and any
+/// oracle tool, harness program, escalator or runner that text names.
+fn shell_script_reaches(text: &str) -> Vec<String> {
+    let spawn = ["Command", "::", "new", "("].concat();
+    let forbidden: Vec<&str> = TOOLS
+        .iter()
+        .chain(HARNESS.iter())
+        .chain(ESCALATORS.iter())
+        .chain(RUNNERS.iter())
+        .copied()
+        .collect();
+    let mut hits = Vec::new();
+    for (at, _) in text.match_indices(&spawn) {
+        let Some((_, last)) = spawned_literal(text, at, &spawn) else {
+            continue;
+        };
+        if !SHELLS.contains(&last.as_str()) {
+            continue;
+        }
+        let chain = &text[at..];
+        let end = [".output(", ".status(", ".spawn("]
+            .iter()
+            .filter_map(|run| chain.find(run))
+            .min()
+            .unwrap_or(chain.len());
+        let chain = &chain[..end];
+        for word in &forbidden {
+            if names_word(chain, word) {
+                hits.push(format!("{last} -c ... {word}"));
+            }
+        }
+    }
+    hits
+}
+
 /// Lines that print a skip notice: the signature of a test that returns
 /// early and passes having checked nothing.
 fn announced_skips(text: &str) -> Vec<String> {
@@ -270,6 +389,59 @@ fn no_test_spawns_a_program_it_named_in_a_variable() {
     );
 }
 
+#[test]
+fn no_test_hands_its_work_to_root_a_shell_or_another_runner() {
+    let mut offenders = Vec::new();
+    for (path, text) in all_test_sources() {
+        let relative = path.strip_prefix(manifest_dir()).unwrap_or(&path);
+        let shell_allowed = HOST_SHELL_ALLOWED
+            .iter()
+            .any(|(file, _)| relative == Path::new(file));
+        for hit in trampoline_spawns(&text) {
+            let last = hit.rsplit('/').next().unwrap_or(&hit);
+            if shell_allowed && SHELLS.contains(&last) {
+                continue;
+            }
+            offenders.push(format!("{}: {hit}", path.display()));
+        }
+        for hit in escalator_literals(&text) {
+            offenders.push(format!("{}: \"{hit}\"", path.display()));
+        }
+        if shell_allowed {
+            for hit in shell_script_reaches(&text) {
+                offenders.push(format!("{}: {hit}", path.display()));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "these spawn root, a shell or a program that runs another one, which every \
+         check above reads straight past: what it carries is an argument. Nothing here \
+         needs root; a shell or a tool runs in the guest, through \
+         fs_ext4_test_support:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// An allowance that no longer covers anything is a hole left open for
+/// the next file to be given that name.
+#[test]
+fn every_host_shell_allowance_is_still_used() {
+    for (file, why) in HOST_SHELL_ALLOWED {
+        let text = std::fs::read_to_string(manifest_dir().join(file))
+            .unwrap_or_else(|e| panic!("{file} is allowed a host shell ({why}) but: {e}"));
+        let spawns_a_shell = trampoline_spawns(&text).iter().any(|hit| {
+            let last = hit.rsplit('/').next().unwrap_or(hit);
+            SHELLS.contains(&last)
+        });
+        assert!(
+            spawns_a_shell,
+            "{file} is allowed a host shell ({why}) and no longer spawns one; \
+             remove it from HOST_SHELL_ALLOWED"
+        );
+    }
+}
+
 /// The scans find what they are for, so the two tests above cannot pass
 /// by looking at nothing.
 #[test]
@@ -347,10 +519,64 @@ fn the_scans_recognise_the_shapes_they_refuse() {
         direct_tool_spawns(&escape),
         indirect_spawns(&escape),
         harness_spawns(&escape),
+        trampoline_spawns(&escape),
+        escalator_literals(&escape),
     ]
     .concat();
     assert!(
         !caught.is_empty(),
         "a privileged shell carrying the oracle tools walks past every scan"
     );
+    assert_eq!(trampoline_spawns(&escape), ["sudo".to_string()]);
+    assert_eq!(escalator_literals(&escape), ["sudo".to_string()]);
+
+    // The same, without root: a shell, a runner, an escalator by path,
+    // and an escalator reached through an alias of `Command`.
+    let trampolines = [
+        "Command",
+        "::new(\"bash\").args([\"-c\", \"e2fsck -fn x.img\"]);\n",
+        "Command",
+        "::new(\"/usr/bin/env\").arg(\"debugfs\");\n",
+        "Command",
+        "::new(\"/usr/bin/doas\").arg(\"true\");\n",
+        "Command",
+        "::new(\"cargo\").arg(\"test\");\n",
+        "Cmd::new(\"pkexec\");\n",
+    ]
+    .concat();
+    assert_eq!(
+        trampoline_spawns(&trampolines),
+        [
+            "bash".to_string(),
+            "/usr/bin/env".to_string(),
+            "/usr/bin/doas".to_string()
+        ]
+    );
+    assert_eq!(
+        escalator_literals(&trampolines),
+        ["doas".to_string(), "pkexec".to_string()]
+    );
+
+    // An allowed shell is still read: one that reaches a tool or a mount
+    // is refused, one that prints is not.
+    let shells = [
+        "Command",
+        "::new(\"sh\").arg(\"-c\").arg(format!(\"printf %s {}\", q)).output();\n",
+        "Command",
+        "::new(\"sh\").arg(\"-c\").arg(\"mount -o loop x.img /mnt\").output();\n",
+        "Command",
+        "::new(\"bash\")\n    .arg(\"-c\")\n    .arg(\"sudo e2fsck -fn x.img\")\n    .status();\n",
+    ]
+    .concat();
+    assert_eq!(
+        shell_script_reaches(&shells),
+        [
+            "sh -c ... mount".to_string(),
+            "bash -c ... e2fsck".to_string(),
+            "bash -c ... sudo".to_string()
+        ]
+    );
+    // A word that only contains a name is not that name.
+    assert!(!names_word("remount unmounted e2fsck.log", "mount"));
+    assert!(!names_word("e2fsck.log", "e2fsck"));
 }
