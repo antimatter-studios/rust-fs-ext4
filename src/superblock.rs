@@ -304,6 +304,12 @@ impl Superblock {
                 "superblock: log_block_size exceeds the largest ext4 block",
             ));
         }
+        check_group_fits_bitmap(
+            raw.as_slice(),
+            log_block_size,
+            blocks_per_group,
+            feature_ro_compat & crate::features::RoCompat::BIGALLOC.bits() != 0,
+        )?;
         // 32 bytes without the 64BIT feature, 64 or more with it, and a
         // power of two either way -- the kernel's own rule. The parser
         // reads fixed offsets up to 0x20, and up to 0x3C when the field
@@ -538,6 +544,28 @@ impl Superblock {
         1024u32 << self.log_block_size
     }
 
+    /// `blocks_count * block_size`, or `None` when the product overflows
+    /// a `u64` -- which no real filesystem does, so a caller refuses it
+    /// rather than saturating to a bound that admits anything.
+    pub fn filesystem_bytes(&self) -> Option<u64> {
+        self.blocks_count.checked_mul(u64::from(self.block_size()))
+    }
+
+    /// THE FILESYSTEM FITS ITS DEVICE (#321), the kernel's "block count
+    /// exceeds size of device". Every bound that reads `blocks_count`
+    /// otherwise trusts a size nothing checked: a superblock claiming
+    /// 2^32 blocks on a few megabytes let `read_all` ask for terabytes.
+    /// A device larger than the filesystem is normal (a partition, an
+    /// FSKit volume); a smaller one is a truncated or forged image.
+    pub fn check_fits_device(&self, device_bytes: u64) -> Result<()> {
+        match self.filesystem_bytes() {
+            Some(bytes) if bytes <= device_bytes => Ok(()),
+            _ => Err(Error::Corrupt(
+                "superblock: blocks_count makes the filesystem larger than the device",
+            )),
+        }
+    }
+
     /// Number of block groups.
     ///
     /// Counted from `s_first_data_block`, as the kernel's `ext4_fill_super`
@@ -701,8 +729,55 @@ mod geometry_tests {
         let mut bigalloc = raw(16384, 0, 0);
         bigalloc[0x64..0x68]
             .copy_from_slice(&crate::features::RoCompat::BIGALLOC.bits().to_le_bytes());
+        bigalloc[0x24..0x28].copy_from_slice(&8192u32.to_le_bytes()); // clusters_per_group
         Superblock::parse(bigalloc)
             .expect("a 1 KiB bigalloc filesystem may start its groups at block 0");
+    }
+
+    /// A group has one bitmap block, so it cannot have more blocks than
+    /// that block has bits -- the kernel's "blocks per group too big"
+    /// (#321). Without this bound the allocator's scan ran past the
+    /// bitmap into the next group's blocks.
+    #[test]
+    fn more_blocks_per_group_than_a_bitmap_has_bits_is_refused() {
+        for (log, bpg) in [(0u32, 8193u32), (2, 32769), (2, u32::MAX)] {
+            let mut r = raw(65536, u32::from(log == 0), log);
+            r[0x20..0x24].copy_from_slice(&bpg.to_le_bytes());
+            assert!(
+                refusal(r).contains("blocks_per_group"),
+                "log {log}, blocks_per_group {bpg}"
+            );
+        }
+        for (log, bpg) in [(0u32, 8192u32), (2, 32768)] {
+            let mut r = raw(65536, u32::from(log == 0), log);
+            r[0x20..0x24].copy_from_slice(&bpg.to_le_bytes());
+            Superblock::parse(r)
+                .unwrap_or_else(|e| panic!("log {log}, blocks_per_group {bpg}: {e:?}"));
+        }
+    }
+
+    /// Under bigalloc the bitmap counts clusters, so the bound is on
+    /// `s_clusters_per_group`, and `s_blocks_per_group` must be that
+    /// many clusters in blocks -- the kernel's two bigalloc checks.
+    #[test]
+    fn a_bigalloc_group_is_bounded_in_clusters() {
+        let bigalloc = |log_cluster: u32, cpg: u32, bpg: u32| {
+            let mut r = raw(1 << 20, 0, 2);
+            r[0x64..0x68]
+                .copy_from_slice(&crate::features::RoCompat::BIGALLOC.bits().to_le_bytes());
+            r[0x1C..0x20].copy_from_slice(&log_cluster.to_le_bytes());
+            r[0x20..0x24].copy_from_slice(&bpg.to_le_bytes());
+            r[0x24..0x28].copy_from_slice(&cpg.to_le_bytes());
+            r
+        };
+        // 64 KiB clusters over 4 KiB blocks: 32768 clusters is 16 * 32768
+        // blocks, far more than a 4 KiB bitmap has bits, and legitimate.
+        Superblock::parse(bigalloc(6, 32768, 32768 * 16)).expect("mke2fs -O bigalloc -C 65536");
+        assert!(refusal(bigalloc(6, 32769, 32769 * 16)).contains("clusters_per_group"));
+        assert!(refusal(bigalloc(6, 32768, 32768)).contains("clusters_per_group"));
+        assert!(refusal(bigalloc(6, 0, 32768)).contains("clusters_per_group"));
+        assert!(refusal(bigalloc(1, 32768, 32768)).contains("cluster"));
+        assert!(refusal(bigalloc(40, 1, 1)).contains("cluster"));
     }
 
     /// The geometries mke2fs writes still parse: 1 KiB from block 1, and
@@ -719,6 +794,56 @@ mod geometry_tests {
                 .unwrap_or_else(|e| panic!("blocks {blocks}, first {first}, log {log}: {e:?}"));
         }
     }
+}
+
+/// The kernel's largest `s_log_cluster_size`: `EXT4_MAX_CLUSTER_LOG_SIZE`
+/// (30) less `EXT4_MIN_BLOCK_LOG_SIZE` (10), a 1 GiB cluster.
+const MAX_LOG_CLUSTER_SIZE: u32 = 20;
+
+/// A GROUP FITS ITS BITMAP (#321). Each group has one bitmap block, so it
+/// cannot track more units than that block has bits. Without this bound
+/// the allocator's scan ran past the bitmap -- `bit_is_set` reads a bit
+/// past the end as free -- and handed out the next group's blocks, and a
+/// single group of `u32::MAX` blocks passed the descriptor-table check.
+///
+/// The unit is a block, or under BIGALLOC a cluster: there the bitmap
+/// counts clusters, `s_clusters_per_group` is what is bounded, and
+/// `s_blocks_per_group` must be exactly that many clusters in blocks.
+/// These are `ext4_handle_clustersize`'s checks.
+fn check_group_fits_bitmap(
+    raw: &[u8],
+    log_block_size: u32,
+    blocks_per_group: u32,
+    bigalloc: bool,
+) -> Result<()> {
+    let bitmap_bits = 8u64 << (10 + log_block_size);
+    if !bigalloc {
+        if u64::from(blocks_per_group) > bitmap_bits {
+            return Err(Error::Corrupt(
+                "superblock: blocks_per_group exceeds the bits in one bitmap block",
+            ));
+        }
+        return Ok(());
+    }
+    let log_cluster_size = u32::from_le_bytes(raw[0x1C..0x20].try_into().unwrap());
+    if log_cluster_size < log_block_size || log_cluster_size > MAX_LOG_CLUSTER_SIZE {
+        return Err(Error::Corrupt(
+            "superblock: bigalloc cluster is smaller than a block or larger than ext4 allows",
+        ));
+    }
+    let clusters_per_group = u32::from_le_bytes(raw[0x24..0x28].try_into().unwrap());
+    if clusters_per_group == 0 || u64::from(clusters_per_group) > bitmap_bits {
+        return Err(Error::Corrupt(
+            "superblock: clusters_per_group is zero or exceeds the bits in one bitmap block",
+        ));
+    }
+    let cluster_ratio_log = log_cluster_size - log_block_size;
+    if u64::from(clusters_per_group) << cluster_ratio_log != u64::from(blocks_per_group) {
+        return Err(Error::Corrupt(
+            "superblock: blocks_per_group is not clusters_per_group clusters",
+        ));
+    }
+    Ok(())
 }
 
 /// `ceil((blocks_count - first_data_block) / blocks_per_group)`, the

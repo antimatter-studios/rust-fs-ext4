@@ -245,3 +245,90 @@ fn a_group_descriptor_pointing_outside_the_filesystem_is_refused() {
         fs::remove_file(path).ok();
     }
 }
+
+/// One group of `u32::MAX` blocks passes the descriptor-table check --
+/// the table is one descriptor -- and claimed ~16 TiB on an 8 MiB image
+/// (#321). A group cannot have more blocks than its one bitmap block has
+/// bits, which is the kernel's "blocks per group too big".
+#[test]
+fn a_group_larger_than_its_bitmap_is_refused() {
+    let path = copy_to_tmp("bpg");
+    patch(&path, sb::BLOCKS_COUNT_LO, &u32::MAX.to_le_bytes());
+    patch(&path, sb::BLOCKS_PER_GROUP, &u32::MAX.to_le_bytes());
+    let why = mount_error(&path);
+    assert!(
+        why.contains("Corrupt") && why.contains("blocks_per_group"),
+        "one group of 2^32 blocks was answered with {why}"
+    );
+    fs::remove_file(path).ok();
+}
+
+/// A filesystem cannot be larger than the device it is on: every bound
+/// that reads `blocks_count` then trusts a size nothing checked (#321).
+/// Twice the image's blocks is still one group, so nothing else refuses
+/// it; the kernel's "block count exceeds size of device" does.
+#[test]
+fn a_filesystem_larger_than_its_device_is_refused() {
+    let path = copy_to_tmp("pastdev");
+    let blocks = (fs::metadata(&path).unwrap().len() / 4096 * 2) as u32;
+    patch(&path, sb::BLOCKS_COUNT_LO, &blocks.to_le_bytes());
+    let why = mount_error(&path);
+    assert!(
+        why.contains("Corrupt") && why.contains("larger than the device"),
+        "a filesystem of twice the device was answered with {why}"
+    );
+    fs::remove_file(path).ok();
+}
+
+/// The whole-file and directory bounds are the device, not only
+/// `blocks_count * block_size`, and the product is checked: with a
+/// superblock claiming 2^32 blocks a 3 TiB `i_size` was under the
+/// `saturating_mul` bound, so `read_all` asked for a 3 TiB buffer and a
+/// directory scan walked ~2^30 blocks (#321).
+#[test]
+fn whole_file_and_directory_bounds_are_the_device() {
+    let path = copy_to_tmp("devbound");
+    let dev = FileDevice::open(&path).expect("open");
+    let mut fs = Filesystem::mount(Arc::new(dev)).expect("mount");
+    let mut reader = |ino: u32| fs.read_inode_verified(ino).map(|(i, _)| i);
+    let ino = fs_ext4::path::lookup(fs.dev.as_ref(), &fs.sb, &mut reader, "/file.txt")
+        .expect("ext4-no-csum.img carries /file.txt");
+    // What a mount that trusted the field would carry.
+    fs.sb.blocks_count = u64::from(u32::MAX);
+
+    let (mut inode, _) = fs.read_inode_verified(ino).expect("read inode");
+    inode.size = 3 << 40;
+    let why = format!("{:?}", fs_ext4::file_io::read_all(&fs, &inode).err());
+    assert!(
+        why.contains("Corrupt") && why.contains("more memory than the filesystem has bytes"),
+        "a 3 TiB file on an 8 MiB device was answered with {why}"
+    );
+
+    // And a product that overflows is refused, not saturated.
+    fs.sb.blocks_count = u64::MAX;
+    let why = format!("{:?}", fs_ext4::file_io::read_all(&fs, &inode).err());
+    assert!(why.contains("Corrupt"), "blocks_count 2^64-1 gave {why}");
+
+    drop(fs);
+    fs::remove_file(path).ok();
+}
+
+/// The directory half of the same bound: a 3 TiB root under a superblock
+/// claiming 2^32 blocks passed `read_inode_verified`, and every scan of
+/// it then walked `size / block_size` logical blocks (#321).
+#[test]
+fn a_directory_larger_than_the_device_is_refused() {
+    let path = copy_to_tmp("devdir");
+    // Root inode, 3 TiB.
+    set_size_high(&path, 2, 0x300);
+    let dev = FileDevice::open(&path).expect("open");
+    let mut fs = Filesystem::mount(Arc::new(dev)).expect("the superblock is untouched");
+    fs.sb.blocks_count = u64::from(u32::MAX);
+    let why = format!("{:?}", fs.read_inode_verified(2).err());
+    assert!(
+        why.contains("declares more bytes than the filesystem holds"),
+        "a 3 TiB directory on an 8 MiB device was answered with {why}"
+    );
+    drop(fs);
+    fs::remove_file(path).ok();
+}

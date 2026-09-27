@@ -539,6 +539,7 @@ impl Filesystem {
             return Err(Error::BadChecksum { what: "superblock" });
         }
         let groups = bgd::read_all(dev.as_ref(), &sb, &csum)?;
+        sb.check_fits_device(dev.size_bytes())?;
         // Wrap the raw device in a write-through buffer cache. All
         // reads and writes for the rest of this mount session route
         // through the cache; `commit_block_buffer` populates pinned
@@ -671,6 +672,7 @@ impl Filesystem {
             return Err(Error::BadChecksum { what: "superblock" });
         }
         self.groups = bgd::read_all(self.dev.as_ref(), &sb, &csum)?;
+        sb.check_fits_device(self.dev.size_bytes())?;
         self.flavor = features::FsFlavor::detect(sb.feature_compat, sb.feature_incompat);
         self.csum = csum;
         self.sb = sb;
@@ -1267,16 +1269,10 @@ impl Filesystem {
         // A regular file may legitimately declare more bytes than the
         // filesystem holds -- that is what a sparse file is -- but a
         // directory's blocks are all really there.
-        if inode.is_dir() {
-            let filesystem_bytes = self
-                .sb
-                .blocks_count
-                .saturating_mul(self.sb.block_size() as u64);
-            if inode.size > filesystem_bytes {
-                return Err(Error::Corrupt(
-                    "directory inode declares more bytes than the filesystem holds",
-                ));
-            }
+        if inode.is_dir() && inode.size > self.byte_ceiling()? {
+            return Err(Error::Corrupt(
+                "directory inode declares more bytes than the filesystem holds",
+            ));
         }
         Ok((inode, raw))
     }
@@ -1314,6 +1310,19 @@ impl Filesystem {
         let mut out = vec![0u8; inode.size as usize];
         crate::file_io::read_verified(self, &inode, ino, 0, inode.size, &mut out)?;
         Ok(out)
+    }
+
+    /// The most bytes anything on this filesystem can really occupy:
+    /// `blocks_count * block_size`, checked rather than saturated, and
+    /// never more than the device (#321). Mount already refuses a
+    /// superblock larger than its device; taking the minimum here as well
+    /// keeps the bound honest for a caller that reaches these paths with
+    /// a superblock mount did not vet.
+    pub fn byte_ceiling(&self) -> Result<u64> {
+        let bytes = self.sb.filesystem_bytes().ok_or(Error::Corrupt(
+            "superblock: blocks_count * block_size overflows",
+        ))?;
+        Ok(bytes.min(self.dev.size_bytes()))
     }
 
     /// Map a logical block within `inode` to its physical block, choosing

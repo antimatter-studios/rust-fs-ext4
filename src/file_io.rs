@@ -166,9 +166,9 @@ pub fn read_all(fs: &Filesystem, inode: &Inode) -> Result<Vec<u8>> {
     // in a 4 MiB image reached `memory allocation of
     // 2305843009213694048 bytes failed` and took the process down --
     // `handle_alloc_error` aborts, so `ffi_guard`'s `catch_unwind`
-    // never sees it.
-    let filesystem_bytes = fs.sb.blocks_count.saturating_mul(fs.sb.block_size() as u64);
-    if inode.size > filesystem_bytes {
+    // never sees it. The ceiling is checked and device-bounded (#321):
+    // a saturating product of a forged `blocks_count` admitted terabytes.
+    if inode.size > fs.byte_ceiling()? {
         return Err(Error::Corrupt(
             "reading this file whole would need more memory than the filesystem has bytes",
         ));

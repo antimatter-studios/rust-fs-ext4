@@ -335,6 +335,18 @@ Not caught by the compiler — the same source builds and behaves differently:
   write marks the volume not clean. A read-only device answers
   `ReadOnly` rather than the device's `Corrupt`. Every public writer is
   now covered by one test that proves the refusal writes nothing (#323).
+- **A group is bounded by its bitmap, and a filesystem by its device.**
+  Nothing tied `s_blocks_per_group` to the bits in one bitmap block, or
+  `s_blocks_count` to the device, so a group larger than its bitmap let
+  `find_free_run` return a run past the bitmap's end — blocks in the next
+  group, possibly in use — and one group of `u32::MAX` blocks on a
+  megabytes-sized image let `read_all` ask for terabytes or a directory
+  scan spin for 2^32 blocks. Mount now refuses `blocks_per_group` over
+  `8 * block_size` (under bigalloc, `clusters_per_group`, with
+  `blocks_per_group` exactly that many clusters) and a filesystem larger
+  than its device, as the kernel does; `find_free_run` clamps to the
+  bitmap with checked arithmetic; and the whole-file and directory bounds
+  are checked and device-bounded rather than saturated (#321).
 
 - **A hole can be punched in a file whose extent tree is deeper than the
   inode.** Punching wrote what survived back into the inode's four inline

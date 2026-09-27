@@ -183,25 +183,32 @@ pub fn find_free_run(bitmap: &[u8], start: u32, max_bits: u32, count: u32) -> Op
     if count == 0 {
         return None;
     }
+    // THE RUN ENDS INSIDE THE BITMAP (#321). `bit_is_set` reports a bit
+    // past the end as free, so a `max_bits` beyond the bitmap -- a
+    // `blocks_per_group` over `8 * block_size` -- let a free tail run on
+    // into bits that do not exist, and the plan into the next group's
+    // blocks. `find_first_free` clamps the same way; the run's end must
+    // be judged against that clamp, not the raw value.
+    let max_bits = max_bits.min(u32::try_from(bitmap.len().saturating_mul(8)).unwrap_or(u32::MAX));
     let mut i = start;
-    while i + count <= max_bits {
+    while i.checked_add(count).is_some_and(|end| end <= max_bits) {
         // Vectorized: jump straight to the next free bit at-or-after `i`,
         // skipping all-ones words 64 bits at a time.
         let run_start = find_first_free(bitmap, i, max_bits)?;
-        if run_start + count > max_bits {
-            return None;
-        }
+        let run_end = run_start
+            .checked_add(count)
+            .filter(|&end| end <= max_bits)?;
         // Verify `count` contiguous free bits — bit-at-a-time, since the
         // blocker (if any) almost always sits within the first few bits.
         let mut j = run_start + 1;
-        while j < run_start + count && !bit_is_set(bitmap, j) {
+        while j < run_end && !bit_is_set(bitmap, j) {
             j += 1;
         }
-        if j - run_start >= count {
+        if j == run_end {
             return Some(run_start);
         }
         // Hit a used bit before reaching `count`; skip past it and retry.
-        i = j + 1;
+        i = j.checked_add(1)?;
     }
     None
 }
@@ -930,6 +937,19 @@ mod tests {
     fn find_free_run_rejects_too_short() {
         let buf = vec![0xFE]; // bit 0 free, bits 1..7 used
         assert_eq!(find_free_run(&buf, 0, 8, 2), None);
+    }
+
+    /// A run is never found past the end of the bitmap (#321).
+    /// `bit_is_set` reports a bit past the end as free, so a `max_bits`
+    /// larger than the bitmap -- a `blocks_per_group` over
+    /// `8 * block_size` -- let a free tail extend into bits that do not
+    /// exist, and the plan's blocks into the next group's.
+    #[test]
+    fn find_free_run_stops_at_the_end_of_the_bitmap() {
+        assert_eq!(find_free_run(&[0], 0, 100, 9), None);
+        assert_eq!(find_free_run(&[0], 0, 100, 8), Some(0));
+        assert_eq!(find_free_run(&[0x0F], 0, u32::MAX, 5), None);
+        assert_eq!(find_free_run(&[0], u32::MAX - 1, u32::MAX, 4), None);
     }
 
     #[test]
