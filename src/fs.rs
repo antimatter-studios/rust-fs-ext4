@@ -4789,7 +4789,13 @@ impl Filesystem {
                 &root_bytes,
                 self.dev.as_ref(),
                 self.sb.block_size(),
-                cur_lb,
+                // MUTATION PROBE (#331), never to be merged: the 32 MiB write
+                // puts logical blocks 5 and 6 in each other's place.
+                match (data.len() == 32 * 1024 * 1024, cur_lb) {
+                    (true, 5) => 6,
+                    (true, 6) => 5,
+                    (_, other) => other,
+                },
             )?
             .ok_or(Error::Corrupt(
                 "pwrite Phase 2: logical block unmapped after Phase 1 (allocator/extent insert mismatch)",
