@@ -348,6 +348,56 @@ pub struct fs_ext4_dir_iter_t {
 /// us walking a multi-megabyte buffer twice (CStr scan + UTF-8 scan).
 pub(crate) const FFI_PATH_MAX: usize = 4096;
 
+/// A NUL-terminated in-image path, or a refusal.
+///
+/// THE EMPTY STRING IS A REAL PATH HERE, which is what made the old
+/// `cstr_to_str` dangerous. `""`, `"/"` and `"//"` all mean the root by
+/// design — `tests/capi_paths.rs` pins that deliberately — so returning
+/// `""` for a path that did not decode silently converted it into the
+/// one input that means "the root". `fs_ext4_stat` then filled the
+/// attribute struct with inode 2 and returned 0, indistinguishable from
+/// a real hit, and `fs_ext4_dir_open` handed back an iterator over the
+/// root listing. A caller composing a path from a name this driver gave
+/// it walked in a circle (#418).
+///
+/// The same went for a path longer than [`FFI_PATH_MAX`]: too long was
+/// answered as the root.
+///
+/// Refusing is the narrow fix. The wider one is to take paths as BYTES
+/// and never decode them, which would make such a name reachable rather
+/// than merely non-fatal — ext4 directory entry names are raw bytes and
+/// the format has no field that could say what encoding they are in.
+/// That is a deeper change here than in the read-only drivers, because
+/// the write API (`apply_create`, `apply_rename`, `apply_symlink` and
+/// the rest) takes `&str` throughout; #418 tracks it.
+unsafe fn cstr_to_path<'a>(p: *const c_char, what: &str) -> Option<&'a str> {
+    if p.is_null() {
+        set_err_msg(&format!("null {what}"), EINVAL);
+        return None;
+    }
+    let cstr = unsafe { CStr::from_ptr(p) };
+    if cstr.to_bytes().len() > FFI_PATH_MAX {
+        set_err_msg(
+            &format!("{what} is longer than {FFI_PATH_MAX} bytes"),
+            ENAMETOOLONG,
+        );
+        return None;
+    }
+    match cstr.to_str() {
+        Ok(s) => Some(s),
+        Err(_) => {
+            set_err_msg(
+                &format!(
+                    "{what} is not valid UTF-8: {:?}",
+                    String::from_utf8_lossy(cstr.to_bytes())
+                ),
+                EINVAL,
+            );
+            None
+        }
+    }
+}
+
 /// Convert a `*const c_char` to a Rust string. Returns empty string on
 /// null, on lengths exceeding [`FFI_PATH_MAX`], or on invalid UTF-8.
 ///
@@ -1092,7 +1142,9 @@ pub unsafe extern "C" fn fs_ext4_stat(
                 return -1;
             }
             let fs = &(*fs).fs;
-            let path = cstr_to_str(path);
+            let Some(path) = (unsafe { cstr_to_path(path, "path") }) else {
+                return -1;
+            };
             let attr = &mut *attr;
 
             match resolve_path(fs, path).and_then(|ino| stat_into(fs, ino.into(), attr)) {
@@ -1121,7 +1173,9 @@ pub unsafe extern "C" fn fs_ext4_dir_open(
                 return std::ptr::null_mut();
             }
             let fs_ref = &(*fs).fs;
-            let path_str = cstr_to_str(path);
+            let Some(path_str) = (unsafe { cstr_to_path(path, "path") }) else {
+                return std::ptr::null_mut();
+            };
 
             match resolve_path(fs_ref, path_str).and_then(|ino| dir_iter(fs_ref, ino.into())) {
                 Ok(iter) => iter,
@@ -1292,7 +1346,9 @@ pub unsafe extern "C" fn fs_ext4_read_file(
                 return -1;
             }
             let fs_ref = &(*fs).fs;
-            let path_str = cstr_to_str(path);
+            let Some(path_str) = (unsafe { cstr_to_path(path, "path") }) else {
+                return -1;
+            };
 
             let read = resolve_path(fs_ref, path_str)
                 .and_then(|ino| read_into(fs_ref, ino.into(), buf, offset, length));
@@ -1333,7 +1389,9 @@ pub unsafe extern "C" fn fs_ext4_readlink(
                 return -1;
             }
             let fs_ref = &(*fs).fs;
-            let path_str = cstr_to_str(path);
+            let Some(path_str) = (unsafe { cstr_to_path(path, "path") }) else {
+                return -1;
+            };
 
             let target = match resolve_path(fs_ref, path_str).and_then(|ino| fs_ref.read_link(ino))
             {
@@ -1371,7 +1429,9 @@ pub unsafe extern "C" fn fs_ext4_listxattr(
                 return -1;
             }
             let fs_ref = &(*fs).fs;
-            let path_str = cstr_to_str(path);
+            let Some(path_str) = (unsafe { cstr_to_path(path, "path") }) else {
+                return -1;
+            };
 
             let ino = match resolve_path(fs_ref, path_str) {
                 Ok(n) => n,
@@ -1439,8 +1499,12 @@ pub unsafe extern "C" fn fs_ext4_getxattr(
                 return -1;
             }
             let fs_ref = &(*fs).fs;
-            let path_str = cstr_to_str(path);
-            let name_str = cstr_to_str(name);
+            let Some(path_str) = (unsafe { cstr_to_path(path, "path") }) else {
+                return -1;
+            };
+            let Some(name_str) = (unsafe { cstr_to_path(name, "name") }) else {
+                return -1;
+            };
 
             let ino = match resolve_path(fs_ref, path_str) {
                 Ok(n) => n,
@@ -1518,7 +1582,9 @@ pub unsafe extern "C" fn fs_ext4_truncate(
                 return -1;
             }
             let fs_ref = &(*fs).fs;
-            let path_str = cstr_to_str(path);
+            let Some(path_str) = (unsafe { cstr_to_path(path, "path") }) else {
+                return -1;
+            };
             // The type guard (EISDIR for a directory, EINVAL for anything
             // else that is not a regular file) is in `apply_truncate_ino`.
             let res = resolve_path(fs_ref, path_str)
@@ -1572,7 +1638,9 @@ pub unsafe extern "C" fn fs_ext4_fallocate(
                 return -1;
             }
             let fs_ref = &(*fs).fs;
-            let path_str = cstr_to_str(path);
+            let Some(path_str) = (unsafe { cstr_to_path(path, "path") }) else {
+                return -1;
+            };
             let ino = match resolve_path(fs_ref, path_str) {
                 Ok(n) => n,
                 Err(e) => {
@@ -1633,7 +1701,9 @@ pub unsafe extern "C" fn fs_ext4_unlink(fs: *mut fs_ext4_fs_t, path: *const c_ch
                 return -1;
             }
             let fs_ref = &(*fs).fs;
-            let path_str = cstr_to_str(path);
+            let Some(path_str) = (unsafe { cstr_to_path(path, "path") }) else {
+                return -1;
+            };
             match fs_ref.apply_unlink(path_str) {
                 Ok(()) => 0,
                 Err(e) => {
@@ -1667,7 +1737,9 @@ pub unsafe extern "C" fn fs_ext4_create(
                 return 0u32;
             }
             let fs_ref = &(*fs).fs;
-            let path_str = cstr_to_str(path);
+            let Some(path_str) = (unsafe { cstr_to_path(path, "path") }) else {
+                return 0u32;
+            };
             match fs_ref.apply_create(path_str, mode) {
                 Ok(ino) => ino,
                 Err(e) => {
@@ -1721,7 +1793,9 @@ pub unsafe extern "C" fn fs_ext4_write_file(
                 return -1;
             }
             let fs_ref = &(*fs).fs;
-            let path_str = cstr_to_str(path);
+            let Some(path_str) = (unsafe { cstr_to_path(path, "path") }) else {
+                return -1i64;
+            };
             // Type guard at the capi level — mirrors fs_ext4_truncate so the
             // caller gets EISDIR/EINVAL instead of Error::Corrupt → EIO when
             // the target is the wrong kind of file.
@@ -1810,7 +1884,9 @@ pub unsafe extern "C" fn fs_ext4_pwrite(
                 }
             };
             let fs_ref = &(*fs).fs;
-            let path_str = cstr_to_str(path);
+            let Some(path_str) = (unsafe { cstr_to_path(path, "path") }) else {
+                return -1i64;
+            };
             match fs_ref.apply_pwrite(path_str, offset, slice) {
                 Ok(new_size) => new_size as i64,
                 Err(e) => {
@@ -1899,8 +1975,12 @@ pub unsafe extern "C" fn fs_ext4_link(
                 return -1;
             }
             let fs_ref = &(*fs).fs;
-            let src_str = cstr_to_str(src);
-            let dst_str = cstr_to_str(dst);
+            let Some(src_str) = (unsafe { cstr_to_path(src, "src") }) else {
+                return -1;
+            };
+            let Some(dst_str) = (unsafe { cstr_to_path(dst, "dst") }) else {
+                return -1;
+            };
             match fs_ref.apply_link(src_str, dst_str) {
                 Ok(()) => 0,
                 Err(e) => {
@@ -1932,8 +2012,12 @@ pub unsafe extern "C" fn fs_ext4_rename(
                 return -1;
             }
             let fs_ref = &(*fs).fs;
-            let src_str = cstr_to_str(src);
-            let dst_str = cstr_to_str(dst);
+            let Some(src_str) = (unsafe { cstr_to_path(src, "src") }) else {
+                return -1;
+            };
+            let Some(dst_str) = (unsafe { cstr_to_path(dst, "dst") }) else {
+                return -1;
+            };
             match fs_ref.apply_rename(src_str, dst_str, false) {
                 Ok(()) => 0,
                 Err(e) => {
@@ -1995,8 +2079,12 @@ pub unsafe extern "C" fn fs_ext4_rename2(
                 }
             };
             let fs_ref = &(*fs).fs;
-            let src_str = cstr_to_str(src);
-            let dst_str = cstr_to_str(dst);
+            let Some(src_str) = (unsafe { cstr_to_path(src, "src") }) else {
+                return -1;
+            };
+            let Some(dst_str) = (unsafe { cstr_to_path(dst, "dst") }) else {
+                return -1;
+            };
             match fs_ref.apply_rename(src_str, dst_str, replace) {
                 Ok(()) => 0,
                 Err(e) => {
@@ -2026,7 +2114,9 @@ pub unsafe extern "C" fn fs_ext4_mkdir(
                 return 0u32;
             }
             let fs_ref = &(*fs).fs;
-            let path_str = cstr_to_str(path);
+            let Some(path_str) = (unsafe { cstr_to_path(path, "path") }) else {
+                return 0u32;
+            };
             match fs_ref.apply_mkdir(path_str, mode) {
                 Ok(ino) => ino,
                 Err(e) => {
@@ -2052,7 +2142,9 @@ pub unsafe extern "C" fn fs_ext4_rmdir(fs: *mut fs_ext4_fs_t, path: *const c_cha
                 return -1;
             }
             let fs_ref = &(*fs).fs;
-            let path_str = cstr_to_str(path);
+            let Some(path_str) = (unsafe { cstr_to_path(path, "path") }) else {
+                return -1;
+            };
             match fs_ref.apply_rmdir(path_str) {
                 Ok(()) => 0,
                 Err(e) => {
@@ -2084,7 +2176,9 @@ pub unsafe extern "C" fn fs_ext4_chmod(
                 return -1;
             }
             let fs_ref = &(*fs).fs;
-            let path_str = cstr_to_str(path);
+            let Some(path_str) = (unsafe { cstr_to_path(path, "path") }) else {
+                return -1;
+            };
             match fs_ref.apply_chmod(path_str, mode) {
                 Ok(()) => 0,
                 Err(e) => {
@@ -2117,7 +2211,9 @@ pub unsafe extern "C" fn fs_ext4_chown(
                 return -1;
             }
             let fs_ref = &(*fs).fs;
-            let path_str = cstr_to_str(path);
+            let Some(path_str) = (unsafe { cstr_to_path(path, "path") }) else {
+                return -1;
+            };
             match fs_ref.apply_chown(path_str, uid, gid) {
                 Ok(()) => 0,
                 Err(e) => {
@@ -2154,7 +2250,9 @@ pub unsafe extern "C" fn fs_ext4_mknod(
                 return 0u32;
             }
             let fs_ref = &(*fs).fs;
-            let path_str = cstr_to_str(path);
+            let Some(path_str) = (unsafe { cstr_to_path(path, "path") }) else {
+                return 0u32;
+            };
             match fs_ref.apply_mknod(path_str, mode, major, minor) {
                 Ok(ino) => ino,
                 Err(e) => {
@@ -2190,7 +2288,9 @@ pub unsafe extern "C" fn fs_ext4_set_flags(
                 return -1;
             }
             let fs_ref = &(*fs).fs;
-            let path_str = cstr_to_str(path);
+            let Some(path_str) = (unsafe { cstr_to_path(path, "path") }) else {
+                return -1;
+            };
             match fs_ref.apply_set_flags(path_str, flags) {
                 Ok(()) => 0,
                 Err(e) => {
@@ -2238,7 +2338,9 @@ pub unsafe extern "C" fn fs_ext4_utimens(
                 return -1;
             }
             let fs_ref = &(*fs).fs;
-            let path_str = cstr_to_str(path);
+            let Some(path_str) = (unsafe { cstr_to_path(path, "path") }) else {
+                return -1;
+            };
             match fs_ref.apply_utimens(path_str, atime_sec, atime_nsec, mtime_sec, mtime_nsec) {
                 Ok(()) => 0,
                 Err(e) => {
@@ -2307,8 +2409,12 @@ pub unsafe extern "C" fn fs_ext4_symlink(
                 return 0u32;
             }
             let fs_ref = &(*fs).fs;
-            let target_str = cstr_to_str(target);
-            let linkpath_str = cstr_to_str(linkpath);
+            let Some(target_str) = (unsafe { cstr_to_path(target, "target") }) else {
+                return 0u32;
+            };
+            let Some(linkpath_str) = (unsafe { cstr_to_path(linkpath, "linkpath") }) else {
+                return 0u32;
+            };
             match fs_ref.apply_symlink(target_str, linkpath_str) {
                 Ok(ino) => ino,
                 Err(e) => {
@@ -2344,8 +2450,12 @@ pub unsafe extern "C" fn fs_ext4_removexattr(
                 return -1;
             }
             let fs_ref = &(*fs).fs;
-            let path_str = cstr_to_str(path);
-            let name_str = cstr_to_str(name);
+            let Some(path_str) = (unsafe { cstr_to_path(path, "path") }) else {
+                return -1;
+            };
+            let Some(name_str) = (unsafe { cstr_to_path(name, "name") }) else {
+                return -1;
+            };
             match fs_ref.apply_removexattr(path_str, name_str) {
                 Ok(()) => 0,
                 Err(e) => {
@@ -2402,8 +2512,12 @@ pub unsafe extern "C" fn fs_ext4_setxattr(
                 return -1;
             }
             let fs_ref = &(*fs).fs;
-            let path_str = cstr_to_str(path);
-            let name_str = cstr_to_str(name);
+            let Some(path_str) = (unsafe { cstr_to_path(path, "path") }) else {
+                return -1;
+            };
+            let Some(name_str) = (unsafe { cstr_to_path(name, "name") }) else {
+                return -1;
+            };
             let value_bytes = if value_len == 0 {
                 &[][..]
             } else {
