@@ -141,9 +141,20 @@ fn a_non_utf8_path_that_names_no_file_is_not_the_root() {
     let mut attr: fs_ext4_attr_t = unsafe { std::mem::zeroed() };
     let rc = unsafe { fs_ext4_stat(fs, path.as_ptr(), &mut attr) };
     assert_eq!(rc, -1, "a path naming no file was answered as a stat");
-    assert_ne!(
-        attr.inode, 2,
-        "the root inode was reported for a path that names no file"
+    // The mode, not the inode number: a refusal leaves `attr` zeroed, and
+    // the root's mode is the non-zero one a root answer would write.
+    assert_eq!(
+        attr.mode, 0,
+        "the root's attributes were reported for a path that names no file"
+    );
+    // A path is bytes, compared byte for byte (#418): one that names no
+    // file is missing, which is ENOENT — not EINVAL, which would say the
+    // bytes themselves were unacceptable.
+    assert_eq!(
+        fs_ext4_last_errno(),
+        2,
+        "a path naming no file must be ENOENT: {}",
+        last_err()
     );
     unsafe { fs_ext4_umount(fs) };
 }

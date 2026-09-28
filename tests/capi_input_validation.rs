@@ -154,22 +154,19 @@ fn read_file_clamps_oversize_length_to_file_size() {
     unsafe { fs_ext4_umount(fs) };
 }
 
+/// A path longer than `FFI_PATH_MAX` (4096, Linux's `PATH_MAX`) is refused
+/// with ENAMETOOLONG before it is walked — and is never the root.
+///
+/// THIS TEST USED TO ASSERT THE OPPOSITE, and said so: that such a path
+/// "MUST return successfully AND attr.inode == EXT4_ROOT_INODE (2)",
+/// pinning the cap's old implementation — `cstr_to_str` returned `""` past
+/// the cap, and `""` is a deliberate spelling of the root here. That was
+/// the #418 defect itself: a path this driver could not use was answered
+/// as a successful stat of the root, indistinguishable from a real hit.
+/// The hardening it meant to pin — bounded work on a hostile length — is
+/// kept; only the answer changed, from "the root" to the refusal.
 #[test]
-fn long_path_caps_in_cstr_helper_without_crash() {
-    // Build a 5000-byte path (well past FFI_PATH_MAX = 4096). Without
-    // the cap, `cstr_to_str` would walk the buffer twice (CStr scan +
-    // UTF-8 scan) before downstream rejection — wasted work and a DoS
-    // vector for crafted input.
-    //
-    // With the cap, the helper returns "" for any string > 4096 bytes.
-    // Empty path resolves to the root inode (current behaviour of
-    // path::lookup), so observably: `fs_ext4_stat` on an oversize path
-    // MUST return successfully AND attr.inode == EXT4_ROOT_INODE (2).
-    // That confirms the truncation took effect — without it we'd be
-    // walking the (invalid) 5000-byte path and getting ENOENT.
-    //
-    // The "doesn't OOM, returns in bounded time" property is the actual
-    // hardening; this test pins the observable consequence.
+fn a_path_longer_than_path_max_is_enametoolong_and_never_the_root() {
     let fs = mount_test_image();
     let long_path: String = std::iter::once('/')
         .chain(std::iter::repeat_n('a', 5000))
@@ -178,15 +175,16 @@ fn long_path_caps_in_cstr_helper_without_crash() {
     let mut attr: fs_ext4_attr_t = unsafe { std::mem::zeroed() };
     let rc = unsafe { fs_ext4_stat(fs, path.as_ptr(), &mut attr) };
     assert_eq!(
-        rc,
-        0,
-        "stat on capped (empty) path should resolve to root, got rc={rc} err={}",
-        last_err_str()
+        rc, -1,
+        "a 5001-byte path was answered as a stat of inode {} (mode {:o})",
+        attr.inode, attr.mode
     );
     assert_eq!(
-        attr.inode, 2,
-        "capped path should land at root inode (2), got inode={}",
-        attr.inode
+        fs_ext4_last_errno(),
+        63, // ENAMETOOLONG
+        "a path over PATH_MAX must be ENAMETOOLONG: {}",
+        last_err_str()
     );
+    assert_eq!(attr.mode, 0, "the refusal wrote the root's attributes");
     unsafe { fs_ext4_umount(fs) };
 }
