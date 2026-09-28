@@ -44,6 +44,7 @@ pub mod htree_mut;
 pub mod indirect;
 pub mod indirect_mut;
 pub mod inline_data;
+pub(crate) mod inline_mut;
 pub mod inode;
 pub mod jbd2;
 pub mod journal;

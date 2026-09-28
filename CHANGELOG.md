@@ -88,6 +88,16 @@ Not caught by the compiler — the same source builds and behaves differently:
 
 ### Added
 
+- **Content writes to inline-data files** (#428). pwrite, replace and
+  truncate, through paths and through inode numbers, now write an inline
+  file instead of refusing it with `Unsupported` (#383). A write whose
+  result fits in the inode is made there — the first 60 bytes in `i_block`,
+  the rest in `system.data`, as the kernel keeps them; one that outgrows it
+  converts the file to an extent-mapped one, its bytes moved to a new
+  block, `system.data` removed and `EXT4_INLINE_DATA_FL` cleared, in the
+  same transaction as the write, so a crash leaves the old inline file or
+  the written one. `e2fsck` judges the result clean and the kernel reads it
+  back.
 - **`fs_ext4_flush` and `fs_ext4_fresh_read` in the C API** (#374). A host
   embedding the engine through C had no durability barrier on a live mount,
   so it could not tell "every change so far is on the device" from "the

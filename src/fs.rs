@@ -2155,6 +2155,9 @@ impl Filesystem {
         if new_size == inode.size {
             return Ok(());
         }
+        if inode.has_inline_data() {
+            return self.truncate_inline_file(ino, &inode, raw, new_size);
+        }
         let (_size_change, muts) = self.plan_inode_truncate(ino, &inode, new_size)?;
 
         let bs = self.sb.block_size() as u64;
@@ -2228,22 +2231,131 @@ impl Filesystem {
                 "truncate: only a regular file has a size to change",
             ));
         }
-        Self::refuse_inline_data_write(inode)
+        Ok(())
     }
 
-    /// Refuse a content write to an inline-data file (#383). Its `i_block`
-    /// holds the file's first 60 bytes and `system.data` the rest, so
-    /// neither writer applies: the extent path would parse the bytes as a
-    /// tree, the block-map path frees them as pointers, and a size change
-    /// alone leaves `i_size` past what the inline area holds. Until inline
-    /// writes exist, `Unsupported` leaves the file whole.
-    fn refuse_inline_data_write(inode: &Inode) -> Result<()> {
-        if inode.has_inline_data() {
+    // ----------------------------------------------------------------------
+    // Inline-data files (#428)
+    // ----------------------------------------------------------------------
+    //
+    // An inline file's `i_block` holds its first 60 bytes and `system.data`
+    // the rest, so neither block writer applies to it: the extent path would
+    // parse the bytes as a tree and the block-map path would free them as
+    // pointers (#383). A write whose result still fits in the inode is made
+    // there; one that outgrows it converts the file to an extent-mapped one
+    // first, IN THE SAME TRANSACTION, and the write then continues on the
+    // converted inode. That is the kernel's contract too: the file is inline
+    // or it is not, and no crash leaves it half of each.
+
+    /// Make the inline file `ino` hold `data`, in place, staged in `buf`
+    /// with its size, times and checksum. `Ok(false)`, with nothing staged
+    /// and `raw` unchanged, when `data` does not fit in the inode.
+    fn buffer_store_inline_file(
+        &self,
+        buf: &mut BlockBuffer,
+        ino: u32,
+        inode: &Inode,
+        raw: &mut [u8],
+        data: &[u8],
+    ) -> Result<bool> {
+        match crate::inline_mut::store(raw, self.sb.inode_size, data) {
+            Ok(()) => {}
+            Err(Error::NoSpaceLeftOnDevice) => return Ok(false),
+            Err(e) => return Err(e),
+        }
+        self.finalize_inode_raw_after_write(ino, raw, inode, data.len() as u64, inode.blocks)?;
+        self.buffer_write_inode(buf, ino, raw)?;
+        Ok(true)
+    }
+
+    /// Convert the inline file `ino` to an extent-mapped file, staged in
+    /// `buf`. With `keep`, its content moves to a newly allocated logical
+    /// block 0 (it fits: an inode is never larger than a block); without,
+    /// the file keeps no bytes, for a caller about to replace them.
+    /// `system.data` goes, `EXT4_INLINE_DATA_FL` clears and
+    /// `EXT4_EXTENTS_FL` sets; `i_size` is unchanged.
+    ///
+    /// Returns the converted inode and its image, NOT yet staged: the
+    /// caller's write continues from them in the same transaction and
+    /// stages the inode once, with its own size and times.
+    fn buffer_convert_inline_file(
+        &self,
+        buf: &mut BlockBuffer,
+        ino: u32,
+        inode: &Inode,
+        raw: &[u8],
+        keep: bool,
+    ) -> Result<(Inode, Vec<u8>)> {
+        if self.sb.feature_incompat & features::Incompat::EXTENTS.bits() == 0 {
             return Err(Error::Unsupported(
-                "writing the content of an inline-data file is not supported",
+                "converting an inline-data file out of the inode on a volume without extents",
             ));
         }
-        Ok(())
+        let content = if keep {
+            crate::file_io::read_inline(self, inode, raw)?
+        } else {
+            Vec::new()
+        };
+        let bs = self.sb.block_size();
+        if content.len() > bs as usize {
+            return Err(Error::Corrupt("inline data larger than a block"));
+        }
+        let mut raw = raw.to_vec();
+        crate::inline_mut::strip(&mut raw, self.sb.inode_size)?;
+        let flags = u32::from_le_bytes(raw[0x20..0x24].try_into().unwrap())
+            | crate::inode::InodeFlags::EXTENTS.bits();
+        raw[0x20..0x24].copy_from_slice(&flags.to_le_bytes());
+
+        let mut root = vec![0u8; 60];
+        root[0..2].copy_from_slice(&crate::extent::EXT4_EXT_MAGIC.to_le_bytes());
+        root[4..6].copy_from_slice(&4u16.to_le_bytes()); // max entries
+        let mut blocks = inode.blocks;
+        if !content.is_empty() {
+            let phys = self.buffer_allocate_block(buf, ino)?;
+            let mut block = vec![0u8; bs as usize];
+            block[..content.len()].copy_from_slice(&content);
+            buf.put(phys, block);
+            let extent = crate::extent::Extent {
+                logical_block: 0,
+                length: 1,
+                physical_block: phys,
+                uninitialized: false,
+            };
+            for m in crate::extent_mut::plan_insert_extent(&root, extent)? {
+                if let crate::extent_mut::ExtentMutation::WriteRoot { bytes } = m {
+                    root = bytes;
+                }
+            }
+            blocks += u64::from(bs / 512);
+        }
+        Self::patch_inode_block_area(&mut raw, &root)?;
+        Self::patch_inode_size_and_blocks(&mut raw, inode.size, blocks)?;
+        let converted = Inode::parse(&raw)?;
+        Ok((converted, raw))
+    }
+
+    /// Set the size of the inline file `ino`: in place while it fits, and
+    /// converted to extents, with the new size, when it does not.
+    fn truncate_inline_file(
+        &self,
+        ino: u32,
+        inode: &Inode,
+        mut raw: Vec<u8>,
+        new_size: u64,
+    ) -> Result<()> {
+        let mut buf = BlockBuffer::new(self.sb.block_size());
+        if new_size <= crate::inline_mut::ceiling(self.sb.inode_size) as u64 {
+            let mut content = crate::file_io::read_inline(self, inode, &raw)?;
+            content.resize(new_size as usize, 0);
+            if self.buffer_store_inline_file(&mut buf, ino, inode, &mut raw, &content)? {
+                return self.commit_block_buffer(buf);
+            }
+        }
+        let (converted, mut raw) =
+            self.buffer_convert_inline_file(&mut buf, ino, inode, &raw, true)?;
+        self.finalize_inode_raw_after_write(ino, &mut raw, &converted, new_size, converted.blocks)?;
+        self.buffer_write_inode(&mut buf, ino, &raw)?;
+        self.commit_block_buffer(buf)
     }
 
     pub fn apply_truncate_grow(&self, ino: u32, new_size: u64) -> Result<()> {
@@ -2254,6 +2366,9 @@ impl Filesystem {
             return Err(Error::InvalidArgument(
                 "apply_truncate_grow: new_size < old_size (use apply_truncate_shrink)",
             ));
+        }
+        if inode.has_inline_data() {
+            return self.truncate_inline_file(ino, &inode, raw, new_size);
         }
         Self::patch_inode_size_and_blocks(&mut raw, new_size, inode.blocks)?;
 
@@ -5078,7 +5193,23 @@ impl Filesystem {
                 "write_file target is not a regular file",
             ));
         }
-        Self::refuse_inline_data_write(&inode)?;
+        let bs = self.sb.block_size();
+        // Multi-block transaction: free existing data + alloc new run +
+        // bitmap + BGD + SB + new data block contents + inode update.
+        // Atomic across the whole replace.
+        let mut buf = BlockBuffer::new(bs);
+        // An inline file keeps content that fits where it is, and is
+        // converted out of the inode, with no bytes, in this transaction
+        // when the new content does not (#428).
+        let (inode, mut raw) = if inode.has_inline_data() {
+            if self.buffer_store_inline_file(&mut buf, ino, &inode, &mut raw, data)? {
+                self.commit_block_buffer(buf)?;
+                return Ok(data.len() as u64);
+            }
+            self.buffer_convert_inline_file(&mut buf, ino, &inode, &raw, false)?
+        } else {
+            (inode, raw)
+        };
         if !inode.has_extents() {
             // ext2 / ext3 (or ext4 inode without EXTENTS_FL): legacy
             // direct/indirect block-pointer scheme. Same overall shape as
@@ -5089,14 +5220,8 @@ impl Filesystem {
             return self.apply_replace_file_content_indirect(ino, inode, raw, data);
         }
 
-        let bs = self.sb.block_size();
         let sectors_per_block = bs as u64 / 512;
         let group_idx_of_inode = ((ino - 1) / self.sb.inodes_per_group) as usize;
-
-        // Multi-block transaction: free existing data + alloc new run +
-        // bitmap + BGD + SB + new data block contents + inode update.
-        // Atomic across the whole replace.
-        let mut buf = BlockBuffer::new(bs);
 
         // Phase 1: free existing data blocks. Each freed run credits its
         // own group's BGD via `buffer_free_block_run_and_bgd`.
@@ -5514,8 +5639,7 @@ impl Filesystem {
                 "pwrite target is not a regular file",
             ));
         }
-        Self::refuse_inline_data_write(&inode)?;
-        if !inode.has_extents() {
+        if !inode.has_extents() && !inode.has_inline_data() {
             return Err(Error::InvalidArgument(
                 "pwrite: legacy (non-extents) inodes not supported in v1",
             ));
@@ -5561,6 +5685,28 @@ impl Filesystem {
             return Ok(after.size);
         }
 
+        let mut buf = BlockBuffer::new(self.sb.block_size());
+        // An inline file takes the write in place while the result fits in
+        // the inode, and is converted to extents, its content in block 0,
+        // in this transaction when it does not; the write then continues
+        // on the converted inode (#428).
+        let (inode, mut raw) = if inode.has_inline_data() {
+            if end <= crate::inline_mut::ceiling(self.sb.inode_size) as u64 {
+                let mut content = crate::file_io::read_inline(self, &inode, &raw)?;
+                if content.len() < end as usize {
+                    content.resize(end as usize, 0);
+                }
+                content[offset as usize..end as usize].copy_from_slice(data);
+                if self.buffer_store_inline_file(&mut buf, ino, &inode, &mut raw, &content)? {
+                    self.commit_block_buffer(buf)?;
+                    return Ok(content.len() as u64);
+                }
+            }
+            self.buffer_convert_inline_file(&mut buf, ino, &inode, &raw, true)?
+        } else {
+            (inode, raw)
+        };
+
         // Working copy of the 60-byte inline extent root. Updated in place
         // as we insert extents for each unmapped run; patched into `raw`
         // once at the end.
@@ -5570,7 +5716,6 @@ impl Filesystem {
         let mut tree_nodes: std::collections::BTreeMap<u64, Vec<u8>> =
             std::collections::BTreeMap::new();
 
-        let mut buf = BlockBuffer::new(self.sb.block_size());
         let group_idx_of_inode = (ino - 1) / self.sb.inodes_per_group;
 
         // Track which logical blocks were freshly allocated by this call.
