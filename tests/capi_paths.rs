@@ -104,3 +104,73 @@ fn file_used_as_directory_mid_path_yields_enotdir() {
     assert_eq!(fs_ext4_last_errno(), 20); // ENOTDIR
     unsafe { fs_ext4_umount(fs) };
 }
+
+// ---- paths are bytes (#418) --------------------------------------------
+
+/// `/caf\xe9.txt` — latin-1 for `café.txt`, which is what a name written
+/// on a Linux box with a non-UTF-8 locale looks like. `\xe9` alone is not
+/// a legal UTF-8 sequence.
+///
+/// `c_char` is `i8` on x86_64 and Apple targets and `u8` on
+/// aarch64-linux, so `from_ne_bytes` is the spelling that works on both.
+fn non_utf8_path() -> Vec<std::ffi::c_char> {
+    b"/caf\xe9.txt\0"
+        .iter()
+        .map(|&b| std::ffi::c_char::from_ne_bytes([b]))
+        .collect()
+}
+
+/// A path whose bytes are not valid UTF-8 names no file in this fixture,
+/// so it must be reported as missing — never as the root.
+///
+/// `cstr_to_str` answered `""` for anything that did not decode, and
+/// **`""` is a legitimate spelling of the root here** — see
+/// `empty_slash_and_double_slash_all_resolve_to_root`, which is
+/// deliberate and stays. So an undecodable path was silently converted
+/// into the one input that means "the root", and `fs_ext4_stat` filled
+/// the attribute struct with inode 2 and returned 0, indistinguishable
+/// from a real hit (#418).
+///
+/// Reachable rather than theoretical: ext4 directory entry names are raw
+/// bytes with no encoding rule, so a caller composing a path from a name
+/// this driver handed it got the root back.
+#[test]
+fn a_non_utf8_path_that_names_no_file_is_not_the_root() {
+    let fs = mount_fixture();
+    let path = non_utf8_path();
+    let mut attr: fs_ext4_attr_t = unsafe { std::mem::zeroed() };
+    let rc = unsafe { fs_ext4_stat(fs, path.as_ptr(), &mut attr) };
+    assert_eq!(rc, -1, "a path naming no file was answered as a stat");
+    assert_ne!(
+        attr.inode, 2,
+        "the root inode was reported for a path that names no file"
+    );
+    unsafe { fs_ext4_umount(fs) };
+}
+
+/// The directory iterator likewise: this is the one that hurts most,
+/// because a caller walking a tree and composing paths from the names
+/// this driver handed back gets the root's entries again, and walks in a
+/// circle.
+#[test]
+fn dir_open_on_a_non_utf8_path_that_names_nothing_is_not_the_root_listing() {
+    let fs = mount_fixture();
+    let path = non_utf8_path();
+    let iter = unsafe { fs_ext4_dir_open(fs, path.as_ptr()) };
+    assert!(
+        iter.is_null(),
+        "a path naming no directory opened an iterator over the root"
+    );
+    unsafe { fs_ext4_umount(fs) };
+}
+
+/// And the empty path still means the root, because that is deliberate
+/// and documented at the top of this file. Without this the fix above
+/// could be "refuse anything that does not decode", which would break
+/// the POSIX-ish spelling the other tests rely on.
+#[test]
+fn the_empty_path_still_means_the_root() {
+    let fs = mount_fixture();
+    assert_eq!(stat_ino(fs, ""), Some(2));
+    unsafe { fs_ext4_umount(fs) };
+}
