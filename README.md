@@ -75,6 +75,9 @@ buffer and commit atomically through `JournalWriter`:
 - Inline-data files: pwrite, replace and truncate in the inode while the
   result fits, converting the file to extents in the same transaction
   when it does not.
+- Inline-data directories: entries added and removed in the inode while
+  they fit, converting the directory to a block in the same transaction
+  when they do not.
 - `fallocate(KEEP_SIZE)`, `fallocate(PUNCH_HOLE)`,
   `fallocate(ZERO_RANGE)`.
 - Extent-tree mutation: depth 0 → 1 promotion and depth-1 inserts.
