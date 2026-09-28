@@ -10708,7 +10708,8 @@ mod tests {
     }
 
     /// #383: replacing the content of an inline-data file must not read its
-    /// data bytes as block pointers and free them.
+    /// data bytes as block pointers and free them. Since #428 the replace
+    /// goes through, in the inode.
     #[test]
     fn replacing_an_inline_file_does_not_free_its_bytes_as_blocks() {
         let dev = formatted();
@@ -10727,46 +10728,97 @@ mod tests {
             block_in_use(&fs, victim),
             "root directory block {victim} was freed: {r:?}"
         );
-        assert!(
-            matches!(r, Err(Error::Unsupported(_))),
-            "replace of an inline file: {r:?}"
+        assert_eq!(r.unwrap(), 11);
+        let (inode, raw) = fs.read_inode_verified(ino).unwrap();
+        assert!(inode.has_inline_data(), "11 bytes fit in the inode");
+        assert_eq!(
+            crate::file_io::read_inline(&fs, &inode, &raw).unwrap(),
+            b"new content"
         );
     }
 
-    /// #383: truncate and pwrite of an inline-data file are refused and
-    /// leave it as it was; a grow used to patch only `i_size`, past what
-    /// the inline area holds, which the reader then rejects as corrupt.
+    /// The inline file's bytes and whether it is still inline.
+    fn file_bytes(fs: &Filesystem, ino: u32) -> (Vec<u8>, bool) {
+        let (inode, raw) = fs.read_inode_verified(ino).unwrap();
+        let mut out = vec![0u8; inode.size as usize];
+        let n = crate::file_io::read_with_raw(fs, &inode, &raw, 0, inode.size, &mut out).unwrap();
+        assert_eq!(n, inode.size);
+        (out, inode.has_inline_data())
+    }
+
+    /// #428: truncate and pwrite of an inline-data file are made in the
+    /// inode while the result fits (a grow used to patch only `i_size`,
+    /// past what the inline area holds, #383), and convert the file to an
+    /// extent-mapped one when it does not; the other files are untouched
+    /// and the volume audits clean after each step.
     #[test]
-    fn truncating_or_writing_an_inline_file_is_refused_and_leaves_it_whole() {
+    fn truncating_or_writing_an_inline_file_keeps_it_inline_while_it_fits() {
         let dev = formatted();
         set_incompat_bit(&dev, crate::features::Incompat::INLINE_DATA.bits());
         let fs = mount(&dev);
         let ino = fs.apply_create("/f", 0o644).unwrap();
+        fs.apply_create("/g", 0o644).unwrap();
+        fs.apply_replace_file_content("/g", b"neighbour").unwrap();
         make_inline_file(&fs, ino, u32::from_le_bytes(*b"abc\n"));
         drop(fs);
-        let fs = mount(&dev);
-        let before = fs.read_inode_verified(ino).unwrap().1;
-        let grow = fs.apply_truncate_grow(ino, 4096);
-        let shrink = fs.apply_truncate_shrink(ino, 1);
-        let pwrite = fs.apply_pwrite("/f", 1, b"x");
-        drop(fs);
-        let fs = mount(&dev);
-        for (name, r) in [
-            ("grow", grow),
-            ("shrink", shrink),
-            ("pwrite", pwrite.map(drop)),
-        ] {
+
+        let mut model = b"abc\n".to_vec();
+        type Step = fn(&Filesystem, u32) -> Result<()>;
+        type Model = fn(&mut Vec<u8>);
+        let steps: [(&str, Step, Model, bool); 6] = [
+            (
+                "pwrite",
+                |fs, _| fs.apply_pwrite("/f", 1, b"x").map(drop),
+                |m| m[1] = b'x',
+                true,
+            ),
+            (
+                "grow into system.data",
+                |fs, ino| fs.apply_truncate_grow(ino, 100),
+                |m| m.resize(100, 0),
+                true,
+            ),
+            (
+                "pwrite in system.data",
+                |fs, ino| fs.apply_pwrite_ino(ino, 90, b"tail").map(drop),
+                |m| m[90..94].copy_from_slice(b"tail"),
+                true,
+            ),
+            (
+                "shrink",
+                |fs, ino| fs.apply_truncate_shrink(ino, 2),
+                |m| m.truncate(2),
+                true,
+            ),
+            (
+                "grow past the inode",
+                |fs, ino| fs.apply_truncate_grow(ino, 4096),
+                |m| m.resize(4096, 0),
+                false,
+            ),
+            (
+                "pwrite the converted file",
+                |fs, ino| fs.apply_pwrite_ino(ino, 4000, b"end").map(drop),
+                |m| m[4000..4003].copy_from_slice(b"end"),
+                false,
+            ),
+        ];
+        for (name, step, apply, inline) in steps {
+            let fs = mount(&dev);
+            step(&fs, ino).unwrap_or_else(|e| panic!("{name}: {e:?}"));
+            drop(fs);
+            apply(&mut model);
+            let fs = mount(&dev);
+            assert_eq!(file_bytes(&fs, ino), (model.clone(), inline), "{name}");
+            let g = resolve(&fs, "/g").unwrap();
+            assert_eq!(file_bytes(&fs, g).0, b"neighbour", "{name}: /g");
+            let report = crate::fsck::audit(&fs, u32::MAX, u32::MAX).unwrap();
             assert!(
-                matches!(r, Err(Error::Unsupported(_))),
-                "{name} of an inline file: {r:?}"
+                report.anomalies.is_empty(),
+                "{name}: {:?}",
+                report.anomalies
             );
         }
-        let (inode, after) = fs.read_inode_verified(ino).unwrap();
-        assert!(after == before, "a refused write changed the inline inode");
-        assert_eq!(
-            crate::file_io::read_inline(&fs, &inode, &after).unwrap(),
-            b"abc\n"
-        );
     }
 
     /// Tests that run an oracle tool (they run in the harness VM): mkfs.ext4, e2fsck.
