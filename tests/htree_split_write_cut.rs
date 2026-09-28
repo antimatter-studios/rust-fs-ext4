@@ -64,8 +64,10 @@ fn indexed_volume(tag: &str) -> String {
         ],
     );
     assert_eq!(code, Some(0), "mkfs.ext4: {log}");
-    let (code, log) = run("e2fsck", &["-fyD", &image]);
-    assert!(matches!(code, Some(0 | 1)), "e2fsck -fyD: {log}");
+    fs_ext4_test_support::oracle("e2fsck")
+        .args(["-fyD", &image])
+        .judged()
+        .repaired("e2fsck -fyD");
     let _ = std::fs::remove_dir_all(&root);
     image
 }
@@ -164,9 +166,22 @@ fn every_write_cut_inside_an_htree_leaf_split_leaves_a_clean_volume() {
         let (image, _, _) = create_with_cut(&fixture, &name, cut, &format!("cut{cut}"));
         // The remount replays whatever the journal committed.
         drop(Filesystem::mount(Arc::new(FileDevice::open_rw(&image).unwrap())).expect("remount"));
-        let (code, report) = run("e2fsck", &["-fn", &image]);
-        if code != Some(0) || report.contains("IGNORED") || report.contains("HTREE") {
-            rejected.push(format!("--- cut after write {cut} of {writes}:\n{report}"));
+        // The verdict, not the exit status: `e2fsck -n` exits 0 having
+        // answered "no" to a damaged index. A report that is not a verdict
+        // is a rejection too, never a pass.
+        let judged = fs_ext4_test_support::oracle("e2fsck")
+            .args(["-fn", &image])
+            .judged();
+        match judged.verdict {
+            fs_ext4_test_support::Verdict::Clean => {}
+            fs_ext4_test_support::Verdict::Findings(report) => {
+                rejected.push(format!("--- cut after write {cut} of {writes}:\n{report}"));
+            }
+            fs_ext4_test_support::Verdict::NotAVerdict(why) => {
+                rejected.push(format!(
+                    "--- cut after write {cut} of {writes}: not a verdict: {why}"
+                ));
+            }
         }
         let _ = std::fs::remove_file(image);
     }
