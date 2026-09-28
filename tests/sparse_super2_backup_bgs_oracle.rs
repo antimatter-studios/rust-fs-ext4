@@ -106,17 +106,13 @@ fn fixed_layout(path: &str, superblock: Option<u64>) -> Vec<String> {
 }
 
 fn e2fsck_clean(args: &[&str], what: &str) {
-    let out = fs_ext4_test_support::oracle("e2fsck").args(args).output();
-    let report = format!(
-        "{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
-    // `e2fsck -n` can print a problem as IGNORED and still exit 0.
-    assert!(
-        out.status.success() && !report.contains("IGNORED"),
-        "{what}: e2fsck {args:?} found problems:\n{report}"
-    );
+    // `e2fsck` is a checker, so its exit status is not its verdict: it exits 0
+    // on a volume it skipped and on one whose wrong count it reported as
+    // IGNORED. The verdict is the report (#280).
+    fs_ext4_test_support::oracle("e2fsck")
+        .args(args)
+        .judged()
+        .clean(what);
 }
 
 #[test]
