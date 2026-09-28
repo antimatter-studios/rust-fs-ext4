@@ -350,7 +350,13 @@ fn revoke_count_into_the_tail(image: &str) {
 #[test]
 fn a_revoke_count_reaching_the_checksum_tail_is_refused() {
     let control = debugfs_journal("rcount_control");
-    let (_, log) = run("e2fsck", &["-fy", &control], None);
+    // `e2fsck` is a checker, so its exit status is not its verdict (#280);
+    // for a `-fy` replay, exit 1 is the tool doing its job. `repaired` reads
+    // the transcript and requires that e2fsck examined the volume at all.
+    let log = oracle("e2fsck")
+        .args(["-fy", &control])
+        .judged()
+        .repaired("the untouched journal");
     for (i, &block) in TARGETS.iter().enumerate() {
         assert!(
             read_block(&control, block) == pattern(i),
@@ -364,7 +370,15 @@ fn a_revoke_count_reaching_the_checksum_tail_is_refused() {
     let copy = format!("{image}.e2fsck");
     std::fs::copy(&image, &copy).unwrap();
 
-    let (_, log) = run("e2fsck", &["-fy", &copy], None);
+    let out = oracle("e2fsck")
+        .args(["-fy", &copy])
+        .judged()
+        .examined("a revoke count reaching the checksum tail");
+    let log = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
     for &block in &TARGETS {
         assert_eq!(
             read_block(&copy, block),
