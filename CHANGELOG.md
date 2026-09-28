@@ -98,6 +98,17 @@ Not caught by the compiler — the same source builds and behaves differently:
   same transaction as the write, so a crash leaves the old inline file or
   the written one. `e2fsck` judges the result clean and the kernel reads it
   back.
+- **Directory mutations inside inline-data directories** (#428). create,
+  mknod, mkdir, symlink, link, unlink, rename and rmdir, by path and by
+  `(directory, name)`, now edit an inline directory instead of refusing it
+  with `Unsupported` (#382). An entry is added in `i_block` or the
+  `system.data` continuation, which is created at the size the inode holds
+  when `i_block` is full, and removed where it is, as the kernel does, so
+  the other entries keep their places; a moved inline directory's `..` is
+  rewritten in `i_block`. A directory whose entries outgrow the inode is
+  converted to a one-block directory holding them in the same transaction,
+  and a non-empty one is still refused by rmdir. `e2fsck` judges the result
+  clean and the kernel lists it.
 - **`fs_ext4_flush` and `fs_ext4_fresh_read` in the C API** (#374). A host
   embedding the engine through C had no durability barrier on a live mount,
   so it could not tell "every change so far is on the device" from "the
