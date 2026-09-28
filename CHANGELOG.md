@@ -215,6 +215,24 @@ Not caught by the compiler — the same source builds and behaves differently:
   fails the pull request (#120).
 ### Fixed
 
+- **Paths cross the C ABI as bytes, and a path naming nothing is never the
+  root (#418).** Every path-taking entry point read its `const char *` as
+  UTF-8 and answered `""` for one that did not decode or was longer than
+  `PATH_MAX` — and `""` means the root here, so `fs_ext4_stat` reported the
+  root's attributes and returned 0, and `fs_ext4_dir_open` listed the root.
+  A caller handing back a non-UTF-8 name `fs_ext4_dir_next` had just listed
+  walked in a circle. Paths are now the bytes up to the NUL, compared byte
+  for byte against the entry names, which have no encoding: such a name is
+  reachable by `stat`, `dir_open`, `read_file`, `readlink`, the xattr calls
+  and every write call. A path naming no file is ENOENT; one over 4,096
+  bytes is ENAMETOOLONG; a NULL path is EINVAL, as it already was.
+  Source-compatible for every caller passing UTF-8. Extended-attribute
+  names are not paths and are still text: one that is not UTF-8 is EINVAL.
+  The Rust `&str` path API is unchanged and now wraps the byte resolution,
+  which `Filesystem::lookup_path_bytes` and
+  `path::lookup_bytes_with_csum` expose. `tests/non_utf8_names_oracle.rs`
+  has `debugfs` file the names and `e2fsck` judge what was written through
+  them.
 - **`chore staticlib` no longer calls a stale or broken artifact up to
   date (#330).** `dist/include/fs_core.h` is a generated file, so deleting
   it rebuilds; `Cargo.lock` and rust-fs-core's manifest and sources are

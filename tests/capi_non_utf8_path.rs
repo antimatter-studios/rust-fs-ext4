@@ -373,7 +373,13 @@ fn every_path_entry_point_takes_a_non_utf8_path_as_bytes() {
         assert_eq!(read_all(fs, &f, payload.len()), b"Written by path\n");
         assert_eq!(fs_ext4_truncate(fs, c(&f).as_ptr(), 7), 0, "{}", last_err());
         assert_eq!(
-            fs_ext4_fallocate(fs, c(&f).as_ptr(), 0, 4096, FS_EXT4_FALLOC_FL_KEEP_SIZE),
+            fs_ext4_fallocate(
+                fs,
+                c(&f).as_ptr(),
+                1 << 20,
+                4096,
+                FS_EXT4_FALLOC_FL_KEEP_SIZE
+            ),
             0,
             "fallocate: {}",
             last_err()
@@ -476,11 +482,16 @@ fn every_path_entry_point_takes_a_non_utf8_path_as_bytes() {
         );
         assert_eq!(lookup_at(fs, dir_ino, CAFE), None);
         assert_eq!(lookup_at(fs, ROOT, b"m\xe9"), Some(file_ino));
+        // Onto a different file, which it replaces: renaming onto another
+        // link of the same inode is a no-op under rename(2).
+        let r = path(&[b"r\xe9"]);
+        let r_ino = fs_ext4_create(fs, c(&r).as_ptr(), 0o644);
+        assert_ne!(r_ino, 0, "create: {}", last_err());
         assert_eq!(
             fs_ext4_rename2(
                 fs,
                 c(&moved).as_ptr(),
-                c(&l).as_ptr(),
+                c(&r).as_ptr(),
                 FS_EXT4_RENAME_REPLACE
             ),
             0,
@@ -488,7 +499,8 @@ fn every_path_entry_point_takes_a_non_utf8_path_as_bytes() {
             last_err()
         );
         assert_eq!(lookup_at(fs, ROOT, b"m\xe9"), None);
-        assert_eq!(lookup_at(fs, ROOT, b"l\xe9"), Some(file_ino));
+        assert_eq!(lookup_at(fs, ROOT, b"r\xe9"), Some(file_ino));
+        assert_eq!(fs_ext4_unlink(fs, c(&r).as_ptr()), 0, "{}", last_err());
         assert_eq!(fs_ext4_unlink(fs, c(&l).as_ptr()), 0, "{}", last_err());
         assert_eq!(fs_ext4_unlink(fs, c(&s).as_ptr()), 0, "{}", last_err());
         assert_eq!(fs_ext4_unlink(fs, c(&fifo).as_ptr()), 0, "{}", last_err());
@@ -500,6 +512,7 @@ fn every_path_entry_point_takes_a_non_utf8_path_as_bytes() {
         );
         assert_eq!(lookup_at(fs, ROOT, DIR), None);
         assert_eq!(lookup_at(fs, ROOT, b"l\xe9"), None);
+        assert_eq!(lookup_at(fs, ROOT, b"r\xe9"), None);
     }
 
     unsafe { fs_ext4_umount(fs) };

@@ -1,6 +1,6 @@
 //! Path-to-inode resolution.
 //!
-//! Walk a slash-separated UTF-8 path from the root directory (inode 2) down to
+//! Walk a slash-separated path — bytes, never decoded — from the root directory (inode 2) down to
 //! a target inode number. Used by every public-facing C API function that
 //! accepts a path (stat, dir_open, read_file, readlink).
 //!
@@ -86,15 +86,35 @@ pub fn lookup_with_csum<F>(
 where
     F: FnMut(u32) -> Result<Inode>,
 {
-    let components = split_path(path);
+    lookup_bytes_with_csum(dev, sb, read_inode, path.as_bytes(), csum)
+}
+
+/// [`lookup_with_csum`] of a path given as bytes, which is what a path is:
+/// the components are compared byte for byte against the directory entry
+/// names, which have no encoding. A path that is not UTF-8 names exactly
+/// the file whose name bytes it holds, and a path naming nothing is
+/// `NotFound` — never the root by accident (#418).
+///
+/// The `&str` functions above are this with `str::as_bytes`, so a caller
+/// passing UTF-8 sees no difference.
+pub fn lookup_bytes_with_csum<F>(
+    dev: &dyn BlockDevice,
+    sb: &Superblock,
+    read_inode: &mut F,
+    path: &[u8],
+    csum: &crate::checksum::Checksummer,
+) -> Result<u32>
+where
+    F: FnMut(u32) -> Result<Inode>,
+{
     let mut current_ino: u32 = EXT4_ROOT_INODE;
 
-    for name in components {
+    for name in split_path(path) {
         let inode = read_inode(current_ino)?;
         if !inode.is_dir() {
             return Err(Error::NotADirectory);
         }
-        current_ino = find_entry(dev, sb, current_ino, &inode, name.as_bytes(), csum)?;
+        current_ino = find_entry(dev, sb, current_ino, &inode, name, csum)?;
     }
 
     Ok(current_ino)
@@ -378,8 +398,8 @@ fn read_raw_inode(
 
 /// Split "/foo/bar/baz" into ["foo", "bar", "baz"]. Empty components (from
 /// doubled slashes or leading/trailing slashes) are dropped.
-fn split_path(path: &str) -> Vec<&str> {
-    path.split('/').filter(|s| !s.is_empty()).collect()
+fn split_path(path: &[u8]) -> impl Iterator<Item = &[u8]> {
+    path.split(|&b| b == b'/').filter(|s| !s.is_empty())
 }
 
 #[cfg(test)]
@@ -388,13 +408,23 @@ mod tests {
 
     #[test]
     fn split_path_basic() {
-        assert_eq!(split_path(""), Vec::<&str>::new());
-        assert_eq!(split_path("/"), Vec::<&str>::new());
-        assert_eq!(split_path("/foo"), vec!["foo"]);
-        assert_eq!(split_path("/foo/bar"), vec!["foo", "bar"]);
-        assert_eq!(split_path("foo/bar"), vec!["foo", "bar"]);
-        assert_eq!(split_path("/foo//bar/"), vec!["foo", "bar"]);
-        assert_eq!(split_path("///"), Vec::<&str>::new());
+        let split = |p: &'static [u8]| split_path(p).collect::<Vec<_>>();
+        let none: Vec<&[u8]> = Vec::new();
+        assert_eq!(split(b""), none);
+        assert_eq!(split(b"/"), none);
+        assert_eq!(split(b"/foo"), vec![&b"foo"[..]]);
+        assert_eq!(split(b"/foo/bar"), vec![&b"foo"[..], b"bar"]);
+        assert_eq!(split(b"foo/bar"), vec![&b"foo"[..], b"bar"]);
+        assert_eq!(split(b"/foo//bar/"), vec![&b"foo"[..], b"bar"]);
+        assert_eq!(split(b"///"), none);
+    }
+
+    /// A component is bytes: one that is not UTF-8 survives the split
+    /// exactly, rather than being decoded or dropped (#418).
+    #[test]
+    fn split_path_keeps_bytes_that_are_not_utf8() {
+        let parts: Vec<&[u8]> = split_path(b"/d\xff/caf\xe9.txt").collect();
+        assert_eq!(parts, vec![&b"d\xff"[..], b"caf\xe9.txt"]);
     }
 
     /// Tests that read a fixture from `test-disks/` (`chore fixtures`).

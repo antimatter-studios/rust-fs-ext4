@@ -1,9 +1,20 @@
 /*
  * fs_ext4.h — C ABI for the ext4rs pure-Rust ext4 driver.
  *
- * Link against libfs_ext4.a and #include this header. UTF-8 paths,
- * NULL / -1 / 0 failure sentinels with thread-local error details
- * available via fs_ext4_last_error() / fs_ext4_last_errno().
+ * Link against libfs_ext4.a and #include this header. NULL / -1 / 0
+ * failure sentinels with thread-local error details available via
+ * fs_ext4_last_error() / fs_ext4_last_errno().
+ *
+ * PATHS ARE BYTES. Every `const char *path` is read as the bytes up to
+ * its NUL and compared byte for byte against the directory entry names,
+ * which ext4 stores with no encoding. Never decoded: a name that is not
+ * UTF-8 (a latin-1 "caf\xe9.txt") is reachable by exactly its bytes, as
+ * fs_ext4_dir_next reports them. UTF-8 is a byte string too, so a UTF-8
+ * caller sees no difference. A path naming no file is ENOENT, one longer
+ * than 4096 bytes is ENAMETOOLONG, a NULL one is EINVAL; "" "/" and "//"
+ * name the root. A consumer whose own namespace requires valid UTF-8
+ * should escape such a name REVERSIBLY, so it can be turned back into
+ * these bytes. Extended-attribute names are text: not UTF-8 is EINVAL.
  *
  * MIT License — see LICENSE
  */

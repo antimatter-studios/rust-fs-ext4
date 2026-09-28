@@ -265,17 +265,21 @@ fn is_dot_or_dotdot(name: &[u8]) -> bool {
 
 /// Split a `/a/b/c` path into (`/a/b`, `c`). Returns an error for empty or
 /// `"/"` paths (no basename to act on).
-fn split_parent_and_base(path: &str) -> Result<(String, String)> {
-    let trimmed = path.trim_end_matches('/');
+///
+/// Bytes, like the names they end in: a path is never decoded (#418).
+fn split_parent_and_base(path: &[u8]) -> Result<(&[u8], &[u8])> {
+    let end = path.iter().rposition(|&b| b != b'/').map_or(0, |i| i + 1);
+    let trimmed = &path[..end];
     if trimmed.is_empty() {
         return Err(Error::InvalidArgument("empty path"));
     }
     let last_slash = trimmed
-        .rfind('/')
+        .iter()
+        .rposition(|&b| b == b'/')
         .ok_or(Error::InvalidArgument("relative path"))?;
     let base = &trimmed[last_slash + 1..];
-    let parent = if last_slash == 0 {
-        "/"
+    let parent: &[u8] = if last_slash == 0 {
+        b"/"
     } else {
         &trimmed[..last_slash]
     };
@@ -287,10 +291,10 @@ fn split_parent_and_base(path: &str) -> Result<(String, String)> {
     // counted bytes. The kernel never files one, because its names arrive
     // as C strings, and e2fsck reports one as an illegal character. Every
     // operation that files a name splits it here.
-    if base.contains('\0') {
+    if base.contains(&0) {
         return Err(Error::InvalidArgument("a name cannot contain a NUL byte"));
     }
-    Ok((parent.to_string(), base.to_string()))
+    Ok((parent, base))
 }
 
 /// `DeepReader` adapter that pulls extent-tree internal/leaf node blocks
@@ -1704,26 +1708,42 @@ impl Filesystem {
     // directly with the inode numbers it holds.
 
     /// Resolve `path` to an inode number, verifying directory blocks.
-    fn resolve(&self, path: &str) -> Result<u32> {
+    ///
+    /// A path is bytes, compared byte for byte against the entry names,
+    /// which have no encoding: one that is not UTF-8 names exactly the
+    /// file whose name it holds, and one naming nothing is
+    /// [`Error::NotFound`]. Every path-addressed `apply_*` resolves through
+    /// here; each `&str` form is its byte form with `str::as_bytes` (#418).
+    pub fn lookup_path_bytes(&self, path: &[u8]) -> Result<u32> {
         let mut reader = |ino: u32| self.read_inode_verified(ino).map(|(i, _)| i);
-        crate::path::lookup_with_csum(self.dev.as_ref(), &self.sb, &mut reader, path, &self.csum)
+        crate::path::lookup_bytes_with_csum(
+            self.dev.as_ref(),
+            &self.sb,
+            &mut reader,
+            path,
+            &self.csum,
+        )
+    }
+
+    fn resolve(&self, path: &[u8]) -> Result<u32> {
+        self.lookup_path_bytes(path)
     }
 
     /// Resolve the parent of `path`, for an operation on its final name.
-    fn resolve_parent(&self, path: &str) -> Result<(u32, String)> {
+    fn resolve_parent<'p>(&self, path: &'p [u8]) -> Result<(u32, &'p [u8])> {
         let (parent, base) = split_parent_and_base(path)?;
-        Ok((self.resolve(&parent)?, base))
+        Ok((self.resolve(parent)?, base))
     }
 
     /// [`resolve_parent`](Self::resolve_parent) for an operation that files
     /// the final name, which is refused as too long before anything is
     /// resolved.
-    fn resolve_new_parent(&self, path: &str) -> Result<(u32, String)> {
+    fn resolve_new_parent<'p>(&self, path: &'p [u8]) -> Result<(u32, &'p [u8])> {
         let (parent, base) = split_parent_and_base(path)?;
         if base.len() > 255 {
             return Err(Error::NameTooLong);
         }
-        Ok((self.resolve(&parent)?, base))
+        Ok((self.resolve(parent)?, base))
     }
 
     /// Read the inode `r` names, refusing a handle that no longer names a
@@ -2636,6 +2656,11 @@ impl Filesystem {
     /// enabled mounts. Returns `Error::NotFound` if the path doesn't resolve,
     /// `Error::ReadOnly` on a RO mount.
     pub fn apply_chmod(&self, path: &str, mode: u16) -> Result<()> {
+        self.apply_chmod_bytes(path.as_bytes(), mode)
+    }
+
+    /// [`apply_chmod`](Self::apply_chmod) of a path given as bytes, never decoded.
+    pub(crate) fn apply_chmod_bytes(&self, path: &[u8], mode: u16) -> Result<()> {
         self.refuse_write()?;
         let ino = self.resolve(path)?;
         self.apply_chmod_ino(ino, mode)
@@ -3719,6 +3744,11 @@ impl Filesystem {
     /// Updates `i_ctime = now` and recomputes the inode checksum on
     /// csum-enabled mounts.
     pub fn apply_chown(&self, path: &str, uid: u32, gid: u32) -> Result<()> {
+        self.apply_chown_bytes(path.as_bytes(), uid, gid)
+    }
+
+    /// [`apply_chown`](Self::apply_chown) of a path given as bytes, never decoded.
+    pub(crate) fn apply_chown_bytes(&self, path: &[u8], uid: u32, gid: u32) -> Result<()> {
         self.refuse_write()?;
         let ino = self.resolve(path)?;
         self.apply_chown_ino(ino, uid, gid)
@@ -3761,16 +3791,14 @@ impl Filesystem {
     /// one without rewriting them would corrupt the file. Bits outside the
     /// mask that are already set may be passed back unchanged.
     pub fn apply_set_flags(&self, path: &str, flags: u32) -> Result<()> {
+        self.apply_set_flags_bytes(path.as_bytes(), flags)
+    }
+
+    /// [`apply_set_flags`](Self::apply_set_flags) of a path given as bytes, never decoded.
+    pub(crate) fn apply_set_flags_bytes(&self, path: &[u8], flags: u32) -> Result<()> {
         use crate::inode::{OFF_FLAGS, USER_MODIFIABLE_FLAGS};
         self.refuse_write()?;
-        let mut reader = |ino: u32| self.read_inode_verified(ino).map(|(i, _)| i);
-        let ino = crate::path::lookup_with_csum(
-            self.dev.as_ref(),
-            &self.sb,
-            &mut reader,
-            path,
-            &self.csum,
-        )?;
+        let ino = self.resolve(path)?;
         let (inode, mut raw) = self.read_inode_verified(ino)?;
 
         if (flags ^ inode.flags) & !USER_MODIFIABLE_FLAGS != 0 {
@@ -3806,15 +3834,13 @@ impl Filesystem {
     /// - `Error::NotFound` if the entry isn't present in either region.
     /// - `Error::InvalidArgument` on namespace-prefix issues.
     pub fn apply_removexattr(&self, path: &str, name: &str) -> Result<()> {
+        self.apply_removexattr_bytes(path.as_bytes(), name)
+    }
+
+    /// [`apply_removexattr`](Self::apply_removexattr) of a path given as bytes, never decoded.
+    pub(crate) fn apply_removexattr_bytes(&self, path: &[u8], name: &str) -> Result<()> {
         self.refuse_write()?;
-        let mut reader = |ino: u32| self.read_inode_verified(ino).map(|(i, _)| i);
-        let ino = crate::path::lookup_with_csum(
-            self.dev.as_ref(),
-            &self.sb,
-            &mut reader,
-            path,
-            &self.csum,
-        )?;
+        let ino = self.resolve(path)?;
         let (inode, mut raw) = self.read_inode_verified(ino)?;
 
         // Locate the in-inode xattr region (starts at 128 + i_extra_isize).
@@ -3926,15 +3952,13 @@ impl Filesystem {
     ///    Returns `Error::NoSpaceLeftOnDevice` if even a full block can't
     ///    hold the new layout.
     pub fn apply_setxattr(&self, path: &str, name: &str, value: &[u8]) -> Result<()> {
+        self.apply_setxattr_bytes(path.as_bytes(), name, value)
+    }
+
+    /// [`apply_setxattr`](Self::apply_setxattr) of a path given as bytes, never decoded.
+    pub(crate) fn apply_setxattr_bytes(&self, path: &[u8], name: &str, value: &[u8]) -> Result<()> {
         self.refuse_write()?;
-        let mut reader = |ino: u32| self.read_inode_verified(ino).map(|(i, _)| i);
-        let ino = crate::path::lookup_with_csum(
-            self.dev.as_ref(),
-            &self.sb,
-            &mut reader,
-            path,
-            &self.csum,
-        )?;
+        let ino = self.resolve(path)?;
         let (inode, mut raw) = self.read_inode_verified(ino)?;
 
         let inode_size = self.sb.inode_size as usize;
@@ -4247,6 +4271,24 @@ impl Filesystem {
         mtime_sec: i64,
         mtime_nsec: u32,
     ) -> Result<()> {
+        self.apply_utimens_bytes(
+            path.as_bytes(),
+            atime_sec,
+            atime_nsec,
+            mtime_sec,
+            mtime_nsec,
+        )
+    }
+
+    /// [`apply_utimens`](Self::apply_utimens) of a path given as bytes, never decoded.
+    pub(crate) fn apply_utimens_bytes(
+        &self,
+        path: &[u8],
+        atime_sec: i64,
+        atime_nsec: u32,
+        mtime_sec: i64,
+        mtime_nsec: u32,
+    ) -> Result<()> {
         self.refuse_write()?;
         // Before resolving, so an unstorable time or nanosecond count is
         // refused as EINVAL whether or not the path exists.
@@ -4347,22 +4389,26 @@ impl Filesystem {
     /// `Error::NotADirectory` if the parent isn't a directory, and
     /// `Error::IsADirectory` (POSIX EISDIR) if the target is a directory.
     pub fn apply_unlink(&self, path: &str) -> Result<()> {
+        self.apply_unlink_bytes(path.as_bytes())
+    }
+
+    /// [`apply_unlink`](Self::apply_unlink) of a path given as bytes, never decoded.
+    pub(crate) fn apply_unlink_bytes(&self, path: &[u8]) -> Result<()> {
         self.refuse_write()?;
         // POSIX: a trailing slash asserts the path refers to a directory,
         // which is incompatible with `unlink(2)` no matter what kind of file
         // the path resolves to. `split_parent_and_base` swallows the slash,
         // so snapshot the flag first.
-        let trailing_slash = path.len() > 1 && path.ends_with('/');
+        let trailing_slash = path.len() > 1 && path.ends_with(b"/");
         let (parent_path, base_name) = split_parent_and_base(path)?;
-        let parent_ino = self.resolve(&parent_path)?;
+        let parent_ino = self.resolve(parent_path)?;
         if trailing_slash {
             // The call fails either way; only the errno depends on what the
             // name is: a directory is EISDIR, as unlink(2) says of any
             // directory, and anything else ENOTDIR, the slash having
             // asserted a directory.
             let (parent_inode, _) = self.live_dir(parent_ino.into())?;
-            let target_ino =
-                self.find_entry_in_dir(parent_ino, &parent_inode, base_name.as_bytes())?;
+            let target_ino = self.find_entry_in_dir(parent_ino, &parent_inode, base_name)?;
             let (target_inode, _) = self.live_inode(target_ino.into())?;
             return Err(if target_inode.is_dir() {
                 Error::IsADirectory
@@ -4370,7 +4416,7 @@ impl Filesystem {
                 Error::NotADirectory
             });
         }
-        self.apply_unlink_at(parent_ino, base_name.as_bytes())
+        self.apply_unlink_at(parent_ino, base_name)
     }
 
     /// [`apply_unlink`](Self::apply_unlink) of entry `name` in directory
@@ -4549,9 +4595,14 @@ impl Filesystem {
     /// - Not journaled — scratch-image safe, same caveat as other Phase-4
     ///   applies.
     pub fn apply_create(&self, path: &str, mode: u16) -> Result<u32> {
+        self.apply_create_bytes(path.as_bytes(), mode)
+    }
+
+    /// [`apply_create`](Self::apply_create) of a path given as bytes, never decoded.
+    pub(crate) fn apply_create_bytes(&self, path: &[u8], mode: u16) -> Result<u32> {
         self.refuse_write()?;
         let (parent, name) = self.resolve_new_parent(path)?;
-        self.apply_create_at(parent, name.as_bytes(), mode)
+        self.apply_create_at(parent, name, mode)
     }
 
     /// [`apply_create`](Self::apply_create) of entry `name` in directory
@@ -4607,10 +4658,21 @@ impl Filesystem {
     /// or `S_IFBLK`) plus the permission bits. `major` and `minor` are the
     /// device numbers (both 0 for FIFOs and sockets). Mirrors POSIX `mknod`.
     pub fn apply_mknod(&self, path: &str, mode: u16, major: u32, minor: u32) -> Result<u32> {
+        self.apply_mknod_bytes(path.as_bytes(), mode, major, minor)
+    }
+
+    /// [`apply_mknod`](Self::apply_mknod) of a path given as bytes, never decoded.
+    pub(crate) fn apply_mknod_bytes(
+        &self,
+        path: &[u8],
+        mode: u16,
+        major: u32,
+        minor: u32,
+    ) -> Result<u32> {
         self.refuse_write()?;
         Self::mknod_entry_type(mode)?;
         let (parent, name) = self.resolve_new_parent(path)?;
-        self.apply_mknod_at(parent, name.as_bytes(), mode, major, minor)
+        self.apply_mknod_at(parent, name, mode, major, minor)
     }
 
     /// The directory-entry type for a special file of `mode`, or the
@@ -4729,10 +4791,15 @@ impl Filesystem {
     /// POSIX caps symlink targets at SYMLINK_MAX (255 bytes on Linux +
     /// macOS). Longer returns `Error::NameTooLong` → ENAMETOOLONG.
     pub fn apply_symlink(&self, target: &str, linkpath: &str) -> Result<u32> {
+        self.apply_symlink_bytes(target.as_bytes(), linkpath.as_bytes())
+    }
+
+    /// [`apply_symlink`](Self::apply_symlink) of a path given as bytes, never decoded.
+    pub(crate) fn apply_symlink_bytes(&self, target: &[u8], linkpath: &[u8]) -> Result<u32> {
         self.refuse_write()?;
-        self.check_symlink_target(target.as_bytes())?;
+        self.check_symlink_target(target)?;
         let (parent, name) = self.resolve_new_parent(linkpath)?;
-        self.apply_symlink_at(parent, name.as_bytes(), target.as_bytes())
+        self.apply_symlink_at(parent, name, target)
     }
 
     fn check_symlink_target(&self, target: &[u8]) -> Result<()> {
@@ -4998,15 +5065,13 @@ impl Filesystem {
     ///
     /// Returns the new file size on success.
     pub fn apply_replace_file_content(&self, path: &str, data: &[u8]) -> Result<u64> {
+        self.apply_replace_file_content_bytes(path.as_bytes(), data)
+    }
+
+    /// [`apply_replace_file_content`](Self::apply_replace_file_content) of a path given as bytes, never decoded.
+    pub(crate) fn apply_replace_file_content_bytes(&self, path: &[u8], data: &[u8]) -> Result<u64> {
         self.refuse_write()?;
-        let mut reader = |ino: u32| self.read_inode_verified(ino).map(|(i, _)| i);
-        let ino = crate::path::lookup_with_csum(
-            self.dev.as_ref(),
-            &self.sb,
-            &mut reader,
-            path,
-            &self.csum,
-        )?;
+        let ino = self.resolve(path)?;
         let (inode, mut raw) = self.read_inode_verified(ino)?;
         if !inode.is_file() {
             return Err(Error::InvalidArgument(
@@ -5423,6 +5488,11 @@ impl Filesystem {
     ///   existing")`. Skipping fallocate-then-write, the streaming
     ///   copy path doesn't trigger this.
     pub fn apply_pwrite(&self, path: &str, offset: u64, data: &[u8]) -> Result<u64> {
+        self.apply_pwrite_bytes(path.as_bytes(), offset, data)
+    }
+
+    /// [`apply_pwrite`](Self::apply_pwrite) of a path given as bytes, never decoded.
+    pub(crate) fn apply_pwrite_bytes(&self, path: &[u8], offset: u64, data: &[u8]) -> Result<u64> {
         self.refuse_write()?;
         let ino = self.resolve(path)?;
         self.apply_pwrite_ino(ino, offset, data)
@@ -6149,9 +6219,14 @@ impl Filesystem {
     /// Not journaled — safe only in scratch-image contexts until transaction
     /// wrapping lands.
     pub fn apply_mkdir(&self, path: &str, mode: u16) -> Result<u32> {
+        self.apply_mkdir_bytes(path.as_bytes(), mode)
+    }
+
+    /// [`apply_mkdir`](Self::apply_mkdir) of a path given as bytes, never decoded.
+    pub(crate) fn apply_mkdir_bytes(&self, path: &[u8], mode: u16) -> Result<u32> {
         self.refuse_write()?;
         let (parent, name) = self.resolve_new_parent(path)?;
-        self.apply_mkdir_at(parent, name.as_bytes(), mode)
+        self.apply_mkdir_at(parent, name, mode)
     }
 
     /// [`apply_mkdir`](Self::apply_mkdir) of entry `name` in directory
@@ -6282,6 +6357,11 @@ impl Filesystem {
     ///
     /// Not journaled — same caveat as other Phase-4 ops.
     pub fn apply_link(&self, src: &str, dst: &str) -> Result<()> {
+        self.apply_link_bytes(src.as_bytes(), dst.as_bytes())
+    }
+
+    /// [`apply_link`](Self::apply_link) of a path given as bytes, never decoded.
+    pub(crate) fn apply_link_bytes(&self, src: &[u8], dst: &[u8]) -> Result<()> {
         self.refuse_write()?;
         let (dst_parent_path, dst_name) = split_parent_and_base(dst)?;
         if dst_name.len() > 255 {
@@ -6293,8 +6373,8 @@ impl Filesystem {
         if self.live_inode(src_ino.into())?.0.is_dir() {
             return Err(Error::IsADirectory);
         }
-        let dst_parent = self.resolve(&dst_parent_path)?;
-        self.apply_link_at(src_ino, dst_parent, dst_name.as_bytes())
+        let dst_parent = self.resolve(dst_parent_path)?;
+        self.apply_link_at(src_ino, dst_parent, dst_name)
     }
 
     /// [`apply_link`](Self::apply_link): a new entry `dst_name` in
@@ -6389,6 +6469,16 @@ impl Filesystem {
     /// directory, splitting a full leaf of its htree index (#302), and
     /// dropping that index when it has no room to route a new leaf (#347).
     pub fn apply_rename(&self, src: &str, dst: &str, replace_if_exists: bool) -> Result<()> {
+        self.apply_rename_bytes(src.as_bytes(), dst.as_bytes(), replace_if_exists)
+    }
+
+    /// [`apply_rename`](Self::apply_rename) of a path given as bytes, never decoded.
+    pub(crate) fn apply_rename_bytes(
+        &self,
+        src: &[u8],
+        dst: &[u8],
+        replace_if_exists: bool,
+    ) -> Result<()> {
         // The verdict only: the volume is marked not clean once the rename
         // is known to write (#303), in `apply_rename_at`.
         self.write_refusal()?;
@@ -6397,13 +6487,13 @@ impl Filesystem {
         if dst_name.len() > 255 {
             return Err(Error::NameTooLong);
         }
-        let src_parent = self.resolve(&src_parent_path)?;
-        let dst_parent = self.resolve(&dst_parent_path)?;
+        let src_parent = self.resolve(src_parent_path)?;
+        let dst_parent = self.resolve(dst_parent_path)?;
         self.apply_rename_at(
             src_parent,
-            src_name.as_bytes(),
+            src_name,
             dst_parent,
-            dst_name.as_bytes(),
+            dst_name,
             replace_if_exists,
         )
     }
@@ -7477,9 +7567,14 @@ impl Filesystem {
     /// only `.` and `..`. Frees the data block(s) + inode, removes the
     /// entry from the parent, decrements parent's `i_links_count`.
     pub fn apply_rmdir(&self, path: &str) -> Result<()> {
+        self.apply_rmdir_bytes(path.as_bytes())
+    }
+
+    /// [`apply_rmdir`](Self::apply_rmdir) of a path given as bytes, never decoded.
+    pub(crate) fn apply_rmdir_bytes(&self, path: &[u8]) -> Result<()> {
         self.refuse_write()?;
         let (parent, name) = self.resolve_parent(path)?;
-        self.apply_rmdir_at(parent, name.as_bytes())
+        self.apply_rmdir_at(parent, name)
     }
 
     /// [`apply_rmdir`](Self::apply_rmdir) of entry `name` in directory
