@@ -133,14 +133,20 @@ chore_min_version: 0.6.0
 #                                                    36404048578), which failed
 #                                                    the tier with exit 65 and
 #                                                    nothing red inside it
-#     kernel      108 /   6,045      140 /   7,900   ~30% / ~31%. Six tests
-#                                                    since #427 added the
-#                                                    inline-directory readback:
-#                                                    the x86_64 CI job of PR
-#                                                    #431 (run 36435740119)
-#                                                    passed and printed 108 /
-#                                                    6,045 over 100 / 5,600.
-#                                                    Was 71 / 4,090 for five
+#     kernel      135 /   7,875      175 /  10,200   ~30% / ~30%. Eight tests
+#                                                    since #428 added the
+#                                                    inline file and directory
+#                                                    write readbacks: the
+#                                                    x86_64 CI job of PR #436
+#                                                    (run 36463572328) passed
+#                                                    and printed 135 / 7,875,
+#                                                    25 bytes under 140 /
+#                                                    7,900; the file half alone
+#                                                    printed 127 / 7,055 (PR
+#                                                    #435, run 36461656858).
+#                                                    Was 108 / 6,045 for six
+#                                                    (#431, run 36435740119),
+#                                                    71 / 4,090 for five
 #                                                    (#413), 52 / 3,012 for four
 #     lwext4       65 /   5,243       85 /   6,800   ~31% / ~30%: eight tests
 #                                                    and sixteen [oracle vm]
@@ -450,7 +456,7 @@ tasks:
     # written — plus the reverse direction, and a deliberate corruption
     # that must fail.
     cmds:
-      - 'scripts/tier.sh test:kernel kernel 140 7900 -- scripts/test.sh --locked --release $(scripts/test-targets.sh kernel) -- --show-output'
+      - 'scripts/tier.sh test:kernel kernel 175 10200 -- scripts/test.sh --locked --release $(scripts/test-targets.sh kernel) -- --show-output'
       - 'scripts/test-floor.sh kernel 3'
 
   test:lwext4:
