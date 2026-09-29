@@ -48,10 +48,22 @@ STUB
 
 # Runs the packaging script in a fresh output directory. It prints the
 # tarball's name relative to that directory, so this prints the absolute path.
+#
+# STALE=<name> first leaves a file of that name in the output directory, as a
+# previous run would have. On failure it prints whatever the script printed,
+# so a refusal that names a tarball anyway is seen, and it records the output
+# directory in $sandbox/package-out for the leftover-tarball check.
 package() {
-    local out="$sandbox/out-$RANDOM$RANDOM" name
+    local out="$sandbox/out-$RANDOM$RANDOM" name status
     mkdir -p "$out"
-    name="$(cd "$out" && bash "$PACKAGE" "$@" 2>"$sandbox/stderr")" || return
+    printf '%s\n' "$out" > "$sandbox/package-out"
+    [ -z "${STALE:-}" ] || echo stale > "$out/$STALE"
+    name="$(cd "$out" && bash "$PACKAGE" "$@" 2>"$sandbox/stderr")"
+    status=$?
+    if [ "$status" -ne 0 ]; then
+        printf '%s' "$name"
+        return "$status"
+    fi
     printf '%s\n' "$out/$name"
 }
 
@@ -97,12 +109,15 @@ fi
 # --- Each way a build can be wrong is refused, with no tarball left. ------
 refused() {
     local why="$1"; shift
-    local out
-    if out="$(package "$@")"; then
-        bad "$why is refused, but packaging succeeded: $out"
+    local stdout out_dir left
+    if stdout="$(package "$@")"; then
+        bad "$why is refused, but packaging succeeded: $stdout"
     else
         ok
-        [ -z "$out" ] && ok || bad "$why leaves no tarball named on stdout: $out"
+        [ -z "$stdout" ] && ok || bad "$why leaves no tarball named on stdout: $stdout"
+        out_dir="$(cat "$sandbox/package-out")"
+        left="$(find "$out_dir" -maxdepth 1 -name '*.tar.gz')"
+        [ -z "$left" ] && ok || bad "$why leaves no tarball behind, found: $left"
     fi
 }
 
@@ -111,6 +126,7 @@ refused "a binary whose --help fails" 9.9.9 darwin-arm64 "$(dirname "$(stub 9.9.
 refused "a binary reporting a version other than the tag's" 9.9.9 darwin-arm64 "$(dirname "$(stub 1.0.0 0 wrongver/mkfs_ext4)")"
 refused "a missing label" 9.9.9 "" "$(dirname "$good")"
 refused "a missing version" "" darwin-arm64 "$(dirname "$good")"
+STALE="$crate-9.9.9-darwin-arm64.tar.gz" refused "a failure beside a previous run's tarball" 9.9.9 darwin-arm64 "$sandbox/nowhere"
 
 # --- The release workflow packages through this script. ------------------
 release="$ROOT/.github/workflows/release.yml"
