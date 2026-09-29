@@ -120,8 +120,11 @@ Not caught by the compiler — the same source builds and behaves differently:
     `get [key]` / `info [key]` (the envelope: `fs`, `label`, `total_bytes`,
     `free_bytes`, `block_size`, `dirty`, and ext4's own fields under
     `ext4`). `--offset BYTES` reaches a partition inside a whole-disk
-    image. `set label` and `resize` exist and answer `not implemented`
-    with status 3 until the library can do them.
+    image. `write <path>` creates or replaces a file with the bytes on
+    stdin, read in full before the image is opened; `mkdir <path>` makes
+    one directory. Both leave the volume marked clean. `set label` (#447)
+    and `resize` exist and answer `not implemented` with status 3 until the
+    library can do them.
   - `fsck.ext4 <target> [-n | -y | -p]` runs the library's audit (link
     counts, `..` entries, entry types, directory-block checksums, group and
     superblock free counts) and, with `-y`/`-p`, its repairs. Nothing is

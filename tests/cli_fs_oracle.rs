@@ -8,17 +8,6 @@ mod cli_support;
 use cli_support::*;
 use fs_ext4_test_support::{assert_e2fsck_clean, oracle};
 
-/// Bytes nobody would type: a fixed LCG, so a failure reproduces.
-fn pattern(len: usize, seed: u32) -> Vec<u8> {
-    let mut x = seed.wrapping_mul(2_654_435_761).wrapping_add(1);
-    (0..len)
-        .map(|_| {
-            x = x.wrapping_mul(1_103_515_245).wrapping_add(12_345);
-            (x >> 16) as u8
-        })
-        .collect()
-}
-
 fn dumpe2fs_field(header: &str, name: &str) -> String {
     header
         .lines()

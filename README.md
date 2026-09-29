@@ -105,6 +105,55 @@ flavors, writes through the crate and requires `e2fsck -fn` to pass. An
 ext2/ext3 directory grows through its direct and single-indirect blocks
 only; one that would need the double-indirect block is refused.
 
+## Command-line tools
+
+Work on an ext4 image or device directly, with no mount, kernel driver or
+VM: an escape hatch for an errand (get a file out, put one in, read the
+label, check whether it is dirty), not a place to do real filesystem work.
+For that, mount it.
+
+One multi-call binary, `rust-fs-ext4`, behind the `cli` feature so the
+library gains no dependency from it:
+
+```sh
+cargo install am-fs-ext4 --features cli   # or: chore cli:install from a checkout
+```
+
+It dispatches on the name it is run as, so an install links each tool to
+it; `rust-fs-ext4 <tool> ...` is the same program under the one name
+nothing else on PATH can shadow.
+
+```sh
+mkfs.ext4 --size 64M --label BACKUP disk.img
+fsck.ext4 disk.img                         # -y to repair
+fs.ext4 disk.img ls /
+fs.ext4 disk.img read /etc/fstab > fstab
+fs.ext4 disk.img write /notes.txt < notes.txt
+fs.ext4 disk.img mkdir /backup
+fs.ext4 disk.img get label --text
+fs.ext4 --offset 1048576 whole-disk.img info
+tar cf - ./dir | fs.ext4 disk.img write /dir.tar
+rust-fs-ext4 doctor                        # is every tool on PATH ours?
+```
+
+- **Output.** Metadata is JSON on stdout by default (`--text` for people);
+  `read` and `write` carry raw bytes. A failure is
+  `{"error": "...", "code": N}` on stderr, and `N` is the exit status: 1
+  failed, 2 wrong command line, 3 not implemented. `fsck.ext4` keeps
+  fsck(8)'s statuses instead: 0 clean, 1 corrected, 4 uncorrected, 8
+  operational error, 16 usage.
+- **`get`/`info`** report `fs`, `label`, `total_bytes`, `free_bytes`,
+  `block_size` and `dirty`, with ext4's own fields under `ext4`.
+- **Not yet:** `set label` answers `not implemented` until the library has
+  a label writer (#447); `resize` does too, and no resize is planned.
+  `fsck.ext4` checks this crate's audit, a subset of e2fsck's, and today
+  skips a directory it cannot read (#445).
+- **`--version`** on every name prints `<tool> (am-fs-ext4) <version>`.
+  `rust-fs-ext4 doctor` resolves each name on PATH, checks it answers that
+  way, and says what wins and the fix when it does not.
+- `chore test:cli` tests the tools as installed (`doctor` first), and CI
+  runs it on every pull request.
+
 ## What works
 
 Per-operation, on a clean image:

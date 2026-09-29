@@ -189,3 +189,65 @@ pub fn destroy_root_extent_header(image: &str) {
     dev.write_at(at, &raw).expect("write the root inode");
     dev.flush().expect("flush");
 }
+
+/// Bytes nobody would type: a fixed LCG, so a failure reproduces.
+pub fn pattern(len: usize, seed: u32) -> Vec<u8> {
+    let mut x = seed.wrapping_mul(2_654_435_761).wrapping_add(1);
+    (0..len)
+        .map(|_| {
+            x = x.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+            (x >> 16) as u8
+        })
+        .collect()
+}
+
+/// `fs.ext4 <image> write <path>` with `bytes` on stdin; the output.
+pub fn fs_write(image: &str, path: &str, bytes: &[u8]) -> Output {
+    use std::io::Write;
+    let mut child = tool("fs.ext4")
+        .args([image, "write", path])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn fs.ext4 write");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(bytes)
+        .expect("feed stdin");
+    child.wait_with_output().expect("wait for fs.ext4 write")
+}
+
+/// The files the write tests put in an image: every size boundary a
+/// 4 KiB block has, a MiB of noise, a file in a subdirectory, and one
+/// replaced by a shorter one (its final content is what is listed).
+pub fn write_cases() -> Vec<(&'static str, Vec<u8>)> {
+    vec![
+        ("/empty", Vec::new()),
+        ("/one", pattern(1, 1)),
+        ("/f4095", pattern(4095, 2)),
+        ("/f4096", pattern(4096, 3)),
+        ("/f4097", pattern(4097, 4)),
+        ("/big", pattern(1 << 20, 5)),
+        ("/d/e/deep", pattern(5000, 6)),
+        ("/replaced", pattern(100, 8)),
+    ]
+}
+
+/// A fresh image of ours with `/d/e` made and every [`write_cases`] file
+/// written through `fs.ext4`, `/replaced` first at 9000 bytes.
+pub fn written_image(tag: &str) -> String {
+    let img = image_path(tag);
+    ok(tool("mkfs.ext4").args(["-q", "--text", "--size", "64M", &img]));
+    ok(tool("fs.ext4").args([&img, "mkdir", "/d"]));
+    ok(tool("fs.ext4").args([&img, "mkdir", "/d/e"]));
+    let first = fs_write(&img, "/replaced", &pattern(9000, 7));
+    assert!(first.status.success(), "{}", stderr(&first));
+    for (path, bytes) in write_cases() {
+        let out = fs_write(&img, path, &bytes);
+        assert!(out.status.success(), "write {path}: {}", stderr(&out));
+    }
+    img
+}

@@ -1,8 +1,8 @@
 //! `fs.ext4 <target> <verb>`: an errand inside an ext4 image or device,
 //! without mounting it.
 //!
-//! The verbs are the shared set: `ls`, `read`, `get`/`info`, `set`,
-//! `resize`. Metadata is JSON (or `--text`); file content is raw bytes.
+//! The verbs are the shared set: `ls`, `read`, `write`, `mkdir`,
+//! `get`/`info`, `set`, `resize`. Metadata is JSON (or `--text`); file content is raw bytes.
 //! A verb the library cannot do yet still exists and answers `not
 //! implemented` with exit status 3, so a script moved between filesystems
 //! fails loudly instead of meaning something else.
@@ -23,7 +23,7 @@ pub const TOOL: Tool = Tool {
     verb: "fs",
     section: 1,
     usage_exit: crate::common::output::EXIT_USAGE,
-    about: "List, read and inspect an ext4 image or device without mounting it",
+    about: "List, read, write and inspect an ext4 image or device without mounting it",
     command,
     run,
 };
@@ -42,7 +42,7 @@ pub const KEYS: &[&str] = &[
 
 fn command() -> Cmd {
     Cmd::new("fs.ext4")
-        .about("List, read and inspect an ext4 image or device without mounting it")
+        .about("List, read, write and inspect an ext4 image or device without mounting it")
         .long_about(
             "Work inside an ext4 image or device directly: no mount, no kernel driver.\n\n\
              An escape hatch for an errand (get a file out, read the label, check whether \
@@ -108,6 +108,36 @@ fn command() -> Cmd {
                      fs.ext4 disk.img read /backup.tar -o backup.tar",
                 ),
         )
+        .subcommand(
+            Cmd::new("write")
+                .about("Create or replace a file with the bytes on stdin")
+                .arg(
+                    Arg::new("path")
+                        .value_name("PATH")
+                        .required(true)
+                        .value_parser(value_parser!(OsString)),
+                )
+                .after_help(
+                    "Examples:\n  fs.ext4 disk.img write /etc/hostname < hostname\n  \
+                     tar cf - ./dir | fs.ext4 disk.img write /backup.tar\n  \
+                     fs.ext4 src.img read /f | fs.ext4 dst.img write /f\n\n\
+                     The parent directory must exist. An existing file is replaced.",
+                ),
+        )
+        .subcommand(
+            Cmd::new("mkdir")
+                .about("Create a directory (its parent must exist)")
+                .arg(
+                    Arg::new("path")
+                        .value_name("PATH")
+                        .required(true)
+                        .value_parser(value_parser!(OsString)),
+                )
+                .after_help(
+                    "Examples:\n  fs.ext4 disk.img mkdir /backup\n  \
+                     fs.ext4 disk.img mkdir /backup/2026",
+                ),
+        )
         .subcommand(key_command(
             "get",
             "Report the filesystem's properties, or one of them",
@@ -145,6 +175,7 @@ fn command() -> Cmd {
         .after_help(
             "Examples:\n  fs.ext4 disk.img ls /\n  \
              fs.ext4 disk.img read /etc/fstab > fstab\n  \
+             fs.ext4 disk.img write /etc/fstab < fstab\n  \
              fs.ext4 disk.img get label --text\n  \
              fs.ext4 --offset 1048576 whole-disk.img info",
         )
@@ -178,6 +209,8 @@ fn run(matches: &ArgMatches) -> Result<Outcome, CliError> {
     match verb {
         "ls" => ls(&open(target, offset)?, path_arg(sub)),
         "read" => read(&open(target, offset)?, path_arg(sub), sub.get_one("output")),
+        "write" => write(target, offset, path_arg(sub)),
+        "mkdir" => mkdir(target, offset, path_arg(sub)),
         "get" | "info" => get(
             &open(target, offset)?,
             sub.get_one::<String>("key").map(String::as_str),
@@ -517,4 +550,80 @@ fn set(sub: &ArgMatches) -> Result<Outcome, CliError> {
             "no key {other:?}; the settable key is label"
         ))),
     }
+}
+
+/// A path the write verbs can hand the library, which takes them as text.
+fn utf8_path(path: &[u8]) -> Result<&str, CliError> {
+    std::str::from_utf8(path).map_err(|_| {
+        CliError::failed(format!(
+            "{}: the write verbs take UTF-8 paths only",
+            show(path)
+        ))
+    })
+}
+
+/// Run `edit` on a writable mount of `target`, then release it: flushed,
+/// and the volume marked clean again. A release that fails is a failure,
+/// even when the edit itself succeeded.
+fn edit<T>(
+    target: &OsString,
+    offset: u64,
+    what: &[u8],
+    edit: impl FnOnce(&Filesystem) -> fs_ext4::Result<T>,
+) -> Result<T, CliError> {
+    let fs = super::device::mount(target, offset, true)?;
+    let done = edit(&fs).map_err(|e| ext4_error(what, e))?;
+    fs.finish()
+        .map_err(|e| CliError::failed(format!("{}: finishing the write: {e}", show(what))))?;
+    Ok(done)
+}
+
+/// Create or replace a regular file with everything on stdin. The whole
+/// input is read before the image is opened, so a failing producer
+/// (`false | fs.ext4 img write /f`) leaves the image as it was.
+fn write(target: &OsString, offset: u64, path: &[u8]) -> Result<Outcome, CliError> {
+    let name = utf8_path(path)?;
+    let mut data = Vec::new();
+    std::io::Read::read_to_end(&mut std::io::stdin().lock(), &mut data)
+        .map_err(|e| CliError::failed(format!("read stdin: {e}")))?;
+    let (created, size) = edit(target, offset, path, |fs| {
+        let created = match fs.lookup_path_bytes(path) {
+            Ok(ino) => {
+                let inode = fs.stat_ino(ino)?;
+                if inode.is_dir() {
+                    return Err(fs_ext4::Error::IsADirectory);
+                }
+                if !inode.is_file() {
+                    return Err(fs_ext4::Error::InvalidArgument("not a regular file"));
+                }
+                false
+            }
+            Err(fs_ext4::Error::NotFound) => {
+                fs.apply_create(name, 0o644)?;
+                true
+            }
+            Err(e) => return Err(e),
+        };
+        let size = fs.apply_replace_file_content(name, &data)?;
+        Ok((created, size))
+    })?;
+    let report = Json::object([
+        ("path", Json::from(name)),
+        ("bytes", Json::from(size)),
+        ("created", Json::from(created)),
+    ]);
+    let text = format!(
+        "{} {name} ({size} bytes)",
+        if created { "created" } else { "replaced" }
+    );
+    Ok(Outcome::report(report).with_text(text))
+}
+
+/// Create one directory, mode 0755. Its parent must exist, and so must
+/// nothing at the path.
+fn mkdir(target: &OsString, offset: u64, path: &[u8]) -> Result<Outcome, CliError> {
+    let name = utf8_path(path)?;
+    let ino = edit(target, offset, path, |fs| fs.apply_mkdir(name, 0o755))?;
+    let report = Json::object([("path", Json::from(name)), ("inode", Json::from(ino))]);
+    Ok(Outcome::report(report).with_text(format!("created {name}")))
 }

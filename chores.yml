@@ -188,12 +188,12 @@ chore_min_version: 0.6.0
 #                                                    a FIRST run: the guest
 #                                                    build's per-crate lines
 #                                                    are already in it
-#     cli          23 /     933       30 /   1,220   ~30% / ~31%: MEASURED in CI
-#                                                    (run 36585836414, job cli),
+#     cli          26 /   1,014       34 /   1,320   ~31% / ~30%: MEASURED in CI
+#                                                    (run 36586647442, job cli),
 #                                                    whose doctor also lists the
 #                                                    runner's /usr/sbin and /sbin
 #                                                    copies of each name
-#                                                    e2fsprogs ships; 19 / 741 on
+#                                                    e2fsprogs ships; 23 / 852 on
 #                                                    arm64 macOS. mkfs.ext4 alone
 #                                                    was 13 / 529 (#442). Every
 #                                                    file is three lines when it
@@ -649,10 +649,11 @@ tasks:
     # FLOOR: each file prints a `test result: ok. N passed` line, which
     # test-floor.sh sums as it does cargo's. 32 checks executed when the
     # tier was added (#442, the same in CI), 66 with fs.ext4's read verbs,
-    # 93 with fsck.ext4; the floor is about 95% of that.
+    # 93 with fsck.ext4, 130 with the write verbs; the floor is about 95%
+    # of that.
     cmds:
-      - 'scripts/tier.sh test:cli cli 30 1220 -- scripts/test-cli.sh'
-      - 'scripts/test-floor.sh cli 88'
+      - 'scripts/tier.sh test:cli cli 34 1320 -- scripts/test-cli.sh'
+      - 'scripts/test-floor.sh cli 124'
 
   test:scripts:
     desc: The shell tests (tests/scripts/*.sh), every one by glob
