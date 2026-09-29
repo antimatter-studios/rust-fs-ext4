@@ -1,0 +1,3 @@
+The mkfs.ext4 on your PATH is this one: `mkfs.ext4 --version` names am-fs-ext4.
+Homebrew's e2fsprogs is keg-only, so its mkfs.ext4 stays at
+  $(brew --prefix e2fsprogs)/sbin/mkfs.ext4

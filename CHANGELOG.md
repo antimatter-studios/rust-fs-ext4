@@ -264,6 +264,20 @@ Not caught by the compiler — the same source builds and behaves differently:
 
 ### Changed
 
+- **The release tarball is laid out as an install prefix.** It holds
+  `bin/mkfs.ext4`, `share/rust-fs-ext4/CAVEATS` (from `packaging/CAVEATS`,
+  the notes an installer shows) and `LICENSE`, so an installer copies it
+  whole and never names a tool, and tools added later arrive with no
+  installer change. `scripts/package-cli.sh` builds it and fails unless it
+  holds exactly those files and the tool answers `--help` and `--version`;
+  `tests/scripts/test-package-cli.sh` tests that script. The release job
+  also attests each tarball's build provenance, checkable with
+  `gh attestation verify <tarball> --repo christhomas/rust-fs-ext4
+  --signer-workflow christhomas/rust-fs-ext4/.github/workflows/release.yml`.
+- **`mkfs.ext4 --version` names the published crate**:
+  `mkfs.ext4 (am-fs-ext4) <version>`, where it said `fs-ext4`, a name no
+  package carries.
+
 - **Four output budgets are re-measured, and raised to the ~30% headroom the
   table names as its own convention** (#422): `unit` 700/42,000 →
   850/50,000, `lwext4` 80/6,000 → 85/6,800, `suite` 2,500/125,000 →

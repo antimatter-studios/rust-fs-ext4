@@ -7,8 +7,8 @@ on:
 
 # EVERY JOB READS, AND ONE JOB WRITES (#329).
 #
-# `contents: write` is held by the `release` job alone, which runs no
-# third-party action and checks nothing out. Every action here is pinned to
+# `contents: write` is held by the `release` job alone, which checks
+# nothing out and runs only GitHub's own artifact and attestation actions. Every action here is pinned to
 # a commit SHA, with the tag it stood for beside it: a tag is a pointer its
 # owner can move, and a job holding a token should not run whatever it
 # points at today. Every checkout sets `persist-credentials: false`, so no
@@ -76,8 +76,9 @@ jobs:
   # `mkfs.ext4` — the name the format's convention actually uses, and the
   # one `mkfs -t ext4` resolves to. The underscore is a build-system
   # constraint and has no business appearing in a public artifact, so the
-  # rename happens before packaging rather than in a package manager's
-  # formula, where a direct downloader would never see it.
+  # rename happens before packaging (scripts/package-cli.sh) rather than in
+  # a package manager's formula, where a direct downloader would never see
+  # it.
   #
   # Native builds only, one runner per platform: cross-compiling Rust
   # needs either a cross toolchain or an emulator, and neither is worth
@@ -121,49 +122,33 @@ jobs:
         shell: bash
         run: cargo build --release --locked --bin mkfs_ext4
 
-      - name: package as mkfs.ext4
+      # scripts/package-cli.sh stages the tarball as an install prefix --
+      # bin/mkfs.ext4, share/rust-fs-ext4/CAVEATS and LICENSE -- so an
+      # installer copies it whole and never names a tool, and then checks
+      # it: exactly those files, a tool that answers --help, and a
+      # --version naming this crate and this tag's version. A tarball whose
+      # tool will not run is worse than no tarball; the failure would
+      # otherwise surface as a user's bug report rather than a red build.
+      # Formatting a real image and checking it with fsck.ext4 is what the
+      # test job's tests/mkfs_bin_fsck_oracle.rs covers.
+      - name: package and check mkfs.ext4
         id: pack
         shell: bash
         run: |
           set -euo pipefail
-          version="${GITHUB_REF_NAME#v}"
-          crate="$(grep -m1 '^name = ' Cargo.toml | sed 's/name = //; s/"//g')"
-          tarball="${crate}-${version}-${{ matrix.label }}.tar.gz"
-
-          # Staged in a directory of its own so the archive holds exactly
-          # the binary and its licence, with no leading path components
-          # for a package manager to strip.
-          staging="$(mktemp -d)"
-          cp target/release/mkfs_ext4 "$staging/mkfs.ext4"
-          cp LICENSE "$staging/LICENSE"
-          tar -czf "$tarball" -C "$staging" mkfs.ext4 LICENSE
+          tarball="$(scripts/package-cli.sh "${GITHUB_REF_NAME#v}" "${{ matrix.label }}")"
+          echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
 
           # The formula needs this to verify the download; printing it
           # into the job summary means updating a formula is a copy, not
           # a local re-download and re-hash.
-          sum="$(shasum -a 256 "$tarball" | cut -d' ' -f1)"
-          echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
           {
             echo "### $tarball"
             echo ""
             echo '```'
-            echo "sha256 $sum"
+            echo "sha256 $(shasum -a 256 "$tarball" | cut -d' ' -f1)"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-
-      # A tarball whose binary will not run is worse than no tarball,
-      # and the failure would otherwise surface as a user's bug report
-      # rather than a red build. `--help` exercises argument parsing and
-      # exits 0; formatting a real image and checking it with fsck.ext4
-      # is what the test job's tests/mkfs_bin_fsck_oracle.rs covers.
-      - name: smoke-test the packaged binary
-        shell: bash
-        run: |
-          set -euo pipefail
-          probe="$(mktemp -d)"
-          tar -xzf "${{ steps.pack.outputs.tarball }}" -C "$probe"
-          test -x "$probe/mkfs.ext4"
-          "$probe/mkfs.ext4" --help > /dev/null
 
       # AN ARTIFACT, NOT THE RELEASE. A leg that published its own asset
       # did so whether or not the other leg later failed, and with
@@ -179,14 +164,18 @@ jobs:
           retention-days: 7
 
   # The one job that writes to the repository, and it runs only when every
-  # leg of package-cli passed. It checks nothing out and runs no third-party
-  # action: it downloads the legs' tarballs and hands them to `gh`.
+  # leg of package-cli passed. It checks nothing out: it downloads the legs'
+  # tarballs, attests their provenance, and hands them to `gh`.
   release:
     name: publish the GitHub release
     needs: [package-cli]
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      # Build provenance: the OIDC token signs the attestation, and
+      # attestations: write stores it against this repository.
+      id-token: write
+      attestations: write
     steps:
       - name: collect every leg's tarball
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -194,6 +183,15 @@ jobs:
           pattern: mkfs-ext4-*
           path: dist
           merge-multiple: true
+
+      # A signed statement that each tarball was built by this workflow from
+      # this commit, before anything is published. An installer checks it
+      # with `gh attestation verify <tarball> --repo <owner>/<repo>
+      # --signer-workflow <owner>/<repo>/.github/workflows/release.yml`.
+      - name: attest the tarballs' build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/*.tar.gz
 
       # The release for a tag may not exist yet — this repo's tags have
       # historically been published to crates.io without a GitHub
