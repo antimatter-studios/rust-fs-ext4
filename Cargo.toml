@@ -67,8 +67,9 @@ path = "src/cli/main.rs"
 required-features = ["cli"]
 
 [features]
-# The command-line tools and nothing else. clap is MIT/Apache-2.0.
-cli = ["dep:clap"]
+# The command-line tools and nothing else. clap, clap_complete and
+# clap_mangen are MIT/Apache-2.0.
+cli = ["dep:clap", "dep:clap_complete", "dep:clap_mangen"]
 
 [dependencies]
 crc32c = "0.6"
@@ -86,6 +87,12 @@ am-fs-core = { path = "../rust-fs-core", version = "0.2.13" }
 # the `rust-fs-ext4` target above). No derive: the builder API keeps each
 # tool's command a function the man pages and completions can be made from.
 clap = { version = "4.5", optional = true, default-features = false, features = ["std", "help", "usage", "error-context", "suggestions"] }
+# Shell completions and man pages, generated from the same clap commands by
+# the binary itself (`rust-fs-ext4 generate ...`) when a release is packaged,
+# so the documentation cannot describe a flag the program does not take.
+# Both MIT/Apache-2.0, both behind `cli`.
+clap_complete = { version = "4.5", optional = true }
+clap_mangen = { version = "0.2", optional = true }
 
 [dev-dependencies]
 hex = "0.4"

@@ -38,6 +38,7 @@
 //!   how to fix it.
 
 pub mod dispatch;
+pub mod docs;
 pub mod doctor;
 pub mod family;
 pub mod output;
@@ -106,6 +107,16 @@ pub fn repo_command(family: &'static Family) -> Cmd {
             .subcommand_required(true)
             .subcommand(
                 Cmd::new("names").about("The dotted names to link to this binary, one per line"),
+            )
+            .subcommand(
+                Cmd::new("man")
+                    .about("Write a man page per name under SHARE/man/man<section>/")
+                    .arg(Arg::new("share").value_name("SHARE").required(true)),
+            )
+            .subcommand(
+                Cmd::new("completions")
+                    .about("Write zsh, bash and fish completions per name under SHARE/")
+                    .arg(Arg::new("share").value_name("SHARE").required(true)),
             ),
     )
 }
@@ -148,12 +159,34 @@ fn run_repo(family: &'static Family, argv: Vec<OsString>) -> ExitCode {
             let format = Format::of(sub);
             output::finish(family.repo, format, Ok(doctor::run(family)))
         }
-        Some(("generate", sub)) => match sub.subcommand_name() {
-            Some("names") => {
+        Some(("generate", sub)) => match sub.subcommand() {
+            Some(("names", _)) => {
                 for tool in family.tools {
                     println!("{}", tool.name);
                 }
                 ExitCode::SUCCESS
+            }
+            Some((what @ ("man" | "completions"), args)) => {
+                let share = std::path::Path::new(
+                    args.get_one::<String>("share")
+                        .expect("clap requires the share directory"),
+                );
+                let written = if what == "man" {
+                    docs::man_pages(family, share)
+                } else {
+                    docs::completions(family, share)
+                };
+                let result = written
+                    .map(|paths| {
+                        Outcome::report(Json::Arr(
+                            paths
+                                .iter()
+                                .map(|p| Json::from(p.display().to_string()))
+                                .collect(),
+                        ))
+                    })
+                    .map_err(|e| CliError::failed(format!("generate {what}: {e}")));
+                output::finish(family.repo, Format::Json, result)
             }
             _ => unreachable!("clap requires a generate subcommand"),
         },
