@@ -46,11 +46,13 @@ STUB
     printf '%s\n' "$path"
 }
 
-# Runs the packaging script in a fresh output directory; prints its stdout.
+# Runs the packaging script in a fresh output directory. It prints the
+# tarball's name relative to that directory, so this prints the absolute path.
 package() {
-    local out="$sandbox/out-$RANDOM$RANDOM"
+    local out="$sandbox/out-$RANDOM$RANDOM" name
     mkdir -p "$out"
-    (cd "$out" && bash "$PACKAGE" "$@" 2>"$sandbox/stderr")
+    name="$(cd "$out" && bash "$PACKAGE" "$@" 2>"$sandbox/stderr")" || return
+    printf '%s\n' "$out/$name"
 }
 
 [ -f "$PACKAGE" ] && ok || bad "scripts/package-cli.sh exists"
@@ -69,6 +71,9 @@ case "$(basename "$tarball")" in
     *) bad "tarball is named <crate>-<version>-<label>.tar.gz, got '$tarball'" ;;
 esac
 
+# The content checks below need the tarball. Without it they fail rather than
+# fall silent, since a check that does not run reads like one that passed.
+[ -f "$tarball" ] && ok || bad "the packaged tarball exists at '$tarball'"
 if [ -f "$tarball" ]; then
     listing="$(tar -tzf "$tarball" | sort | tr '\n' ' ')"
     files="$(tar -tzf "$tarball" | sed 's|^\./||' | grep -v '/$' | sort | tr '\n' ' ')"
