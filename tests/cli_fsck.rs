@@ -128,3 +128,26 @@ fn a_wrong_command_line_is_status_16() {
         assert!(out.stdout.is_empty(), "{args:?}");
     }
 }
+
+/// A target is opened by its bytes, not by a lossy rendering of them: a
+/// name that is not UTF-8 must not open the file whose name is its
+/// replacement-character spelling, read-only or read-write.
+#[test]
+fn a_target_that_is_not_utf8_is_opened_by_its_own_bytes() {
+    use std::os::unix::ffi::OsStrExt;
+    let dir = image_path("non-utf8-dir");
+    std::fs::create_dir_all(&dir).unwrap();
+    let decoy = std::path::Path::new(&dir).join("img\u{FFFD}");
+    std::fs::rename(fresh("decoy"), &decoy).unwrap();
+    let target = std::path::Path::new(&dir).join(std::ffi::OsStr::from_bytes(b"img\xff"));
+    for (name, args) in [("fs.ext4", ["info"]), ("fsck.ext4", ["-y"])] {
+        let mut cmd = tool(name);
+        cmd.arg(&target).args(args);
+        let out = cmd.output().expect("spawn");
+        assert!(
+            !out.status.success() && out.stdout.is_empty(),
+            "{cmd:?} opened the decoy {decoy:?}\nstdout:\n{}",
+            stdout(&out)
+        );
+    }
+}

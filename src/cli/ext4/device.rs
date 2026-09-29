@@ -2,6 +2,7 @@
 //! optionally `--offset` bytes in (a partition inside a whole-disk image).
 
 use std::ffi::OsString;
+use std::path::Path;
 use std::sync::Arc;
 
 use crate::common::CliError;
@@ -59,9 +60,9 @@ pub fn open(
 ) -> Result<Arc<dyn BlockDevice>, CliError> {
     let name = target.to_string_lossy();
     let dev = if writable {
-        FileDevice::open_rw(&name)
+        FileDevice::open_path_rw(Path::new(target))
     } else {
-        FileDevice::open(&name)
+        FileDevice::open_path(Path::new(target))
     }
     .map_err(|e| {
         CliError::failed(format!(

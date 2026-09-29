@@ -11,6 +11,7 @@
 use crate::error::{Error, Result};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
+use std::path::Path;
 use std::sync::Mutex;
 
 /// Random-access block device. Reads required; writes optional.
@@ -79,6 +80,13 @@ pub struct FileDevice {
 impl FileDevice {
     /// Open read-only. Matches pre-existing behaviour.
     pub fn open(path: &str) -> Result<Self> {
+        Self::open_path(Path::new(path))
+    }
+
+    /// Open read-only by a path that need not be UTF-8: a device or image
+    /// name is bytes on Unix, and a lossy rendering of it can name another
+    /// file.
+    pub fn open_path(path: &Path) -> Result<Self> {
         let file = File::open(path)?;
         let size = file.metadata()?.len();
         Ok(Self {
@@ -92,6 +100,12 @@ impl FileDevice {
     /// or apply Phase 4 mutations. Falls back to an error if the path is
     /// not writable.
     pub fn open_rw(path: &str) -> Result<Self> {
+        Self::open_path_rw(Path::new(path))
+    }
+
+    /// Open read-write by a path that need not be UTF-8; see
+    /// [`FileDevice::open_path`].
+    pub fn open_path_rw(path: &Path) -> Result<Self> {
         let file = OpenOptions::new().read(true).write(true).open(path)?;
         let size = file.metadata()?.len();
         Ok(Self {
