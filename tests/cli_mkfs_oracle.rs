@@ -20,7 +20,9 @@ fn dumpe2fs_field(header: &str, name: &str) -> String {
 
 #[test]
 fn the_image_mkfs_makes_is_clean_and_dumpe2fs_agrees_with_its_report() {
-    for (size, block) in [("64M", "4096"), ("48M", "1024")] {
+    // 1 KiB blocks at 8 MiB: one group, the only layout the formatter
+    // makes at that block size (multi-group needs block_size >= 2048).
+    for (size, block) in [("64M", "4096"), ("8M", "1024")] {
         let img = image_path(&format!("oracle-{size}"));
         let out =
             ok(tool("mkfs.ext4").args(["--size", size, "--label", "CLITEST", "-b", block, &img]));

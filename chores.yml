@@ -158,16 +158,6 @@ chore_min_version: 0.6.0
 #                                                    tier above it grows this
 #                                                    one too
 #     scripts      28 /   1,427       50 /   3,000   ~75%: three tests
-#     cli          11 /     433       15 /     600   ~36% / ~39%: MEASURED on an
-#                                                    arm64 macOS host for #440
-#                                                    (doctor, two test files).
-#                                                    Every file is three lines
-#                                                    when it passes, so a new
-#                                                    one is a visible step;
-#                                                    re-measured in CI, whose
-#                                                    PATH shows the runner's
-#                                                    own mkfs.ext4 in doctor's
-#                                                    report
 #     wasm        127 /   5,302      170 /   8,000   ~25% / ~34%. Lines measured
 #                                                    cold on arm64 macOS (no
 #                                                    registry cache, no build;
@@ -182,6 +172,15 @@ chore_min_version: 0.6.0
 #                                                    a FIRST run: the guest
 #                                                    build's per-crate lines
 #                                                    are already in it
+#     cli          13 /     529       17 /     700   ~31% / ~32%: MEASURED in CI
+#                                                    (run 36583240462, job cli),
+#                                                    whose doctor also lists the
+#                                                    runner's own /usr/sbin and
+#                                                    /sbin mkfs.ext4; 11 / 433 on
+#                                                    an arm64 macOS host. Every
+#                                                    file is three lines when it
+#                                                    passes, so a new one is a
+#                                                    visible step
 #
 #   Raise one DELIBERATELY when a tier grows, the way the executed-test
 #   floors are raised, and never to fit a run printing something it should
@@ -632,7 +631,7 @@ tasks:
     # test-floor.sh sums as it does cargo's. 32 checks executed when the
     # tier was added (#440); the floor is about 95% of that.
     cmds:
-      - 'scripts/tier.sh test:cli cli 15 600 -- scripts/test-cli.sh'
+      - 'scripts/tier.sh test:cli cli 17 700 -- scripts/test-cli.sh'
       - 'scripts/test-floor.sh cli 30'
 
   test:scripts:
