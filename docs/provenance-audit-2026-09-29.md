@@ -216,6 +216,10 @@ These are function, macro, local-variable and source-path names internal to Linu
 
 ### 5.1 Denylist: fail CI on these in `src/`, `include/`, `docs/`, `examples/`, `fuzz/`
 
+The check does not exist yet; adding it is item 7 of §7. When it is written,
+it must exclude this report (and any later audit report under
+`docs/provenance-audit-*.md`), which spells every denylisted name by design.
+
 ```
 # source paths
 fs/ext4/  fs/jbd2/  fs/unicode/  lib/unicode/  include/linux/  lib/crc16.c  torvalds/linux
@@ -277,6 +281,11 @@ These appear in the kernel.org docs: `ext4_super_block`, `ext4_group_desc`, `ext
 ---
 
 ## 6. Recommended AGENTS.md rule text
+
+This is proposed text, to be adopted together with the check in §5.1. Its
+sentence about CI enforcing `scripts/check-provenance.sh` becomes true only
+once that script exists; until then the check is open (see `PROVENANCE.md`,
+Remediation status).
 
 ```markdown
 ## Clean-room rule: no GPL source as input

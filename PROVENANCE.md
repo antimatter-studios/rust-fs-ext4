@@ -7,18 +7,18 @@ came to be and what was done when a problem was found.
 
 ## History
 
-- **Origins in DiskJockey.** The driver started life as the ext4 support
-  inside [DiskJockey](https://github.com/antimatter-studios/diskjockey), a
-  macOS application that mounts disk images and remote storage as Finder
-  volumes through FSKit. It was developed in a research repository,
-  `ext4-fskit`, alongside the DiskJockey FSKit extension.
+- **Origins in an application.** The driver started life as the ext4 support
+  inside a macOS application that mounts disk images and remote storage as
+  Finder volumes through FSKit. It was developed in a research repository,
+  `ext4-fskit`, alongside that application's FSKit extension.
 - **Extraction as a standalone library (2026-04-18).** The driver was
   extracted from `ext4-fskit@aaa63cf` into this repository as a generic,
   host-independent Rust crate with a C ABI. Commit `32061f5` ("initial import
   from ext4-fskit@aaa63cf") is the first commit here; history before the
   extraction is not part of this repository.
 - **Since then** the crate has been developed here as an independent library,
-  with its own releases, and is consumed by DiskJockey like any other user.
+  with its own releases; the application it came from consumes it like any
+  other user.
 
 Everything in the crate today, including code that arrived with the initial
 import, is covered by the audits below. They examine the code as it exists,
@@ -28,7 +28,8 @@ not only its history.
 
 The crate is MIT-licensed and has no GPL, LGPL or AGPL dependencies.
 
-Code is written from public, permissively usable sources only:
+The rule for all code written here, including every new contribution, is
+that it comes from public, permissively usable sources only:
 
 - the ext4 and JBD2 on-disk format documentation published at
   kernel.org (`Documentation/filesystems/ext4`);
@@ -40,6 +41,10 @@ Code is written from public, permissively usable sources only:
   Observing what a tool does is not copying its source.
 
 Linux kernel and e2fsprogs *source code* is not a permitted input.
+
+The current tree does not yet fully meet this rule: the 2026-09-29 audit
+below found two exceptions, in `src/hash.rs` and `src/inode.rs`, and their
+remediation is still open (see [Remediation status](#remediation-status)).
 
 ## Audit of 2026-09-29
 
