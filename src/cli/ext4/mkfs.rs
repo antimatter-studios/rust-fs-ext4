@@ -239,7 +239,10 @@ fn run(matches: &ArgMatches) -> Result<Outcome, CliError> {
     // --size: (a) an existing regular file is left alone, so the same
     // command run twice is idempotent; (b) a block or character device is
     // refused, because "make me a file" applied to /dev/diskN hides a
-    // typo; (c) a path that does not exist is created at that size.
+    // typo; (c) a path that does not exist is created at that size -- except
+    // under --dry-run, which writes nothing: the file is not created and the
+    // report describes the size it would have had.
+    let mut would_create: Option<u64> = None;
     if let Some(n) = opts.create_size {
         match std::fs::metadata(device) {
             Ok(meta) => {
@@ -265,6 +268,10 @@ fn run(matches: &ArgMatches) -> Result<Outcome, CliError> {
                     meta.len()
                 ));
             }
+            Err(_) if opts.dry_run => {
+                say(format!("--create-size: would create {device} ({n} bytes)"));
+                would_create = Some(n);
+            }
             Err(_) => {
                 let f = std::fs::File::create(device).map_err(|e| {
                     CliError::failed(format!("--create-size: create {device}: {e}"))
@@ -279,9 +286,16 @@ fn run(matches: &ArgMatches) -> Result<Outcome, CliError> {
     }
 
     // Read-write first: it fails fast on permission, and it learns the size.
-    let dev = FileDevice::open_rw(device)
-        .map_err(|e| CliError::failed(format!("open {device} read-write: {e:?}")))?;
-    let size = dev.size_bytes();
+    // A dry run over a target --size would create has nothing to open.
+    let (dev, size) = match would_create {
+        Some(n) => (None, n),
+        None => {
+            let dev = FileDevice::open_rw(device)
+                .map_err(|e| CliError::failed(format!("open {device} read-write: {e:?}")))?;
+            let size = dev.size_bytes();
+            (Some(dev), size)
+        }
+    };
     if size == 0 {
         return Err(CliError::failed(format!(
             "device {device} reports size 0 — pre-create with truncate / fsutil first"
@@ -308,6 +322,9 @@ fn run(matches: &ArgMatches) -> Result<Outcome, CliError> {
         return Ok(Outcome::report(Json::object(report)).with_text(String::new()));
     }
 
+    let Some(dev) = dev else {
+        unreachable!("only a dry run leaves the device unopened");
+    };
     format_filesystem(&dev, opts.label.as_deref(), opts.uuid, size, block_size)
         .map_err(|e| CliError::failed(format!("format failed: {e:?}")))?;
     // Flush so the bytes reach storage before exit: `mkfs && mount` must

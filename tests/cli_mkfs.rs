@@ -93,6 +93,17 @@ fn dry_run_does_not_modify_the_file() {
 }
 
 #[test]
+fn dry_run_with_size_does_not_create_a_missing_target() {
+    let img = image_path("drysize");
+    let out = ok(tool("mkfs.ext4").args(["-n", "--size", "32M", &img]));
+    assert!(std::fs::metadata(&img).is_err(), "a dry run created {img}");
+    let json = stdout(&out);
+    assert_eq!(json_field(&json, "formatted"), "false");
+    assert_eq!(json_field(&json, "dry_run"), "true");
+    assert_eq!(json_field(&json, "device_bytes"), SIZE.to_string());
+}
+
+#[test]
 fn dash_c_does_not_swallow_the_device_path() {
     let img = sized_image("dashc", SIZE);
     let out = ok(tool("mkfs.ext4").args(["-n", "-c", &img]));
