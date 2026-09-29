@@ -5,7 +5,7 @@ source "$(dirname "$0")/lib.sh"
 
 # The names are written here, not read from the binary: a binary that
 # forgot one would otherwise agree with itself.
-EXPECTED="mkfs.ext4 fs.ext4"
+EXPECTED="mkfs.ext4 fsck.ext4 fs.ext4"
 
 version="$(rust-fs-ext4 --version | sed -n "s/^rust-fs-ext4 ($CRATE) //p")"
 check "rust-fs-ext4 --version names a version" test -n "$version"

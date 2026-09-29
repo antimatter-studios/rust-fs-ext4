@@ -119,6 +119,14 @@ Not caught by the compiler — the same source builds and behaves differently:
     `ext4`). `--offset BYTES` reaches a partition inside a whole-disk
     image. `set label` and `resize` exist and answer `not implemented`
     with status 3 until the library can do them.
+  - `fsck.ext4 <target> [-n | -y | -p]` runs the library's audit (link
+    counts, `..` entries, entry types, directory-block checksums, group and
+    superblock free counts) and, with `-y`/`-p`, its repairs. Nothing is
+    written without `-y`. The exit status is fsck(8)'s: 0 clean, 1
+    corrected, 4 left uncorrected, 8 operational error, 16 usage. A JSON
+    report by default. A directory the audit cannot read is skipped rather
+    than reported (#445), so such a volume is called clean until that is
+    fixed.
   - The `mkfs_ext4` target is unchanged for now; it is retired when the
     release packages the multi-call binary.
 - **Content writes to inline-data files** (#428). pwrite, replace and

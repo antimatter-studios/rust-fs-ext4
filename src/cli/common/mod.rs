@@ -128,7 +128,7 @@ fn repo_examples(family: &Family) -> String {
 fn run_tool(family: &'static Family, tool: &'static Tool, argv: Vec<OsString>) -> ExitCode {
     let text_requested = output::text_requested(&argv);
     match tool_command(family, tool).try_get_matches_from(argv) {
-        Err(error) => clap_failure(tool.name, error, text_requested),
+        Err(error) => clap_failure(tool.name, error, text_requested, tool.usage_exit),
         Ok(matches) => {
             let format = Format::of(&matches);
             let result = (tool.run)(&matches);
@@ -141,7 +141,7 @@ fn run_repo(family: &'static Family, argv: Vec<OsString>) -> ExitCode {
     let text_requested = output::text_requested(&argv);
     let matches = match repo_command(family).try_get_matches_from(argv) {
         Ok(matches) => matches,
-        Err(error) => return clap_failure(family.repo, error, text_requested),
+        Err(error) => return clap_failure(family.repo, error, text_requested, output::EXIT_USAGE),
     };
     match matches.subcommand() {
         Some(("doctor", sub)) => {
@@ -164,9 +164,14 @@ fn run_repo(family: &'static Family, argv: Vec<OsString>) -> ExitCode {
 }
 
 /// Help and version go to stdout with status 0; anything else is a
-/// command line that was wrong, status 2, as a structured error unless
-/// `--text` was asked for.
-fn clap_failure(program: &str, error: clap::Error, text_requested: bool) -> ExitCode {
+/// command line that was wrong, status `usage_exit`, as a structured error
+/// unless `--text` was asked for.
+fn clap_failure(
+    program: &str,
+    error: clap::Error,
+    text_requested: bool,
+    usage_exit: u8,
+) -> ExitCode {
     use clap::error::ErrorKind;
     match error.kind() {
         ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => {
@@ -176,11 +181,11 @@ fn clap_failure(program: &str, error: clap::Error, text_requested: bool) -> Exit
         // A bare `rust-fs-ext4`: the help is the answer, but nothing was done.
         ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand => {
             let _ = error.print();
-            ExitCode::from(output::EXIT_USAGE)
+            ExitCode::from(usage_exit)
         }
         _ if text_requested => {
             let _ = error.print();
-            ExitCode::from(output::EXIT_USAGE)
+            ExitCode::from(usage_exit)
         }
         _ => {
             let rendered = error.render().to_string();
@@ -189,7 +194,11 @@ fn clap_failure(program: &str, error: clap::Error, text_requested: bool) -> Exit
                 .strip_prefix("error: ")
                 .unwrap_or(rendered.trim())
                 .to_string();
-            output::finish(program, Format::Json, Err(CliError::usage(message)))
+            output::finish(
+                program,
+                Format::Json,
+                Err(CliError::usage(message).with_code(usage_exit)),
+            )
         }
     }
 }

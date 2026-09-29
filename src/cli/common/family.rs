@@ -15,6 +15,11 @@ pub struct Tool {
     pub section: u8,
     /// One line for the repository's help.
     pub about: &'static str,
+    /// The exit status of a wrong command line: 2 by the shared contract,
+    /// but a tool whose name promises another scheme keeps that scheme's
+    /// (`fsck.*` answers 16, as fsck(8) documents, because 2 there means
+    /// "reboot").
+    pub usage_exit: u8,
     /// Its arguments. The name and version are set by the caller.
     pub command: fn() -> Cmd,
     /// Run it. `Ok` is printed on stdout in the format asked for; `Err`

@@ -9,12 +9,10 @@
 
 use std::ffi::OsString;
 use std::io::Write;
-use std::sync::Arc;
 
 use clap::{value_parser, Arg, ArgAction, ArgMatches, Command as Cmd};
 
 use crate::common::{CliError, Json, Outcome, Tool};
-use fs_ext4::block_io::{BlockDevice, FileDevice};
 use fs_ext4::dir::DirEntryType;
 use fs_ext4::features::{Compat, Incompat, RoCompat};
 use fs_ext4::inode::Inode;
@@ -24,6 +22,7 @@ pub const TOOL: Tool = Tool {
     name: "fs.ext4",
     verb: "fs",
     section: 1,
+    usage_exit: crate::common::output::EXIT_USAGE,
     about: "List, read and inspect an ext4 image or device without mounting it",
     command,
     run,
@@ -213,69 +212,9 @@ fn show(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
 
-/// A device that starts `offset` bytes into another: a partition inside a
-/// whole-disk image.
-struct Offset<D> {
-    inner: D,
-    offset: u64,
-    size: u64,
-}
-
-impl<D: BlockDevice> BlockDevice for Offset<D> {
-    fn read_at(&self, offset: u64, buf: &mut [u8]) -> fs_ext4::Result<()> {
-        let end = offset
-            .checked_add(buf.len() as u64)
-            .ok_or(fs_ext4::Error::OutOfBounds)?;
-        if end > self.size {
-            return Err(fs_ext4::Error::OutOfBounds);
-        }
-        self.inner.read_at(self.offset + offset, buf)
-    }
-
-    fn size_bytes(&self) -> u64 {
-        self.size
-    }
-
-    fn write_at(&self, offset: u64, buf: &[u8]) -> fs_ext4::Result<()> {
-        let end = offset
-            .checked_add(buf.len() as u64)
-            .ok_or(fs_ext4::Error::OutOfBounds)?;
-        if end > self.size {
-            return Err(fs_ext4::Error::OutOfBounds);
-        }
-        self.inner.write_at(self.offset + offset, buf)
-    }
-
-    fn flush(&self) -> fs_ext4::Result<()> {
-        self.inner.flush()
-    }
-
-    fn is_writable(&self) -> bool {
-        self.inner.is_writable()
-    }
-}
-
 /// Mount `target` read-only, `offset` bytes in.
 fn open(target: &OsString, offset: u64) -> Result<Filesystem, CliError> {
-    let name = target.to_string_lossy();
-    let dev = FileDevice::open(&name).map_err(|e| CliError::failed(format!("open {name}: {e}")))?;
-    let size = dev.size_bytes();
-    if offset >= size {
-        return Err(CliError::failed(format!(
-            "--offset {offset} is past the end of {name} ({size} bytes)"
-        )));
-    }
-    let dev: Arc<dyn BlockDevice> = if offset == 0 {
-        Arc::new(dev)
-    } else {
-        Arc::new(Offset {
-            inner: dev,
-            offset,
-            size: size - offset,
-        })
-    };
-    Filesystem::mount(dev)
-        .map_err(|e| CliError::failed(format!("{name} is not a readable ext4 filesystem: {e}")))
+    super::device::mount(target, offset, false)
 }
 
 fn ext4_error(what: &[u8], e: fs_ext4::Error) -> CliError {
@@ -494,7 +433,7 @@ fn flag_names<F: bitflags::Flags<Bits = u32>>(bits: u32) -> Json {
 /// Whether the volume needs attention before it can be trusted: not
 /// cleanly unmounted (`s_state` lacks VALID_FS, or carries ERROR_FS), or a
 /// journal waiting to be replayed.
-fn is_dirty(fs: &Filesystem) -> bool {
+pub fn is_dirty(fs: &Filesystem) -> bool {
     const ERROR_FS: u16 = 0x0002;
     !fs.sb.is_clean()
         || fs.sb.state & ERROR_FS != 0

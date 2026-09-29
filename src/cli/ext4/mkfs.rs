@@ -28,6 +28,7 @@ pub const TOOL: Tool = Tool {
     name: "mkfs.ext4",
     verb: "mkfs",
     section: 8,
+    usage_exit: crate::common::output::EXIT_USAGE,
     about: "Create an ext4 filesystem on a device or an image file",
     command,
     run,
