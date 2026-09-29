@@ -325,3 +325,28 @@ fn mkfs_bin_quiet_silences_warnings_from_either_side() {
 
     let _ = std::fs::remove_file(&img);
 }
+
+/// `--version` names the crate that built the tool, so this mkfs.ext4 cannot
+/// be mistaken for another package's. It said `fs-ext4`, a name no package
+/// carries: the crate is published as `am-fs-ext4`.
+#[test]
+fn mkfs_bin_version_names_the_tool_and_the_crate() {
+    let bin = env!("CARGO_BIN_EXE_mkfs_ext4");
+    for flag in ["--version", "-V"] {
+        let out = Command::new(bin)
+            .arg(flag)
+            .output()
+            .expect("spawn mkfs_ext4");
+
+        assert!(out.status.success(), "{flag} must exit 0: {out:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout).trim_end(),
+            format!(
+                "mkfs.ext4 ({}) {}",
+                env!("CARGO_PKG_NAME"),
+                env!("CARGO_PKG_VERSION")
+            ),
+            "{flag} must print the conventional name, the crate and its version"
+        );
+    }
+}

@@ -260,7 +260,11 @@ fn parse_args_from(mut args: impl Iterator<Item = String>) -> Result<Opts, Strin
                 std::process::exit(0);
             }
             "-V" | "--version" => {
-                println!("mkfs.ext4 (fs-ext4) {}", env!("CARGO_PKG_VERSION"));
+                println!(
+                    "mkfs.ext4 ({}) {}",
+                    env!("CARGO_PKG_NAME"),
+                    env!("CARGO_PKG_VERSION")
+                );
                 std::process::exit(0);
             }
             "-L" => {
