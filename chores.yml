@@ -172,15 +172,18 @@ chore_min_version: 0.6.0
 #                                                    a FIRST run: the guest
 #                                                    build's per-crate lines
 #                                                    are already in it
-#     cli          13 /     529       17 /     700   ~31% / ~32%: MEASURED in CI
-#                                                    (run 36583240462, job cli),
+#     cli          17 /     684       23 /     920   ~35% / ~34%: MEASURED in CI
+#                                                    (run 36585309822, job cli),
 #                                                    whose doctor also lists the
-#                                                    runner's own /usr/sbin and
-#                                                    /sbin mkfs.ext4; 11 / 433 on
-#                                                    an arm64 macOS host. Every
+#                                                    runner's /usr/sbin and /sbin
+#                                                    copies of each name
+#                                                    e2fsprogs ships; 15 / 583 on
+#                                                    arm64 macOS. mkfs.ext4 alone
+#                                                    was 13 / 529 (#442). Every
 #                                                    file is three lines when it
-#                                                    passes, so a new one is a
-#                                                    visible step
+#                                                    passes and every tool a
+#                                                    doctor line, so a new one is
+#                                                    a visible step
 #
 #   Raise one DELIBERATELY when a tier grows, the way the executed-test
 #   floors are raised, and never to fit a run printing something it should
@@ -629,10 +632,11 @@ tasks:
     #
     # FLOOR: each file prints a `test result: ok. N passed` line, which
     # test-floor.sh sums as it does cargo's. 32 checks executed when the
-    # tier was added (#440); the floor is about 95% of that.
+    # tier was added (#442, the same in CI), 66 with fs.ext4's read verbs;
+    # the floor is about 95% of that.
     cmds:
-      - 'scripts/tier.sh test:cli cli 17 700 -- scripts/test-cli.sh'
-      - 'scripts/test-floor.sh cli 30'
+      - 'scripts/tier.sh test:cli cli 23 920 -- scripts/test-cli.sh'
+      - 'scripts/test-floor.sh cli 62'
 
   test:scripts:
     desc: The shell tests (tests/scripts/*.sh), every one by glob

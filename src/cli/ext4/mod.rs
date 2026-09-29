@@ -2,4 +2,5 @@
 //! with. Everything filesystem-specific lives here, and nothing here is
 //! plumbing (that is `common`).
 
+pub mod fs;
 pub mod mkfs;

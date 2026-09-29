@@ -111,6 +111,14 @@ Not caught by the compiler — the same source builds and behaves differently:
     `chore cli:install` stages them in `tmp/cli/bin`, doctor runs first, and
     a missing or shadowed tool fails the tier naming the fix. A new `cli`
     CI job builds, stages and tests them on every pull request.
+  - `fs.ext4 <target> <verb>` works inside an image or device without
+    mounting it: `ls [path]` (JSON entries: name, type, size, mode, mtime,
+    inode, and a symlink's target), `read <path> [-o FILE]` (raw bytes),
+    `get [key]` / `info [key]` (the envelope: `fs`, `label`, `total_bytes`,
+    `free_bytes`, `block_size`, `dirty`, and ext4's own fields under
+    `ext4`). `--offset BYTES` reaches a partition inside a whole-disk
+    image. `set label` and `resize` exist and answer `not implemented`
+    with status 3 until the library can do them.
   - The `mkfs_ext4` target is unchanged for now; it is retired when the
     release packages the multi-call binary.
 - **Content writes to inline-data files** (#428). pwrite, replace and

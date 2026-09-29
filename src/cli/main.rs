@@ -22,7 +22,7 @@ static FAMILY: common::Family = common::Family {
         "`chore cli:install` from a checkout of this repository",
         "`brew install antimatter-studios/tap/rust-fs-ext4`",
     ],
-    tools: &[ext4::mkfs::TOOL],
+    tools: &[ext4::mkfs::TOOL, ext4::fs::TOOL],
 };
 
 fn main() -> ExitCode {
