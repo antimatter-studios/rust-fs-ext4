@@ -158,6 +158,16 @@ chore_min_version: 0.6.0
 #                                                    tier above it grows this
 #                                                    one too
 #     scripts      28 /   1,427       50 /   3,000   ~75%: three tests
+#     cli          11 /     433       15 /     600   ~36% / ~39%: MEASURED on an
+#                                                    arm64 macOS host for #440
+#                                                    (doctor, two test files).
+#                                                    Every file is three lines
+#                                                    when it passes, so a new
+#                                                    one is a visible step;
+#                                                    re-measured in CI, whose
+#                                                    PATH shows the runner's
+#                                                    own mkfs.ext4 in doctor's
+#                                                    report
 #     wasm        127 /   5,302      170 /   8,000   ~25% / ~34%. Lines measured
 #                                                    cold on arm64 macOS (no
 #                                                    registry cache, no build;
@@ -595,8 +605,35 @@ tasks:
       - 'scripts/tier.sh "test:native (whole suite, release)" suite 2900 140000 -- scripts/test.sh --locked --release'
       - 'scripts/test-floor.sh suite 1060'
       - task: test:scripts
+      # The command-line tools, built and staged from this checkout, then
+      # tested as installed. A separate invocation because test:cli reads
+      # PATH, and the staged directory has to come first on it.
+      - task: cli:install
+      - 'PATH="$(scripts/cli-install.sh --print-bin-dir):$PATH" "{{.CHORE_EXE}}" test:cli'
       # THE LAST LINE: one number across the tiers, and where the detail is.
-      - scripts/test-verdict.sh unit oracle kernel lwext4 suite
+      - scripts/test-verdict.sh unit oracle kernel lwext4 suite cli
+
+  cli:install:
+    desc: 'Build the command-line tools (release, --features cli) and stage them under every name in tmp/cli/bin'
+    # The layout an install has: the multi-call binary as rust-fs-ext4 and
+    # each dotted name a relative symlink to it. It prints the PATH line;
+    # `test:cli` tests whatever PATH finds, so that directory goes first.
+    cmds: ['scripts/cli-install.sh']
+
+  test:cli:
+    desc: 'The command-line tools AS INSTALLED, found on PATH: doctor first, then every tests/cli/test-*.sh'
+    # Tests the installed artifact, not a cargo target: the same suite
+    # checks `chore cli:install`'s staging (test:native puts it first on
+    # PATH) and a Homebrew install. `rust-fs-ext4 doctor` runs before any
+    # tool is tested and fails the tier if a name is missing or shadowed,
+    # naming the fix. See scripts/test-cli.sh.
+    #
+    # FLOOR: each file prints a `test result: ok. N passed` line, which
+    # test-floor.sh sums as it does cargo's. 32 checks executed when the
+    # tier was added (#440); the floor is about 95% of that.
+    cmds:
+      - 'scripts/tier.sh test:cli cli 15 600 -- scripts/test-cli.sh'
+      - 'scripts/test-floor.sh cli 30'
 
   test:scripts:
     desc: The shell tests (tests/scripts/*.sh), every one by glob
@@ -709,7 +746,9 @@ tasks:
       - scripts/agents-core-check.sh
       - scripts/ci-gate.sh
       - cargo fmt --all --check
-      - cargo clippy --locked --workspace --all-targets -- -D warnings
+      # `--features cli`: the command-line tools' target requires it, and
+      # clippy silently leaves out a target whose features are off.
+      - cargo clippy --locked --workspace --all-targets --features cli -- -D warnings
 
   check:msrv:
     desc: Build the library and binaries on the toolchain Cargo.toml's rust-version names

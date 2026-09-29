@@ -41,6 +41,13 @@ name: CI
 #   msrv         `chore check:msrv`: the library and the binaries built on
 #                the toolchain Cargo.toml's `rust-version` names, so the
 #                declared minimum stays the true one.
+#   cli          `chore cli:install` then `chore test:cli`: the command-line
+#                tools built in release mode, staged under every name first
+#                on PATH, and tested AS INSTALLED -- `rust-fs-ext4 doctor`
+#                first, then tests/cli/*.sh. A change that breaks a tool
+#                fails the pull request, not the release. No VM: what
+#                e2fsprogs makes of the tools' output is judged in the
+#                oracle tier (tests/cli_*_oracle.rs).
 #   ci-ok        the one required check: green only when every job above
 #                ran and succeeded (failed, cancelled OR skipped fails it).
 #
@@ -457,10 +464,50 @@ jobs:
         # rustup is all it needs.
         run: chore check:msrv
 
+  cli:
+    name: cli (the installed tools, on PATH)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install chore
+        run: scripts/ci-install-chore.sh
+      - name: chore siblings
+        run: chore siblings
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cli-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cli-cargo-
+      - name: chore cli:install
+        run: chore cli:install
+      # FIRST on PATH, ahead of the runner's own /usr/sbin/mkfs.ext4 and
+      # fsck.ext4 -- which doctor then reports as present and not run.
+      - name: The staged tools first on PATH
+        run: scripts/cli-install.sh --print-bin-dir >> "$GITHUB_PATH"
+      - name: chore test:cli
+        id: tier
+        run: chore test:cli
+      - name: Keep the tier logs
+        # Not before the tier ran: there is no log then, and this step's red
+        # would hide the real one (#306).
+        if: always() && steps.tier.outcome != 'skipped'
+        uses: actions/upload-artifact@v4
+        with:
+          name: tier-logs-cli
+          path: tmp/logs/*.log
+          if-no-files-found: error
+
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [unit, fixtures, test, test-arm64, suite-in-vm, wasm, semver, msrv]
+    needs: [unit, fixtures, test, test-arm64, suite-in-vm, wasm, semver, msrv, cli]
     runs-on: ubuntu-latest
     steps:
       - name: Every job ran and succeeded

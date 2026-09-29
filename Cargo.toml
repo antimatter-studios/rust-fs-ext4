@@ -48,6 +48,28 @@ crate-type = ["staticlib", "rlib"]
 name = "mkfs_ext4"
 path = "src/bin/mkfs_ext4.rs"
 
+# THE COMMAND-LINE TOOLS: one multi-call binary, named for the repository.
+# It dispatches on argv[0], the way busybox and e2fsprogs do, so the
+# release step installs it once as `rust-fs-ext4` and links `mkfs.ext4`,
+# `fsck.ext4` and `fs.ext4` to it (cargo refuses a dot in a target name,
+# so the dotted names are never cargo's). `rust-fs-ext4 <tool> ...` is the
+# form nothing else on PATH can shadow, and `cargo run --features cli --
+# mkfs ...` works before anything is installed.
+#
+# BEHIND THE `cli` FEATURE, so the static library a consumer links gains no
+# dependency from the tools: `required-features` keeps the target out of a
+# build that did not ask for it. scripts/test.sh, `chore lint` and
+# scripts/msrv.sh ask for it, so the tests, clippy and the MSRV build all
+# reach it.
+[[bin]]
+name = "rust-fs-ext4"
+path = "src/cli/main.rs"
+required-features = ["cli"]
+
+[features]
+# The command-line tools and nothing else. clap is MIT/Apache-2.0.
+cli = ["dep:clap"]
+
 [dependencies]
 crc32c = "0.6"
 bitflags = "2"
@@ -60,6 +82,10 @@ caseless = "0.2"
 # adds a bridge module so external `fs_core::BlockDevice` implementors
 # (a `Qcow2Reader`, a `SliceReader`, etc.) can be mounted by ext4.
 am-fs-core = { path = "../rust-fs-core", version = "0.2.13" }
+# The command-line tools' argument parser, behind the `cli` feature (see
+# the `rust-fs-ext4` target above). No derive: the builder API keeps each
+# tool's command a function the man pages and completions can be made from.
+clap = { version = "4.5", optional = true, default-features = false, features = ["std", "help", "usage", "error-context", "suggestions"] }
 
 [dev-dependencies]
 hex = "0.4"

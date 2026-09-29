@@ -8,6 +8,7 @@
 # rust-toolchain.toml, which pins the (newer) toolchain everything else uses.
 #
 # Only the library and the binaries: they are what a consumer builds. The
+# binaries include the command-line tools, which need the `cli` feature. The
 # dev-dependencies need a newer compiler and never reach one.
 set -euo pipefail
 
@@ -25,5 +26,5 @@ rustup toolchain install "$version" --profile minimal --no-self-update >/dev/nul
 
 # Its own target directory: artefacts from the pinned toolchain are not
 # reusable by this one, and sharing would rebuild both every time.
-CARGO_TARGET_DIR="$REPO/target/msrv" cargo "+$version" check --locked --lib --bins --quiet
+CARGO_TARGET_DIR="$REPO/target/msrv" cargo "+$version" check --locked --lib --bins --features cli --quiet
 echo "msrv: builds on Rust $version (Cargo.toml rust-version)"

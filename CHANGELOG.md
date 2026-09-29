@@ -88,6 +88,31 @@ Not caught by the compiler — the same source builds and behaves differently:
 
 ### Added
 
+- **The command-line tools are one multi-call binary, `rust-fs-ext4`**
+  (#440), behind a new `cli` cargo feature (`cargo install am-fs-ext4
+  --features cli`), so the static library gains no dependency from them.
+  It dispatches on `argv[0]`: installed as `mkfs.ext4` it is the formatter,
+  and `rust-fs-ext4 mkfs ...` is the same program under the one name
+  nothing else on PATH can shadow. `--version` on every name prints
+  `<tool> (am-fs-ext4) <version>`.
+  - `mkfs.ext4` keeps every flag it accepted, the ignored standard ones
+    included; `--size` is the new spelling of `--create-size`, which stays
+    as an alias. **It now prints a JSON report on stdout** (label, UUID,
+    block size, block and inode counts, read back from the new superblock),
+    where it printed nothing; `--text` keeps the old silence. Errors are
+    `{"error": "...", "code": N}` on stderr, `N` being the exit status: 1
+    for a failed run, and now **2** for a wrong command line, which was 1.
+  - `rust-fs-ext4 doctor` resolves each tool's name on PATH, checks through
+    `--version` that the program found is this one at this version, and
+    names what wins and the fix (`brew unlink <formula>`, or which PATH
+    entry to move) when it is not. JSON by default, `--text`, exit 1 when
+    anything is missing, shadowed or stale.
+  - A `cli` test tier, `chore test:cli`, tests the tools as installed:
+    `chore cli:install` stages them in `tmp/cli/bin`, doctor runs first, and
+    a missing or shadowed tool fails the tier naming the fix. A new `cli`
+    CI job builds, stages and tests them on every pull request.
+  - The `mkfs_ext4` target is unchanged for now; it is retired when the
+    release packages the multi-call binary.
 - **Content writes to inline-data files** (#428). pwrite, replace and
   truncate, through paths and through inode numbers, now write an inline
   file instead of refusing it with `Unsupported` (#383). A write whose

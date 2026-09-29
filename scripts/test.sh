@@ -51,4 +51,7 @@ if [[ "${1:-}" == "--print-temp-dir" ]]; then
     exit 0
 fi
 
-cargo test "$@"
+# `--features cli` builds the command-line tools (the `rust-fs-ext4`
+# target requires it), so every tier reaches their tests. The library a
+# consumer links is built without it, and gains nothing from it.
+cargo test --features cli "$@"

@@ -24,7 +24,7 @@
 //! spelled in `ci.yml` at all: the `unit` job runs `chore test:unit`,
 //! and it is `chores.yml`'s `test:unit` task that carries
 //! `EXPECT_OVERFLOW_CHECKS=1` and the `cargo test` (through
-//! `scripts/test.sh`, which ends in `cargo test "$@"`). The guard FOLLOWS
+//! `scripts/test.sh`, which ends in `cargo test --features cli "$@"`). The guard FOLLOWS
 //! THAT INDIRECTION rather than accepting the task's name: a `chore
 //! <task>` line in a gating step is resolved in `chores.yml`, through any
 //! `task:` items, and the commands found there are held to the same rules
@@ -103,7 +103,7 @@ fn read_or_panic(path: &Path) -> String {
 /// that never asks the build anything buys nothing over deleting it.
 ///
 /// `scripts/test.sh` IS `cargo test`, and is read as one. It picks a
-/// scratch directory and then runs `cargo test "$@"`, so every argument
+/// scratch directory and then runs `cargo test --features cli "$@"`, so every argument
 /// it is given -- `--release`, `-r` -- is cargo's, and the rules above
 /// apply to it word for word. `chores.yml` runs the suite through it.
 /// That the script still ends that way is pinned by
@@ -1394,9 +1394,11 @@ fn the_pr_gate_builds_fixtures_once_in_the_harness_vm_and_tests_both_architectur
             cmd,
             ChoreCmd::Shell { keys, command }
                 if !carries_any(keys, &NON_GATING_CMD_KEYS)
-                    && command.trim() == "cargo clippy --locked --workspace --all-targets -- -D warnings"
+                    && command.trim()
+                        == "cargo clippy --locked --workspace --all-targets --features cli -- -D warnings"
         )),
-        "chores.yml `lint` must run `cargo clippy --locked --workspace --all-targets -- -D warnings`"
+        "chores.yml `lint` must run `cargo clippy --locked --workspace --all-targets --features cli \
+         -- -D warnings`: without the feature the command-line tools are not linted at all"
     );
 }
 
@@ -2562,9 +2564,9 @@ tasks:
             .rfind(|line| !line.is_empty() && !line.starts_with('#'));
         assert_eq!(
             last,
-            Some("cargo test \"$@\""),
-            "{} no longer ends in `cargo test \"$@\"`, so checking_debug_runs must stop \
-             reading it as `cargo test`",
+            Some("cargo test --features cli \"$@\""),
+            "{} no longer ends in `cargo test --features cli \"$@\"`, so \
+             checking_debug_runs must stop reading it as `cargo test`",
             super::TEST_WRAPPER
         );
         let chores = CHORES.replace(
