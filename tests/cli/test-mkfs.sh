@@ -4,7 +4,8 @@ source "$(dirname "$0")/lib.sh"
 
 img="$SANDBOX/cli.img"
 mkfs.ext4 --size 64M --label CLITEST "$img" >"$SANDBOX/mkfs.json" 2>"$SANDBOX/mkfs.err"
-check "mkfs.ext4 --size 64M --label CLITEST exits 0 ($(cat "$SANDBOX/mkfs.err"))" test $? -eq 0
+rc=$?
+check "mkfs.ext4 --size 64M --label CLITEST exits 0 ($(cat "$SANDBOX/mkfs.err"))" test "$rc" -eq 0
 jq_check "the report is ext4 and formatted" '.fs == "ext4" and .formatted == true and .dry_run == false' "$SANDBOX/mkfs.json"
 jq_check "the report carries the label" '.label == "CLITEST"' "$SANDBOX/mkfs.json"
 jq_check "the report's sizes are numbers" \

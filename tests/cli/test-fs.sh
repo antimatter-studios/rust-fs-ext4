@@ -10,7 +10,8 @@ check "mkfs.ext4 made the image" test -s "$img"
 # ls /: a fresh image of ours has an empty root -- no lost+found yet
 # (#443; mke2fs makes one). Flip this when the formatter does.
 fs.ext4 "$img" ls / >"$SANDBOX/ls.json" 2>"$SANDBOX/ls.err"
-check "ls / exits 0 ($(cat "$SANDBOX/ls.err"))" test $? -eq 0
+rc=$?
+check "ls / exits 0 ($(cat "$SANDBOX/ls.err"))" test "$rc" -eq 0
 jq_check "ls / of a fresh image is an empty array (#443)" '. == []' "$SANDBOX/ls.json"
 fs.ext4 "$img" ls --text / >"$SANDBOX/ls.txt" 2>/dev/null
 check "ls --text / of a fresh image prints nothing" test ! -s "$SANDBOX/ls.txt"

@@ -9,7 +9,8 @@ mkfs.ext4 -q --text --size 64M "$img" >/dev/null 2>&1
 check "mkfs.ext4 made the image" test -s "$img"
 
 fs.ext4 "$img" mkdir /d >"$SANDBOX/mkdir.json" 2>"$SANDBOX/mkdir.err"
-check "mkdir /d exits 0 ($(cat "$SANDBOX/mkdir.err"))" test $? -eq 0
+rc=$?
+check "mkdir /d exits 0 ($(cat "$SANDBOX/mkdir.err"))" test "$rc" -eq 0
 jq_check "mkdir reports the path and a numeric inode" '.path == "/d" and (.inode | type) == "number"' "$SANDBOX/mkdir.json"
 fs.ext4 "$img" mkdir /d/e >/dev/null 2>&1
 check "mkdir /d/e exits 0" test $? -eq 0
@@ -18,7 +19,8 @@ check "mkdir /d/e exits 0" test $? -eq 0
 for size in 0 1 4095 4096 4097 1048576; do
     head -c "$size" /dev/urandom >"$SANDBOX/src.$size"
     fs.ext4 "$img" write "/f$size" <"$SANDBOX/src.$size" >"$SANDBOX/w.json" 2>"$SANDBOX/w.err"
-    check "write /f$size exits 0 ($(cat "$SANDBOX/w.err"))" test $? -eq 0
+    rc=$?
+    check "write /f$size exits 0 ($(cat "$SANDBOX/w.err"))" test "$rc" -eq 0
     jq_check "write /f$size reports $size bytes, created" ".bytes == $size and .created == true" "$SANDBOX/w.json"
     fs.ext4 "$img" read "/f$size" >"$SANDBOX/back.$size" 2>/dev/null
     check "read /f$size matches what was written" cmp -s "$SANDBOX/src.$size" "$SANDBOX/back.$size"

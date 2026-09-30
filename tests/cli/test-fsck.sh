@@ -13,7 +13,8 @@ check "mkfs.ext4 made the image" test -s "$img"
 for flags in "" "-n" "-fn" "-y" "-p"; do
     # shellcheck disable=SC2086  # the words are the point
     fsck.ext4 $flags "$img" >"$SANDBOX/fsck.json" 2>"$SANDBOX/fsck.err"
-    check "fsck.ext4 $flags on a fresh image exits 0 ($(cat "$SANDBOX/fsck.err"))" test $? -eq 0
+    rc=$?
+    check "fsck.ext4 $flags on a fresh image exits 0 ($(cat "$SANDBOX/fsck.err"))" test "$rc" -eq 0
     jq_check "fsck.ext4 $flags reports clean" \
         '.fs == "ext4" and .clean == true and .exit == 0 and .found == 0 and (.findings | length) == 0' \
         "$SANDBOX/fsck.json"
