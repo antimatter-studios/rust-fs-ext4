@@ -57,7 +57,7 @@ pub use output::{CliError, Format, Json, Outcome};
 use std::ffi::OsString;
 use std::process::ExitCode;
 
-use clap::{Arg, ArgAction, Command as Cmd};
+use clap::{value_parser, Arg, ArgAction, Command as Cmd};
 
 /// The whole program: work out which tool this is, parse its command
 /// line, run it and print what it returned.
@@ -111,12 +111,22 @@ pub fn repo_command(family: &'static Family) -> Cmd {
             .subcommand(
                 Cmd::new("man")
                     .about("Write a man page per name under SHARE/man/man<section>/")
-                    .arg(Arg::new("share").value_name("SHARE").required(true)),
+                    .arg(
+                        Arg::new("share")
+                            .value_name("SHARE")
+                            .value_parser(value_parser!(OsString))
+                            .required(true),
+                    ),
             )
             .subcommand(
                 Cmd::new("completions")
                     .about("Write zsh, bash and fish completions per name under SHARE/")
-                    .arg(Arg::new("share").value_name("SHARE").required(true)),
+                    .arg(
+                        Arg::new("share")
+                            .value_name("SHARE")
+                            .value_parser(value_parser!(OsString))
+                            .required(true),
+                    ),
             ),
     )
 }
@@ -168,7 +178,7 @@ fn run_repo(family: &'static Family, argv: Vec<OsString>) -> ExitCode {
             }
             Some((what @ ("man" | "completions"), args)) => {
                 let share = std::path::Path::new(
-                    args.get_one::<String>("share")
+                    args.get_one::<OsString>("share")
                         .expect("clap requires the share directory"),
                 );
                 let written = if what == "man" {

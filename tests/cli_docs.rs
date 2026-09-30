@@ -88,3 +88,32 @@ fn every_name_has_a_zsh_bash_and_fish_completion() {
         assert!(fish.contains(&format!("complete -c {name}")), "fish {name}");
     }
 }
+
+/// A share directory is a path, and a path need not be UTF-8: clap must
+/// hand it over as bytes rather than refuse the command line. Where the
+/// filesystem itself refuses such a name (APFS does), the failure is the
+/// filesystem's, not a usage error.
+#[test]
+fn a_share_directory_that_is_not_utf8_is_not_a_usage_error() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+    let base = PathBuf::from(fs_ext4_test_support::temp_path!(
+        "cli-docs-{}-nonutf8",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&base);
+    let share = base.join(OsStr::from_bytes(b"share-\xff"));
+    for what in ["man", "completions"] {
+        let out = entry()
+            .args([OsStr::new("generate"), OsStr::new(what), share.as_os_str()])
+            .output()
+            .expect("spawn");
+        assert_ne!(
+            out.status.code(),
+            Some(2),
+            "generate {what}: a non-UTF-8 SHARE was refused as a usage error: {}",
+            stderr(&out)
+        );
+    }
+    let _ = std::fs::remove_dir_all(&base);
+}
