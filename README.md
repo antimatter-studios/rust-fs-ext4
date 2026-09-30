@@ -121,7 +121,16 @@ cargo install am-fs-ext4 --features cli   # or: chore cli:install from a checkou
 
 It dispatches on the name it is run as, so an install links each tool to
 it; `rust-fs-ext4 <tool> ...` is the same program under the one name
-nothing else on PATH can shadow.
+nothing else on PATH can shadow. `cargo install` puts only `rust-fs-ext4`
+on PATH and makes no links, so after it either run the tools through it
+(`rust-fs-ext4 fs ...`) or link the names yourself:
+
+```sh
+cd "$(dirname "$(command -v rust-fs-ext4)")"
+for name in $(rust-fs-ext4 generate names); do ln -s rust-fs-ext4 "$name"; done
+```
+
+`chore cli:install` makes those links for you.
 
 ```sh
 mkfs.ext4 --size 64M --label BACKUP disk.img
