@@ -94,6 +94,27 @@ fn refusals_are_structured_and_leave_the_image_alone() {
 }
 
 #[test]
+fn a_write_that_does_not_fit_leaves_no_file_behind() {
+    let img = image_path("nospace");
+    ok(tool("mkfs.ext4").args(["-q", "--text", "--size", "8M", &img]));
+    let out = fs_write(&img, "/huge", &pattern(16 << 20, 9));
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert!(out.stdout.is_empty());
+    let listed = tool("fs.ext4")
+        .args([&img, "ls", "/huge"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        listed.status.code(),
+        Some(1),
+        "a failed write left /huge behind: {}",
+        stdout(&listed)
+    );
+    let dirty = stdout(&ok(tool("fs.ext4").args([&img, "get", "dirty", "--text"])));
+    assert_eq!(dirty, "false\n");
+}
+
+#[test]
 fn set_label_is_still_not_implemented() {
     let img = image_path("label");
     ok(tool("mkfs.ext4").args(["-q", "--text", "--size", "32M", &img]));

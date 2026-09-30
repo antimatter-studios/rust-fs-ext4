@@ -564,7 +564,8 @@ fn utf8_path(path: &[u8]) -> Result<&str, CliError> {
 
 /// Run `edit` on a writable mount of `target`, then release it: flushed,
 /// and the volume marked clean again. A release that fails is a failure,
-/// even when the edit itself succeeded.
+/// even when the edit itself succeeded. When the edit fails the mount is
+/// dropped instead, which puts back the state it found.
 fn edit<T>(
     target: &OsString,
     offset: u64,
@@ -580,7 +581,8 @@ fn edit<T>(
 
 /// Create or replace a regular file with everything on stdin. The whole
 /// input is read before the image is opened, so a failing producer
-/// (`false | fs.ext4 img write /f`) leaves the image as it was.
+/// (`false | fs.ext4 img write /f`) leaves the image as it was, and a new
+/// file whose content cannot be written (it does not fit) is removed again.
 fn write(target: &OsString, offset: u64, path: &[u8]) -> Result<Outcome, CliError> {
     let name = utf8_path(path)?;
     let mut data = Vec::new();
@@ -604,8 +606,18 @@ fn write(target: &OsString, offset: u64, path: &[u8]) -> Result<Outcome, CliErro
             }
             Err(e) => return Err(e),
         };
-        let size = fs.apply_replace_file_content(name, &data)?;
-        Ok((created, size))
+        match fs.apply_replace_file_content(name, &data) {
+            Ok(size) => Ok((created, size)),
+            Err(e) => {
+                // A file this call made is taken away again, so a write
+                // that does not fit leaves no empty file behind it. The
+                // content error is the one reported either way.
+                if created {
+                    let _ = fs.apply_unlink(name);
+                }
+                Err(e)
+            }
+        }
     })?;
     let report = Json::object([
         ("path", Json::from(name)),
