@@ -1,0 +1,3 @@
+# A patch carries its context lines with a leading space and upstream's own
+# whitespace verbatim; trimming either stops it applying.
+tests/lwext4/*.patch -whitespace

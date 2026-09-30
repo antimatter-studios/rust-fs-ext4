@@ -198,6 +198,9 @@ ALLOW = [
      r"|direntry|dir_entry_next|dir_mk|dir_open|errno|fclose|file|fopen|fread"
      r"|fsize|fsymlink|fwrite|mode_[gs]et|mount|readlink|umount)",
      "that library's public API, which this C client calls"),
+    ("tests/lwext4/fread-holes.patch",
+     r"ext4_(?:fsblk_t|fs_get_inode_dblk_idx|blocks_get_direct|block_readbytes)",
+     "a patch to that library's own source, which the guest applies before building it"),
     ("tests/lwext4_cross_validate.rs", r"ext4_(?:mount|fread|blocks_get_direct)",
      "that library's public API, which this test drives"),
     ("tests/oracle_verdicts.rs", r"ext4_mount", "quotes that library's report"),

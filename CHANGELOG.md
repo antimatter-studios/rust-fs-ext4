@@ -326,6 +326,14 @@ Not caught by the compiler — the same source builds and behaves differently:
 
 ### Changed
 
+- **The lwext4 cross-validation compares holes too (#272).** At its pin,
+  lwext4 read an unmapped block in the body of a file as block 0 of the
+  device, so a sparse file was the one thing it could not be compared on and
+  `tests/lwext4_cross_validate.rs` excused it. The guest now builds lwext4
+  with `tests/lwext4/fread-holes.patch`, which reads a hole as zeros, and the
+  excuse is gone. The guest's stamp records the patch's digest, and the
+  suite refuses a guest built without it.
+
 - **`hash::name_hash` never returns the reserved major hash
   `0xFFFFFFFE`.** The directory index reserves that value as its
   end-of-directory marker, so a name whose major hash would be it now gets

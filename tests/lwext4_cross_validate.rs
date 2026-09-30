@@ -32,15 +32,16 @@
 //! feature — or a fixture that loses it — fails here and gets moved into
 //! the compared set, instead of quietly never being compared.
 //!
-//! AND IT HAS ALREADY FOUND ONE. lwext4 reads a hole in the middle of a
-//! file as physical block 0 of the device rather than as zeroes:
-//! `ext4_fread` zero-fills only the leading partial block, and hands an
-//! `fblock_start` of 0 to `ext4_blocks_get_direct` for a run of unmapped
-//! blocks. `ext4-deep-extents.img`'s sparse file comes back with the
-//! volume's first blocks in its holes. `KNOWN` records it, with the
-//! question of who is wrong settled by the fixture's own recipe rather
-//! than by either reader, and REQUIRES IT TO STILL BE WRONG — a pin bump
-//! that fixes lwext4 deletes the entry instead of absorbing it.
+//! AND IT HAS ALREADY FOUND ONE. At its pin, lwext4 reads a hole in the
+//! middle of a file as physical block 0 of the device rather than as
+//! zeroes: `ext4_fread` zero-fills only the leading partial block, and
+//! hands an `fblock_start` of 0 to `ext4_blocks_get_direct` for a run of
+//! unmapped blocks. `ext4-deep-extents.img`'s sparse file came back with
+//! the volume's first blocks in its holes; the fixture's own recipe, not
+//! either reader, settled that this crate was the one that was right
+//! (`the_sparse_fixture_reads_as_it_was_built`). The guest now builds
+//! lwext4 with `tests/lwext4/fread-holes.patch`, which zero-fills the
+//! hole (#272), so holes are compared like everything else.
 //!
 //! WHERE IT RUNS: the fs-linux-test-harness guest, like every other
 //! oracle in this suite. `scripts/vm-setup.sh` builds lwext4 there at a
@@ -57,7 +58,7 @@ use fs_ext4::fs::Filesystem;
 use fs_ext4::{dir, features, file_io};
 use fs_ext4_test_support::{
     fixture, lwext4_refusal, lwext4_report, lwext4_write, oracle, sha256_hex, temp_path, Report,
-    LWEXT4_PIN,
+    LWEXT4_PATCH, LWEXT4_PIN,
 };
 
 // ---------------------------------------------------------------------
@@ -178,20 +179,10 @@ fn disagreements(ours: &Report, theirs: &Report) -> Vec<String> {
 /// come back into line fails the run, so bumping the lwext4 pin to a
 /// revision that fixes the defect deletes the entry instead of quietly
 /// absorbing it. `(image, kind, path, what is wrong and who is wrong)`.
-const KNOWN: [(&str, &str, &str, &str); 1] = [(
-    "ext4-deep-extents.img",
-    "sha256",
-    "sparse.bin",
-    "lwext4 reads A HOLE IN THE MIDDLE OF A FILE as physical block 0 of the \
-     device. `ext4_fread`'s whole-block loop (src/ext4.c) zero-fills only the \
-     leading partial block; for a run of unmapped blocks it leaves \
-     `fblock_start` at 0 and hands that to `ext4_blocks_get_direct`, which \
-     reads the volume's first blocks and returns them as the file's contents. \
-     THIS CRATE IS THE ONE THAT IS RIGHT: \
-     `the_sparse_fixture_reads_as_it_was_built` reconstructs the 16 MiB the \
-     fixture recipe describes, from the recipe and not from either reader, \
-     and this crate's digest is that one.",
-)];
+///
+/// Empty: the one entry it held, lwext4 reading holes as device block 0,
+/// is fixed by the patch the guest applies (#272).
+const KNOWN: [(&str, &str, &str, &str); 0] = [];
 
 /// Every disagreement about `image`, with the recorded ones taken out —
 /// and a complaint for any recorded one that has stopped disagreeing.
@@ -711,5 +702,21 @@ fn the_pin_the_guest_builds_is_the_pin_this_suite_requires() {
         LWEXT4_PIN.len(),
         40,
         "the lwext4 pin must be a full commit SHA, not a prefix or a branch: {LWEXT4_PIN}"
+    );
+    // The patch's digest is recorded in the setup script so that editing
+    // the patch changes the script, which is what makes the harness
+    // re-provision. A digest left behind would fail setup in the guest;
+    // this says so on the host first.
+    let patch = std::fs::read(format!("{}/{LWEXT4_PATCH}", env!("CARGO_MANIFEST_DIR")))
+        .expect("read the lwext4 patch");
+    let digest = sha256_hex(&patch);
+    assert!(
+        setup.contains(&format!("LWEXT4_PATCH_SHA256={digest}")),
+        "scripts/vm-setup.sh does not record the sha256 of {LWEXT4_PATCH} ({digest}); \
+         update LWEXT4_PATCH_SHA256 there"
+    );
+    assert!(
+        setup.contains(&format!("LWEXT4_PATCH=\"$REPO/{LWEXT4_PATCH}\"")),
+        "scripts/vm-setup.sh does not apply {LWEXT4_PATCH}"
     );
 }

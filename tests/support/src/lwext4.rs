@@ -42,6 +42,12 @@ use crate::verdict::{Judged, Verdict};
 /// drifts; this way a bump has to be made twice or not at all.
 pub const PIN: &str = "58bcf89a121b72d4fb66334f1693d3b30e4cb9c5";
 
+/// The one patch the guest applies on top of [`PIN`] (#272), relative to
+/// this repository. The guest's stamp records the pin and this file's
+/// sha256; the reporter is only built against a library stamped with the
+/// digest of the patch in THIS checkout.
+pub const PATCH: &str = "tests/lwext4/fread-holes.patch";
+
 /// Where the guest keeps what `scripts/vm-setup.sh` built.
 const PREFIX: &str = "/usr/local";
 
@@ -68,19 +74,21 @@ fn reporter() -> &'static str {
         let out = format!("{repo}/tmp/lwext4-report");
         let script = format!(
             "set -eu\n\
+             cd {repo}\n\
+             want=\"{pin} $(sha256sum {patch} | cut -d' ' -f1)\"\n\
              pin=\"$(cat {prefix}/lib/lwext4.pin 2>/dev/null || true)\"\n\
-             if [ \"$pin\" != {pin} ]; then\n\
-                 echo \"the guest has lwext4 '${{pin:-none}}'\" >&2\n\
+             if [ \"$pin\" != \"$want\" ]; then\n\
+                 echo \"the guest has lwext4 '${{pin:-none}}', not '$want'\" >&2\n\
                  exit 3\n\
              fi\n\
-             cd {repo}\n\
              mkdir -p tmp\n\
              cc -std=gnu99 -O2 -Wall -Wextra -Werror -o tmp/.lwext4-report.$$ \\\n\
                  -I{prefix}/include/lwext4 tests/lwext4/report.c \\\n\
                  -L{prefix}/lib -llwext4 -lblockdev\n\
              mv tmp/.lwext4-report.$$ {out}\n",
             prefix = PREFIX,
-            pin = guest_quote(PIN),
+            pin = PIN,
+            patch = guest_quote(PATCH),
             repo = guest_quote(&repo),
             out = guest_quote(&out),
         );
@@ -89,7 +97,7 @@ fn reporter() -> &'static str {
         assert!(
             result.status.success(),
             "the lwext4 cross-validation reporter could not be built in the harness VM. \
-             lwext4 is built there by scripts/vm-setup.sh at {PIN}; `chore vm:provision` \
+             lwext4 is built there by scripts/vm-setup.sh at {PIN} with {PATCH}; `chore vm:provision` \
              applies that script again, and `chore vm:destroy` then `chore vm:up` \
              rebuilds the guest from scratch. Tests never skip on a missing oracle.\n{}{}",
             String::from_utf8_lossy(&result.stdout),

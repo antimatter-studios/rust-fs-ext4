@@ -9,7 +9,9 @@ mod oracle;
 pub mod verdict;
 
 pub use kernel::{guest_kernel_report, guest_kernel_try_write, guest_kernel_write, sha256_hex};
-pub use lwext4::{lwext4_refusal, lwext4_report, lwext4_write, Report, PIN as LWEXT4_PIN};
+pub use lwext4::{
+    lwext4_refusal, lwext4_report, lwext4_write, Report, PATCH as LWEXT4_PATCH, PIN as LWEXT4_PIN,
+};
 pub use oracle::{guest_base64, guest_quote, oracle, Oracle};
 pub use verdict::{Judge, Judged, Verdict};
 

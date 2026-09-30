@@ -51,6 +51,21 @@ export CARGO_HOME="$RUST_ROOT/cargo"
 # against a guest built from another one, so the two cannot drift.
 LWEXT4_PIN=58bcf89a121b72d4fb66334f1693d3b30e4cb9c5
 LWEXT4_REPO=https://github.com/gkostka/lwext4.git
+
+# ONE PATCH ON TOP OF THE PIN (#272). At the pin, lwext4's file read takes an
+# unmapped block in the body of a file as block 0 of the device rather
+# than as zeros, so every sparse file came back with the volume's first
+# blocks in its holes (reported upstream as gkostka/lwext4#101; the pin
+# is still upstream's newest commit). tests/lwext4/fread-holes.patch
+# zero-fills a hole, as the function already does for a hole in an
+# unaligned leading block, and nothing else. Its digest is recorded here
+# because the harness re-runs this script only when THIS FILE changes:
+# a patch edited without updating the digest fails setup, and updating
+# the digest is what makes the next boot rebuild. The stamp holds both,
+# and tests/support/src/lwext4.rs refuses a guest built from anything
+# else.
+LWEXT4_PATCH="$REPO/tests/lwext4/fread-holes.patch"
+LWEXT4_PATCH_SHA256=7bfe03b34cb24cbd4b1f8ed5892664d01fcf6dc226ec95e80778642d9c597201
 LWEXT4_SRC=/var/lib/fs-ext4-lwext4
 LWEXT4_PREFIX=/usr/local
 
@@ -82,9 +97,15 @@ fi
 # A shallow fetch OF THE COMMIT, not a clone of the branch it is on: the
 # pin may name a revision no branch tip points at, which `git clone
 # --branch` cannot express.
+patch_sha="$(sha256sum "$LWEXT4_PATCH" | cut -d' ' -f1)"
+[ "$patch_sha" = "$LWEXT4_PATCH_SHA256" ] || {
+    echo "vm-setup: $LWEXT4_PATCH has sha256 $patch_sha, not the $LWEXT4_PATCH_SHA256 recorded here; update LWEXT4_PATCH_SHA256" >&2
+    exit 1
+}
+lwext4_build="$LWEXT4_PIN $LWEXT4_PATCH_SHA256"
 lwext4_stamp="$LWEXT4_PREFIX/lib/lwext4.pin"
-if [ "$(cat "$lwext4_stamp" 2>/dev/null || true)" != "$LWEXT4_PIN" ]; then
-    echo "vm-setup: building lwext4 $LWEXT4_PIN"
+if [ "$(cat "$lwext4_stamp" 2>/dev/null || true)" != "$lwext4_build" ]; then
+    echo "vm-setup: building lwext4 $LWEXT4_PIN with $(basename "$LWEXT4_PATCH")"
     if [ ! -d "$LWEXT4_SRC/.git" ]; then
         rm -rf "$LWEXT4_SRC"
         git init --quiet "$LWEXT4_SRC"
@@ -96,6 +117,10 @@ if [ "$(cat "$lwext4_stamp" 2>/dev/null || true)" != "$LWEXT4_PIN" ]; then
         echo "vm-setup: lwext4 is not at $LWEXT4_PIN" >&2
         exit 1
     }
+    # From a clean tree, so a patch applied by an earlier build is not
+    # applied twice.
+    git -C "$LWEXT4_SRC" reset --quiet --hard
+    git -C "$LWEXT4_SRC" apply "$LWEXT4_PATCH"
 
     # The `generic` flavour: host tooling, no embedded target. It is the
     # branch of lwext4's CMakeLists that sets BLOCKDEV_TYPE=linux, which
@@ -126,7 +151,7 @@ if [ "$(cat "$lwext4_stamp" 2>/dev/null || true)" != "$LWEXT4_PIN" ]; then
     cp "$LWEXT4_SRC/build/src/liblwext4.a" "$LWEXT4_SRC/build/blockdev/libblockdev.a" \
         "$LWEXT4_PREFIX/lib/"
     # LAST, so an interrupted build is not mistaken for a finished one.
-    printf '%s\n' "$LWEXT4_PIN" > "$lwext4_stamp"
+    printf '%s\n' "$lwext4_build" > "$lwext4_stamp"
 fi
 echo "vm-setup: lwext4 $(cat "$lwext4_stamp")"
 
