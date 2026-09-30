@@ -188,16 +188,15 @@ chore_min_version: 0.6.0
 #                                                    a FIRST run: the guest
 #                                                    build's per-crate lines
 #                                                    are already in it
-#     cli          29 /   1,100       40 /   1,460   ~38% / ~33%: an ESTIMATE
-#                                                    (the previous row's CI
-#                                                    measurement plus this
-#                                                    change's growth on the Mac,
-#                                                    23 / 852 to 26 / 931), to be
-#                                                    replaced by CI's before this
-#                                                    merges. Every file is three
-#                                                    lines when it passes and
-#                                                    every tool a doctor line, so
-#                                                    a new one is a visible step
+#     cli          29 /   1,093       40 /   1,460   ~38% / ~34%: MEASURED in CI
+#                                                    (run 36662726284, job cli),
+#                                                    with the man pages and
+#                                                    completions; 26 / 931 on
+#                                                    arm64 macOS. Every file is
+#                                                    three lines when it passes
+#                                                    and every tool a doctor
+#                                                    line, so a new one is a
+#                                                    visible step
 #
 #   Raise one DELIBERATELY when a tier grows, the way the executed-test
 #   floors are raised, and never to fit a run printing something it should
