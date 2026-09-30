@@ -3,14 +3,19 @@
 //! A volume with `INCOMPAT_CASEFOLD` records its encoding in `s_encoding`,
 //! and a directory with `EXT4_CASEFOLD_FL` compares names case-insensitively.
 //!
-//! **This module's hash is not the one such a directory uses (#438).** It
-//! hashes the folded name with SipHash-2-4 keyed by the first 16 bytes of
-//! `s_hash_seed`. `debugfs dx_hash -c` shows that a casefolded directory
-//! instead hashes the folded name with its ordinary htree hash version and
-//! seed; SipHash (hash version 6) is for directories that are both
-//! encrypted and casefolded, whose entries carry the hash because it needs
-//! the key (format documentation, `ext4_extended_dir_entry_2`). Nothing
-//! calls this yet.
+//! ### Hashing
+//!
+//! A casefolded directory that is not encrypted hashes a name with **its
+//! ordinary htree hash** (the version in `dx_root`, adjusted by
+//! `EXT2_FLAGS_UNSIGNED_HASH`, keyed by `s_hash_seed`), computed over the
+//! **folded** name rather than the raw bytes (#438). `debugfs dx_hash -c -e
+//! utf8` shows it: the casefolded hash of `HELLO` is the ordinary hash of
+//! `hello`, of `Straße` the ordinary hash of `strasse`, for every hash
+//! version 0-5; `tests/casefold_hash_differential.rs` checks that against
+//! debugfs. Hash version 6 (SipHash) is only for directories that are both
+//! encrypted and casefolded, whose entries carry their hash because it
+//! needs the encryption key (format documentation, "Hash Tree Directories"
+//! and `ext4_extended_dir_entry_2`); nothing here recomputes it.
 //!
 //! ### Folding
 //!
@@ -28,15 +33,13 @@
 //! The kernel uses frozen tables for a specific Unicode version
 //! (`s_encoding_flags`), so there can be differences for codepoints added
 //! after that version; those are edge cases in practice.
-//!
-//! - **SipHash-2-4** keyed with the 16-byte prefix of `sb.hash_seed`, which
-//!   is this module's current (wrong, #438) choice of hash.
 
 use unicode_normalization::UnicodeNormalization;
 
-use crate::hash::NameHash;
+use crate::hash::{name_hash, HashVersion, NameHash};
 
-/// Produce the NFD + case-folded form of `name` for SipHash input.
+/// Produce the NFD + case-folded form of `name`, which the htree hash of a
+/// casefolded directory is computed over.
 ///
 /// The folding (Unicode Standard Annex #15 for NFD, `CaseFolding.txt` for
 /// the fold):
@@ -44,7 +47,7 @@ use crate::hash::NameHash;
 /// 2. Apply Unicode full case fold to each NFD codepoint using `caseless`.
 ///    `char::to_lowercase()` is NOT used because it doesn't implement case
 ///    fold (e.g. ß → "ß" via lowercase, but ß → "ss" via case fold).
-/// 3. Re-encode as UTF-8. The result is what SipHash-2-4 hashes.
+/// 3. Re-encode as UTF-8. The result is what the directory hash hashes.
 ///
 /// Invalid UTF-8 falls back to byte-level ASCII fold so lookup is still
 /// deterministic and doesn't panic (corrupt images should not produce this).
@@ -70,93 +73,12 @@ pub fn fold_name(name: &[u8]) -> Vec<u8> {
     }
 }
 
-/// SipHash-2-4 constants.
-const SIP_C: [u64; 4] = [
-    0x7367_6165_6e65_7265, // "eneragen" — actually we derive from key on init
-    0x6c6f_7265_6d69_7073, // but the reference impl init sets v[0..4] to key ^ magic
-    0x656c_7564_6f6d_6976,
-    0x6479_7465_6272_6f79,
-];
-
-#[inline]
-fn rotl(x: u64, b: u32) -> u64 {
-    x.rotate_left(b)
-}
-
-#[inline]
-fn sipround(v0: &mut u64, v1: &mut u64, v2: &mut u64, v3: &mut u64) {
-    *v0 = v0.wrapping_add(*v1);
-    *v1 = rotl(*v1, 13);
-    *v1 ^= *v0;
-    *v0 = rotl(*v0, 32);
-    *v2 = v2.wrapping_add(*v3);
-    *v3 = rotl(*v3, 16);
-    *v3 ^= *v2;
-    *v0 = v0.wrapping_add(*v3);
-    *v3 = rotl(*v3, 21);
-    *v3 ^= *v0;
-    *v2 = v2.wrapping_add(*v1);
-    *v1 = rotl(*v1, 17);
-    *v1 ^= *v2;
-    *v2 = rotl(*v2, 32);
-}
-
-/// SipHash-2-4 of `data` keyed with the 16-byte `key` (two u64 le halves).
-pub fn siphash_2_4(data: &[u8], key: &[u8; 16]) -> u64 {
-    let k0 = u64::from_le_bytes(key[0..8].try_into().unwrap());
-    let k1 = u64::from_le_bytes(key[8..16].try_into().unwrap());
-
-    // Reference init constants:
-    let mut v0: u64 = k0 ^ 0x736f_6d65_7073_6575;
-    let mut v1: u64 = k1 ^ 0x646f_7261_6e64_6f6d;
-    let mut v2: u64 = k0 ^ 0x6c79_6765_6e65_7261;
-    let mut v3: u64 = k1 ^ 0x7465_6462_7974_6573;
-    // (Silences the unused warning on the stylised constants above.)
-    let _ = SIP_C;
-
-    let len = data.len();
-    let mut pos = 0usize;
-    while len - pos >= 8 {
-        let m = u64::from_le_bytes(data[pos..pos + 8].try_into().unwrap());
-        v3 ^= m;
-        sipround(&mut v0, &mut v1, &mut v2, &mut v3);
-        sipround(&mut v0, &mut v1, &mut v2, &mut v3);
-        v0 ^= m;
-        pos += 8;
-    }
-    // Final partial block: up to 7 bytes + length byte.
-    let mut b: u64 = (len as u64) << 56;
-    let rem = len - pos;
-    for (i, &byte) in data[pos..].iter().enumerate() {
-        b |= (byte as u64) << (i * 8);
-    }
-    let _ = rem; // information implicit in the shift above
-    v3 ^= b;
-    sipround(&mut v0, &mut v1, &mut v2, &mut v3);
-    sipround(&mut v0, &mut v1, &mut v2, &mut v3);
-    v0 ^= b;
-
-    v2 ^= 0xff;
-    for _ in 0..4 {
-        sipround(&mut v0, &mut v1, &mut v2, &mut v3);
-    }
-    v0 ^ v1 ^ v2 ^ v3
-}
-
-/// Compute the casefold htree hash for `name` under the superblock's
-/// `hash_seed` (first 16 bytes) — used when the directory's `EXT4_CASEFOLD_FL`
-/// flag is set. Returns a `NameHash` whose `major` is the usable 32-bit
-/// value (low bit cleared as usual for htree).
-pub fn casefold_name_hash(name: &[u8], seed: &[u32; 4]) -> NameHash {
-    let folded = fold_name(name);
-    let mut key = [0u8; 16];
-    for i in 0..4 {
-        key[i * 4..i * 4 + 4].copy_from_slice(&seed[i].to_le_bytes());
-    }
-    let h64 = siphash_2_4(&folded, &key);
-    let major = (h64 as u32) & !1; // clear low bit
-    let minor = (h64 >> 32) as u32;
-    NameHash { major, minor }
+/// The htree hash of `name` in a casefolded directory that is not
+/// encrypted: the directory's ordinary hash `version` (see
+/// [`crate::hash::effective_version`]) under `seed`, the superblock's
+/// `s_hash_seed`, computed over [`fold_name`] of `name`.
+pub fn casefold_name_hash(name: &[u8], version: HashVersion, seed: &[u32; 4]) -> NameHash {
+    name_hash(&fold_name(name), version, seed)
 }
 
 #[cfg(test)]
@@ -198,48 +120,102 @@ mod tests {
         assert_eq!(fold_name(b""), Vec::<u8>::new());
     }
 
+    /// `s_hash_seed` 01234567-89ab-cdef-0123-456789abcdef as the four
+    /// little-endian words the superblock stores.
+    const DEBUGFS_SEED: [u32; 4] = [0x6745_2301, 0xefcd_ab89, 0x6745_2301, 0xefcd_ab89];
+
+    /// `debugfs -R 'dx_hash -s 01234567-89ab-cdef-0123-456789abcdef -h
+    /// <version> -c -e utf8 -- <name>'` (e2fsprogs 1.47.4, encoding
+    /// utf8-12.1): (version, name, major, minor). The names cover ASCII
+    /// case, ß folding to two letters, a precomposed accent, a dotted
+    /// capital I, a ligature and a titlecase digraph.
+    const DEBUGFS_CASEFOLD: &[(u8, &str, u32, u32)] = &[
+        (0, "HELLO", 0x32252546, 0x00000000),
+        (0, "Straße", 0xad2ed8da, 0x00000000),
+        (0, "Café", 0xb57af1a2, 0x00000000),
+        (0, "İstanbul", 0x7993d1e8, 0x00000000),
+        (0, "ﬁle", 0x10c30fca, 0x00000000),
+        (0, "ǅ", 0xf3cbc72e, 0x00000000),
+        (1, "HELLO", 0xa26e4a80, 0x97e5b7f7),
+        (1, "Straße", 0xfd935386, 0x310eec3f),
+        (1, "Café", 0xb4f033e6, 0xc53b7dc9),
+        (1, "İstanbul", 0xea3181a8, 0x95cdbb2d),
+        (1, "ﬁle", 0x2fa08550, 0xa2347c70),
+        (1, "ǅ", 0xecb9513e, 0x53db85db),
+        (2, "HELLO", 0x6f5bb1a8, 0x231917c2),
+        (2, "Straße", 0xd6e5379a, 0x7d22f805),
+        (2, "Café", 0x65e6583e, 0x6e22bfb6),
+        (2, "İstanbul", 0xea09454c, 0x000466d6),
+        (2, "ﬁle", 0x53fcf74e, 0x15e4b547),
+        (2, "ǅ", 0x60e7aab0, 0xddc780d6),
+        (3, "HELLO", 0x32252546, 0x00000000),
+        (3, "Straße", 0xad2ed8da, 0x00000000),
+        (3, "Café", 0x710181a6, 0x00000000),
+        (3, "İstanbul", 0x32e89dbc, 0x00000000),
+        (3, "ﬁle", 0x10c30fca, 0x00000000),
+        (3, "ǅ", 0xb34beb2c, 0x00000000),
+        (4, "HELLO", 0xa26e4a80, 0x97e5b7f7),
+        (4, "Straße", 0xfd935386, 0x310eec3f),
+        (4, "Café", 0xb5763ba0, 0x9b8175dc),
+        (4, "İstanbul", 0x1c5d5e6e, 0x36372989),
+        (4, "ﬁle", 0x2fa08550, 0xa2347c70),
+        (4, "ǅ", 0xd79841e0, 0xc3767231),
+        (5, "HELLO", 0x6f5bb1a8, 0x231917c2),
+        (5, "Straße", 0xd6e5379a, 0x7d22f805),
+        (5, "Café", 0xc1ea8e5e, 0xf3ae206f),
+        (5, "İstanbul", 0x6be30f56, 0x0d8d60e7),
+        (5, "ﬁle", 0x53fcf74e, 0x15e4b547),
+        (5, "ǅ", 0x1d244eee, 0xc7690204),
+    ];
+
+    /// A casefolded directory hashes the folded name with its ordinary
+    /// htree hash, not SipHash (#438).
+    #[test]
+    fn casefold_hash_matches_debugfs_for_every_hash_version() {
+        for &(version, name, major, minor) in DEBUGFS_CASEFOLD {
+            let v = HashVersion::from_u8(version).unwrap();
+            let h = casefold_name_hash(name.as_bytes(), v, &DEBUGFS_SEED);
+            assert_eq!(
+                (h.major, h.minor),
+                (major, minor),
+                "v{version} {name:?}: got ({:#010x}, {:#010x})",
+                h.major,
+                h.minor
+            );
+        }
+    }
+
+    /// Names that differ only in case hash alike under every version.
     #[test]
     fn casefold_hash_is_case_insensitive() {
         let seed = [1u32, 2, 3, 4];
-        let a = casefold_name_hash(b"README", &seed);
-        let b = casefold_name_hash(b"readme", &seed);
-        let c = casefold_name_hash(b"ReadMe", &seed);
-        assert_eq!(a.major, b.major);
-        assert_eq!(a.major, c.major);
+        for version in 0..=5 {
+            let v = HashVersion::from_u8(version).unwrap();
+            let a = casefold_name_hash(b"README", v, &seed);
+            let b = casefold_name_hash(b"readme", v, &seed);
+            let c = casefold_name_hash(b"ReadMe", v, &seed);
+            assert_eq!(a, b, "v{version}");
+            assert_eq!(a, c, "v{version}");
+        }
     }
 
     #[test]
     fn casefold_hash_differs_on_different_names() {
         let seed = [1u32, 2, 3, 4];
-        let a = casefold_name_hash(b"hello", &seed);
-        let b = casefold_name_hash(b"hellw", &seed);
+        let a = casefold_name_hash(b"hello", HashVersion::HalfMd4, &seed);
+        let b = casefold_name_hash(b"hellw", HashVersion::HalfMd4, &seed);
         assert_ne!(a.major, b.major);
-    }
-
-    #[test]
-    fn siphash_empty_input() {
-        let key = [0u8; 16];
-        // Deterministic with zero key + empty input — any stable non-zero
-        // value is fine; we just assert determinism.
-        let a = siphash_2_4(b"", &key);
-        let b = siphash_2_4(b"", &key);
-        assert_eq!(a, b);
-    }
-
-    #[test]
-    fn siphash_rfc_zero_key_empty_matches_impl_specific() {
-        // Sanity: a non-empty input produces a non-zero hash.
-        let key = [0u8; 16];
-        let h = siphash_2_4(b"abc", &key);
-        assert_ne!(h, 0);
     }
 
     #[test]
     fn casefold_low_bit_is_zero() {
         let seed = [0xdeadbeefu32, 0, 0, 0];
-        for name in [b"foo".as_slice(), b"BAR", b"mixedCase"] {
-            let h = casefold_name_hash(name, &seed);
-            assert_eq!(h.major & 1, 0);
+        for version in 0..=5 {
+            let v = HashVersion::from_u8(version).unwrap();
+            for name in [b"foo".as_slice(), b"BAR", b"mixedCase"] {
+                let h = casefold_name_hash(name, v, &seed);
+                assert_eq!(h.major & 1, 0);
+            }
         }
     }
 }

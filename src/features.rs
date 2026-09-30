@@ -110,9 +110,10 @@ pub const SUPPORTED_INCOMPAT: u32 = Incompat::FILETYPE.bits()
 ///   fine and writing is not.
 ///
 /// - `CASEFOLD` changes how a directory entry's htree slot is CHOSEN: the
-///   kernel hashes the normalised, case-folded name with SipHash-2-4 and
-///   files the entry into the leaf that hash selects. This driver hashes
-///   the raw bytes with half_md4 or tea. Reads survive that by accident,
+///   directory's htree hash is computed over the normalised, case-folded
+///   name (`casefold::casefold_name_hash`), and the entry is filed into
+///   the leaf that hash selects. This driver's write path hashes the raw
+///   bytes. Reads survive that by accident,
 ///   because `path::find_entry` falls back to a linear scan when the
 ///   htree descent misses — slower, and case-insensitive lookup does not
 ///   work, but nothing is lost. A write does not survive it: the entry

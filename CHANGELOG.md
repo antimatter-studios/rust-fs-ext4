@@ -31,6 +31,12 @@ Source-breaking, each caught by the compiler downstream:
 - `hash::HTREE_EOF` is removed with the clean-room `src/hash.rs` (see
   Changed). The value it named, `0xFFFF_FFFE`, is the directory index's
   end-of-directory marker, and `hash::name_hash` never returns it.
+- `casefold::casefold_name_hash` takes the directory's `HashVersion` as a
+  second argument and returns that version's hash of the folded name, the
+  hash a casefolded directory uses; it computed SipHash-2-4 keyed by
+  `s_hash_seed`, which no directory uses (#438). `casefold::siphash_2_4` is
+  removed: hash version 6 belongs to encrypted casefolded directories, whose
+  entries carry the hash. Nothing in the crate called either.
 
 Not caught by the compiler — the same source builds and behaves differently:
 

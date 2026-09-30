@@ -9939,8 +9939,8 @@ mod tests {
     /// A CASEFOLD volume must not be mounted writable.
     ///
     /// The kernel files a directory entry into the htree leaf that the
-    /// SipHash of the case-folded name selects; this driver hashes the
-    /// raw bytes. Reads survive on the linear-scan fallback. A write does
+    /// hash of the case-folded name selects; this driver's write path
+    /// hashes the raw bytes. Reads survive on the linear-scan fallback. A write does
     /// not: the entry lands in the wrong leaf, stays findable here and
     /// stops being findable on Linux.
     #[test]

@@ -6,7 +6,9 @@
 //! (16 bytes for TEA, 32 for half MD4) and their neighbours, bytes >= 0x80
 //! (where the signed and unsigned versions part ways), several random
 //! seeds plus the all-zero seed — and requires major and minor to agree
-//! for all six hash versions. The requests go to one `debugfs -f -`
+//! for all six hash versions. It also asks `dx_hash -c -e utf8` for the
+//! hash a casefolded directory gives a name, and requires
+//! `casefold_name_hash` to agree (#438). The requests go to one `debugfs -f -`
 //! script per batch of a few hundred, so the run costs a few dozen tool
 //! calls rather than one per hash.
 //!
@@ -16,6 +18,7 @@
 //! since a quoted name starting with `-` is still read as an option. `/` is left out too: no
 //! directory entry can contain it.
 
+use fs_ext4::casefold::casefold_name_hash;
 use fs_ext4::hash::{name_hash, HashVersion};
 
 /// A small deterministic generator (SplitMix64), so every run asks the
@@ -78,6 +81,9 @@ struct Case {
     seed: [u32; 4],
     version: u8,
     name: Vec<u8>,
+    /// Ask for the hash a casefolded directory gives the name
+    /// (`-c -e utf8`), not the plain one.
+    casefold: bool,
 }
 
 /// Parse `Hash of <name> is 0x<major> (minor 0x<minor>)`.
@@ -98,9 +104,10 @@ fn ask_debugfs(cases: &[Case]) -> Vec<(u32, u32)> {
     for case in cases {
         script.extend_from_slice(
             format!(
-                "dx_hash -h {} -s {} -- \"",
+                "dx_hash -h {} -s {}{} -- \"",
                 case.version,
-                seed_uuid(&case.seed)
+                seed_uuid(&case.seed),
+                if case.casefold { " -c -e utf8" } else { "" }
             )
             .as_bytes(),
         );
@@ -177,6 +184,7 @@ fn random_names_agree_with_debugfs() {
                 seed,
                 version,
                 name: name.clone(),
+                casefold: false,
             });
         }
     }
@@ -244,6 +252,7 @@ fn reserved_end_of_directory_major_is_remapped() {
             seed,
             version,
             name: Vec::new(),
+            casefold: false,
         })
         .collect();
     let answers = ask_debugfs(&cases);
@@ -266,4 +275,142 @@ fn reserved_end_of_directory_major_is_remapped() {
     for version in [HashVersion::Tea, HashVersion::HalfMd4Unsigned] {
         assert_eq!(name_hash(b"", version, &seed).major, 0xFFFF_FFFC);
     }
+}
+
+/// Characters for casefolded names, all assigned by Unicode 12.1 (the
+/// `utf8-12.1` encoding `mke2fs -E encoding=utf8` records), so a newer
+/// Unicode table in the folding crates cannot account for a difference.
+/// Plain and accented Latin, Greek and Cyrillic in both cases, combining
+/// accents (so decomposed and precomposed spellings meet), and the
+/// characters whose full case fold is not a one-to-one lowercase: ß and
+/// ẞ, the dotted and dotless i, ligatures, titlecase digraphs, Greek
+/// iota subscripts, final sigma, the Kelvin, Angstrom and Ohm signs,
+/// Cherokee and Georgian Mtavruli, and a Hangul syllable that
+/// decomposes into jamo.
+fn casefold_alphabet() -> Vec<char> {
+    let mut chars: Vec<char> = ('A'..='Z').chain('a'..='z').chain('0'..='9').collect();
+    chars.extend([' ', '-', '_', '.']);
+    let ranges = [
+        (0x00C0, 0x00FF),
+        (0x0100, 0x017F),
+        (0x0300, 0x0314),
+        (0x0390, 0x03C9),
+        (0x0400, 0x045F),
+        (0x13A0, 0x13F5),
+        (0x1C90, 0x1CBA),
+    ];
+    for (lo, hi) in ranges {
+        chars.extend((lo..=hi).filter_map(char::from_u32));
+    }
+    chars.extend([
+        '\u{1E9E}', '\u{0130}', '\u{0131}', '\u{FB01}', '\u{FB00}', '\u{FB06}', '\u{01C4}',
+        '\u{01C5}', '\u{01C8}', '\u{01CB}', '\u{01F1}', '\u{01F2}', '\u{1FBC}', '\u{1FB3}',
+        '\u{1F88}', '\u{212A}', '\u{212B}', '\u{2126}', '\u{0149}', '\u{01F0}', '\u{00B5}',
+        '\u{0345}', '\u{0587}', '\u{AC00}', '\u{6F22}',
+    ]);
+    // U+03A2 is unassigned: a code point with no character is not a name
+    // anyone can type, and the fold of one is not what this checks.
+    chars.retain(|&c| c != '\u{03A2}');
+    chars
+}
+
+/// A casefolded directory hashes the folded name with its ordinary htree
+/// hash (#438). `debugfs dx_hash -c -e utf8` folds the name the way the
+/// on-disk encoding defines and then hashes it, so every hash version,
+/// several seeds, and names built from [`casefold_alphabet`] must give
+/// the same major and minor as `casefold_name_hash`.
+#[test]
+fn casefolded_names_agree_with_debugfs() {
+    let mut rng = SplitMix(0x6361_7365_666f_6c64);
+    let alphabet = casefold_alphabet();
+
+    let mut seeds = vec![[0u32; 4]];
+    for _ in 0..3 {
+        seeds.push([
+            rng.next() as u32,
+            rng.next() as u32,
+            rng.next() as u32,
+            rng.next() as u32,
+        ]);
+    }
+
+    // Named cases first, so a failure on one of them reads plainly.
+    let mut names: Vec<String> = [
+        "HELLO",
+        "hello",
+        "Straße",
+        "STRASSE",
+        "Café",
+        "CAFÉ",
+        "Cafe\u{301}",
+        "ReadMe",
+        "İstanbul",
+        "ΣΊΣΥΦΟΣ",
+        "σίσυφος",
+        "\u{FB01}le",
+        "FILE",
+        "\u{01C5}",
+        "\u{1FBC}",
+        "\u{212A}elvin",
+        "\u{212B}ngstr\u{F6}m",
+        "\u{2126}",
+        "\u{0345}",
+        "\u{AC00}",
+        "\u{13A0}\u{13F5}",
+        "\u{1C90}",
+        "",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    while names.len() < 400 {
+        let len = 1 + rng.below(24) as usize;
+        let name: String = (0..len)
+            .map(|_| alphabet[rng.below(alphabet.len() as u64) as usize])
+            .collect();
+        names.push(name);
+    }
+
+    let mut cases = Vec::new();
+    for (i, name) in names.iter().enumerate() {
+        for version in 0..=5 {
+            cases.push(Case {
+                seed: seeds[i % seeds.len()],
+                version,
+                name: name.as_bytes().to_vec(),
+                casefold: true,
+            });
+        }
+    }
+
+    let mut wrong = Vec::new();
+    for batch in cases.chunks(BATCH) {
+        let answers = ask_debugfs(batch);
+        for (case, &(major, minor)) in batch.iter().zip(&answers) {
+            let version = HashVersion::from_u8(case.version).unwrap();
+            let got = casefold_name_hash(&case.name, version, &case.seed);
+            if (got.major, got.minor) != (remap_reserved(major), minor) {
+                wrong.push(format!(
+                    "v{} seed {} {:?}: got ({:#010x}, {:#010x}) debugfs ({major:#010x}, {minor:#010x})",
+                    case.version,
+                    seed_uuid(&case.seed),
+                    String::from_utf8_lossy(&case.name),
+                    got.major,
+                    got.minor
+                ));
+            }
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "{} of {} casefolded hashes differ from debugfs (first 20):\n{}",
+        wrong.len(),
+        cases.len(),
+        wrong[..wrong.len().min(20)].join("\n")
+    );
+    println!(
+        "{} names, {} casefolded hashes checked against debugfs",
+        names.len(),
+        cases.len()
+    );
 }
