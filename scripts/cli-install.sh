@@ -28,13 +28,25 @@ cargo build --locked --release --features cli --bin rust-fs-ext4 --quiet
 built="${CARGO_TARGET_DIR:-$REPO/target}/release/rust-fs-ext4"
 [ -x "$built" ] || { echo "cli-install: cargo built no $built" >&2; exit 1; }
 
-rm -rf "$BIN"
-mkdir -p "$BIN"
-cp "$built" "$BIN/rust-fs-ext4"
-names="$("$BIN/rust-fs-ext4" generate names)"
+# The prefix may not be ours alone (CLI_INSTALL_DIR=$HOME/.local), so bin/
+# is never cleared: only rust-fs-ext4 and its own links are replaced, and a
+# file under one of those names that is not our link is refused.
+names="$("$built" generate names)"
 [ -n "$names" ] || { echo "cli-install: the binary lists no tool names" >&2; exit 1; }
 for name in $names; do
-    ln -s rust-fs-ext4 "$BIN/$name"
+    link="$BIN/$name"
+    if [ -e "$link" ] || [ -L "$link" ]; then
+        [ "$(readlink "$link" 2>/dev/null)" = rust-fs-ext4 ] || {
+            echo "cli-install: $link exists and is not a link to rust-fs-ext4; not replacing it" >&2
+            exit 1
+        }
+    fi
+done
+mkdir -p "$BIN"
+cp "$built" "$BIN/rust-fs-ext4.new"
+mv -f "$BIN/rust-fs-ext4.new" "$BIN/rust-fs-ext4"
+for name in $names; do
+    ln -sfn rust-fs-ext4 "$BIN/$name"
 done
 
 echo "cli:install: staged rust-fs-ext4 and $(echo $names | tr ' ' ',') in $BIN"
