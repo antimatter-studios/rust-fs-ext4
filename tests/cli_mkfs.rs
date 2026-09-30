@@ -131,6 +131,21 @@ fn a_bad_block_size_is_refused_before_the_device_is_opened() {
 }
 
 #[test]
+fn a_non_ascii_uuid_is_a_usage_error_not_a_panic() {
+    // 32 bytes, so the length check passes, with a two-byte character
+    // straddling the first hex pair.
+    let uuid = format!("a\u{e9}{}", "0".repeat(29));
+    assert_eq!(uuid.len(), 32);
+    let img = sized_image("uuid-utf8", SIZE);
+    let out = tool("mkfs.ext4")
+        .args(["-n", "-U", &uuid, &img])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert!(!stderr(&out).contains("panicked"), "{}", stderr(&out));
+}
+
+#[test]
 fn quiet_silences_warnings_from_either_side() {
     let img = sized_image("quiet", SIZE);
     let run = |args: &[&str]| stderr(&ok(tool("mkfs.ext4").args(args)));

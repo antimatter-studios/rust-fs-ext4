@@ -427,6 +427,13 @@ pub fn parse_size(s: &str) -> Result<u64, String> {
 /// A UUID in its text form, with or without dashes.
 fn parse_uuid(s: &str) -> Result<[u8; 16], String> {
     let cleaned: String = s.chars().filter(|c| *c != '-').collect();
+    // Checked before the length, which counts bytes: a multi-byte
+    // character would otherwise be split by the pair slicing below.
+    if let Some(bad) = cleaned.chars().find(|c| !c.is_ascii_hexdigit()) {
+        return Err(format!(
+            "UUID must be hex digits and dashes only, got {bad:?}"
+        ));
+    }
     if cleaned.len() != 32 {
         return Err(format!(
             "UUID must be 32 hex chars (with optional dashes), got {} chars",
