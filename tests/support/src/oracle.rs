@@ -136,8 +136,10 @@ const MAX_SCRIPT_BYTES: usize = 32 * 4096;
 /// `vm.sh up` is idempotent and costs milliseconds when the VM is
 /// already running, which is the normal case: `chore test:oracle` brings
 /// it up for the whole tier. A test process that finds it down boots it
-/// rather than failing — a suite run by hand with a bare `cargo test`
-/// still works, and the chore reaper stops what it left behind.
+/// rather than failing — a suite run by hand still works. Run through
+/// `scripts/test.sh` (every tier is), the run is a harness session, so
+/// the VM it booted comes down and the machine-wide slot is released when
+/// it ends; a bare `cargo test` leaves that to the chore reaper.
 pub(crate) fn session() {
     static SESSION: OnceLock<()> = OnceLock::new();
     SESSION.get_or_init(|| {

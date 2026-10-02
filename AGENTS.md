@@ -244,8 +244,10 @@ machine is not an oracle — so they live in one Debian guest
 is the only way in. `tests/test_contract.rs` fails the suite if a test
 spawns one itself, drives the VM itself, or mounts anything on the host.
 The VM boots once per run (the first oracle call), every later call rides
-one shared SSH connection (~0.1 s per tool invocation), and the chore
-reaper stops it when the invocation ends.
+one shared SSH connection (~0.1 s per tool invocation), and
+`scripts/test.sh` runs the suite inside a harness session (`vm.sh
+session`), so the VM comes down and the machine-wide slot is released when
+the run ends, however it was started.
 
 **We run the Linux tests on Linux.** On a Linux host `chore test` runs
 them here; on macOS it runs `chore test:vm`, which builds and runs the

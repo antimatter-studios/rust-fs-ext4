@@ -6,6 +6,20 @@
 
 The first release whose tarballs carry every tool. 0.7.0 shipped only
 `mkfs.ext4`; the library and its C ABI are unchanged from 0.7.0.
+### Changed
+
+- **A test run gives the harness VM and its machine-wide slot back when it
+  ends, however it was started.** The oracle and kernel tests boot the VM
+  from their own process, and stopping it was left to chore's `after_all`
+  reaper, which runs only inside a chore invocation of this repository: a
+  run made any other way (`scripts/test.sh` by hand, `scripts/tier.sh`) exited
+  with the VM idle and the slot held, and every other repository's VM work
+  queued behind it until the guest's idle deadline. `scripts/test.sh` now runs
+  cargo through the harness's `vm.sh session`, which brings the VM down
+  and releases the slot when the run ends — passed, failed or killed —
+  leaves a VM held with `chore vm:up` alone, and runs cargo as it is in the
+  guest and on a host that cannot run the VM. The harness moves to v0.3.0,
+  the release that provides it (fs-linux-test-harness#37, #36).
 
 ### Fixed
 

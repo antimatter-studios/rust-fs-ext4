@@ -259,7 +259,10 @@ vars:
   # release-cli workflow, which runs `scripts/core.sh package-cli` (#481).
   FS_CORE_REF: v0.2.23
   LINUX_HARNESS_URL: https://github.com/antimatter-studios/fs-linux-test-harness.git
-  LINUX_HARNESS_REF: v0.2.0
+  # v0.3.0 is the release with `vm.sh session`, which the test runner runs
+  # cargo through so a run gives the VM and the machine-wide slot back
+  # however it ends; v0.2.0 answers it with "unknown command".
+  LINUX_HARNESS_REF: v0.3.0
 
 # The harness's consumer tasks, as `chore vm:<task>`. OPTIONAL because the
 # harness is a sibling that `chore siblings` itself checks out: without
@@ -499,9 +502,11 @@ tasks:
     # NO `vm:up` HERE, deliberately. The first oracle call in each test
     # process brings the VM up (idempotent, milliseconds when it is
     # already running) and every later call rides one shared SSH
-    # connection. Nothing holds it, so the `after_all` reaper stops it
-    # when this invocation ends — one boot for the tier, and no VM left
-    # behind by a run that was interrupted.
+    # connection. scripts/test.sh runs cargo inside a harness session
+    # (`vm.sh session`), so the VM comes down and the machine-wide slot is
+    # released when the tier ends, however it ends and however it was
+    # started — one boot for the tier. The `after_all` reaper is the net
+    # for a run that never reached scripts/test.sh.
     cmds:
       - scripts/tools.sh --check
       - 'scripts/tier.sh test:oracle oracle 3800 295000 -- scripts/test.sh --locked --release $(scripts/test-targets.sh oracle) -- --show-output'

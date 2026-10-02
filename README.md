@@ -708,8 +708,9 @@ recipes in `test-disks/guest-build-images.sh`). It is booted by
 (Vagrant + QEMU, KVM on Linux, HVF on macOS; `chore vm:host:check` says
 what the host is missing), and it is booted **once** for a whole run: the
 first oracle call brings it up, every later call rides one shared SSH
-connection (~0.1 s per tool invocation), and the chore reaper stops it
-when the invocation ends.
+connection (~0.1 s per tool invocation), and the run brings it down when it
+ends: `scripts/test.sh` runs the suite inside a harness session, which also
+releases the machine-wide VM slot however the run ends.
 
 **We run the Linux tests on Linux.** On a Linux host, that host is Linux,
 so `chore test` compiles and runs the suite natively (with the tools and
