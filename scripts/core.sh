@@ -6,6 +6,7 @@
 #   scripts/core.sh semver-check               no undeclared public-API break
 #   scripts/core.sh family-check               this repository keeps no copy of these
 #   scripts/core.sh guest-rust-toolchain       in a test VM: the pinned toolchain, installed
+#   scripts/core.sh ci-gate                    ci-ok needs every job; the guard names ci-ok alone
 #
 # THIS FILE IS THE SAME IN EVERY REPOSITORY, byte for byte, and its canonical
 # copy is rust-fs-core's scripts/core.sh. It is the one piece a repository has
@@ -30,20 +31,20 @@
 # "core is broken" reported as "core is missing" is the quieter failure.
 #
 # The script runs with FS_CORE_CALLER set to this repository's root, which is
-# where it reads logs and manifests from.
+# where it reads logs, manifests and workflows from.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 usage() {
-    echo "usage: scripts/core.sh test-floor|semver-check|family-check|guest-rust-toolchain [ARG...]" >&2
+    echo "usage: scripts/core.sh test-floor|semver-check|family-check|guest-rust-toolchain|ci-gate [ARG...]" >&2
     exit 2
 }
 [ $# -ge 1 ] || usage
 NAME="$1"
 shift
 case "$NAME" in
-    test-floor|semver-check|family-check|guest-rust-toolchain) ;;
+    test-floor|semver-check|family-check|guest-rust-toolchain|ci-gate) ;;
     *) echo "core.sh: rust-fs-core has no family script named '$NAME'." >&2; usage ;;
 esac
 SCRIPT_REL="scripts/$NAME.sh"

@@ -249,13 +249,13 @@ vars:
   # scripts/tier.sh reads scripts/output-budget.sh out of core. v0.2.11 is the
   # first release that packages it and v0.2.13 is the first that carries the
   # quiet-failure behaviour, so this pin cannot go back below v0.2.13 while
-  # the tiers read the wrapper from core. It is v0.2.16 because the floor and
-  # the semver check are core's too from that release, run through
-  # scripts/core.sh, and it carries the `cli` plumbing and SHARE fix that
-  # v0.2.15 brought. It is v0.2.17 because test:vm's guest installs its
-  # toolchain through `scripts/core.sh guest-rust-toolchain`, which that
-  # release added.
-  FS_CORE_REF: v0.2.17
+  # the tiers read the wrapper from core. The floor and the semver check are
+  # core's from v0.2.16, run through scripts/core.sh, and it carries the
+  # `cli` plumbing and SHARE fix that v0.2.15 brought. test:vm's guest
+  # installs its toolchain through `scripts/core.sh guest-rust-toolchain`,
+  # which v0.2.17 added. It is v0.2.18 because ci-gate is core's from that
+  # release, run as `scripts/core.sh ci-gate`.
+  FS_CORE_REF: v0.2.18
   LINUX_HARNESS_URL: https://github.com/antimatter-studios/fs-linux-test-harness.git
   LINUX_HARNESS_REF: v0.2.0
 
@@ -797,7 +797,7 @@ tasks:
       # The family scripts are rust-fs-core's alone: fails on a committed copy,
       # a scripts/core.sh that differs from core's, or a call to a local copy.
       - bash scripts/core.sh family-check
-      - scripts/ci-gate.sh
+      - bash scripts/core.sh ci-gate
       - scripts/check-provenance.sh
       - cargo fmt --all --check
       # `--features cli`: the command-line tools' target requires it, and
@@ -864,4 +864,4 @@ tasks:
     # strings, and as a cargo test counted towards the executed-test floor the
     # gate itself enforces.
     cmds:
-      - scripts/ci-gate.sh
+      - bash scripts/core.sh ci-gate
