@@ -8,7 +8,7 @@ version = "0.2.18"
 
 [[package]]
 name = "am-fs-ext4"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "am-fs-core",
  "bitflags",

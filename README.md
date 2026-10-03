@@ -378,6 +378,16 @@ ticked. Numbering follows the plan doc.
 
 Highlights from the last 50 commits, grouped by date.
 
+### 2026-10-03 — 0.7.1 — the tools are released
+
+- The release tarball ships every tool: `bin/rust-fs-ext4` with
+  `mkfs.ext4`, `fsck.ext4` and `fs.ext4` linked to it, their man pages and
+  the zsh, bash and fish completions, where 0.7.0 shipped only
+  `mkfs.ext4` (#475).
+- No library or C ABI change.
+
+See [CHANGELOG.md](CHANGELOG.md#071--2026-10-03) for the full notes.
+
 ### 2026-09-30 — 0.7.0 — the volume label, whole and writable
 
 - **Breaking (C ABI):** `fs_ext4_volume_info_t.volume_name` is 17 bytes, so

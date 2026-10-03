@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.7.1] — 2026-10-03
+
+The first release whose tarballs carry every tool. 0.7.0 shipped only
+`mkfs.ext4`; the library and its C ABI are unchanged from 0.7.0.
+
 ### Fixed
 
 - **The release tarball ships every tool (#475).** Through 0.7.0 it held

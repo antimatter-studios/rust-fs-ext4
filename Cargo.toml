@@ -1,6 +1,6 @@
 [package]
 name = "am-fs-ext4"
-version = "0.7.0"
+version = "0.7.1"
 edition = "2021"
 # The oldest toolchain the library and the binaries build on, so an older
 # one gets cargo's "requires rustc" message rather than a wall of E0658.
