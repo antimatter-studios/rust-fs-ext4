@@ -7,8 +7,9 @@ on:
 
 # EVERY JOB READS, AND ONE JOB WRITES (#329).
 #
-# `contents: write` is held by the `release` job alone, which checks
-# nothing out and runs only GitHub's own artifact and attestation actions. Every action here is pinned to
+# `contents: write` is held by the `cli` job alone, which calls
+# rust-fs-core's release-cli workflow; there, only its `attach` job holds
+# it, and that job checks nothing out. Every action here is pinned to
 # a commit SHA, with the tag it stood for beside it: a tag is a pointer its
 # owner can move, and a job holding a token should not run whatever it
 # points at today. Every checkout sets `persist-credentials: false`, so no
@@ -70,156 +71,35 @@ jobs:
       - name: chore test
         run: chore test
 
-  # Build the CLI as a downloadable binary, so it can be installed with a
-  # package manager rather than `cargo install`.
+  # THE RELEASE TARBALL is rust-fs-core's release-cli workflow, called here
+  # (#481). It builds the multi-call binary natively on darwin-arm64 and
+  # linux-x86_64, packages it with `scripts/core.sh package-cli` from what
+  # Cargo.toml's [package.metadata.package-cli] declares -- bin/rust-fs-ext4,
+  # mkfs.ext4, fsck.ext4 and fs.ext4 as relative symlinks to it, the man
+  # pages and completions the binary writes, share/rust-fs-ext4/CAVEATS and
+  # LICENSE -- and checks it; then its one write job attests both tarballs
+  # and attaches them to this tag's release. This repository once carried
+  # its own copy of all of that, and the family's copies drifted.
   #
-  # THE DOTTED NAMES ARE MADE HERE. Cargo refuses a dot in a target name
-  # ("invalid character '.' in crate name"), so the one binary builds as
-  # the repository's name, `rust-fs-ext4`, and dispatches on the name it
-  # was started under. scripts/package-cli.sh links `mkfs.ext4`,
-  # `fsck.ext4` and `fs.ext4` to it as relative symlinks -- the names the
-  # format's convention uses, and the ones `mkfs -t ext4` and fsck(8)
-  # resolve to -- so no build-system name appears in a public artifact,
-  # and an installer never has to rename anything.
+  # Pinned to a commit SHA, with the tag it stood for beside it: the called
+  # workflow runs with the grants below, and a tag can be moved. core-ref
+  # is the tag chores.yml pins the sibling to, and toolchain the one
+  # rust-toolchain.toml pins; tests/ci_profile.rs holds all three to that.
   #
-  # Native builds only, one runner per platform: cross-compiling Rust
-  # needs either a cross toolchain or an emulator, and neither is worth
-  # it for two targets that GitHub already provides natively.
-  package-cli:
-    name: package the tools (${{ matrix.label }})
-    needs: [test]
-    # Read-only. A leg uploads its tarball as a workflow artifact; the
-    # `release` job publishes them together once every leg has passed.
-    strategy:
-      # One platform failing should not hide whether the other built.
-      fail-fast: false
-      matrix:
-        include:
-          - runner: macos-latest
-            label: darwin-arm64
-          - runner: ubuntu-latest
-            label: linux-x86_64
-    runs-on: ${{ matrix.runner }}
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-        with:
-          persist-credentials: false
-
-      # The path dependency, at the ref chores.yml pins (read from there
-      # rather than restated; chore itself has no build for every runner
-      # this job uses).
-      - name: clone am-fs-core sibling
-        shell: bash
-        run: |
-          set -euo pipefail
-          pin() { sed -n "s/^  $1: *//p" chores.yml | tr -d '\r'; }
-          git clone --depth 1 --branch "$(pin FS_CORE_REF)" "$(pin FS_CORE_URL)" ../rust-fs-core
-
-      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable, 2026-09-27
-        with:
-          toolchain: 1.95.0
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-
-      - name: build the multi-call binary
-        shell: bash
-        run: cargo build --release --locked --features cli --bin rust-fs-ext4
-
-      # scripts/package-cli.sh stages the tarball as an install prefix --
-      # bin/rust-fs-ext4, each dotted name a relative symlink to it, the man
-      # pages and completions the binary writes, share/rust-fs-ext4/CAVEATS
-      # and LICENSE -- so an installer copies it whole and never names a
-      # tool, and then checks it: exactly that layout, every name answering
-      # --help, and a --version naming this crate and this tag's version.
-      # A tarball whose tools will not run is worse than no tarball; the
-      # failure would otherwise surface as a user's bug report rather than
-      # a red build. Formatting a real image with mkfs.ext4 and checking it
-      # with e2fsck is what the test job's tests/cli_mkfs_oracle.rs covers.
-      - name: package and check the tarball
-        id: pack
-        shell: bash
-        run: |
-          set -euo pipefail
-          tarball="$(scripts/package-cli.sh "${GITHUB_REF_NAME#v}" "${{ matrix.label }}")"
-          echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
-
-          # The formula needs this to verify the download; printing it
-          # into the job summary means updating a formula is a copy, not
-          # a local re-download and re-hash.
-          {
-            echo "### $tarball"
-            echo ""
-            echo '```'
-            echo "sha256 $(shasum -a 256 "$tarball" | cut -d' ' -f1)"
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      # AN ARTIFACT, NOT THE RELEASE. A leg that published its own asset
-      # did so whether or not the other leg later failed, and with
-      # `fail-fast: false` that left a release with one platform on it
-      # (#329). tests/scripts/test-release-outside-matrix.sh fails a
-      # matrix job that touches the release.
-      - name: keep the tarball for the release job
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: cli-${{ matrix.label }}
-          path: ${{ steps.pack.outputs.tarball }}
-          if-no-files-found: error
-          retention-days: 7
-
-  # The one job that writes to the repository, and it runs only when every
-  # leg of package-cli passed. It checks nothing out: it downloads the legs'
-  # tarballs, attests their provenance, and hands them to `gh`.
-  release:
-    name: publish the GitHub release
-    needs: [package-cli]
-    runs-on: ubuntu-latest
+  # The attestation is signed by the called workflow, so a download is
+  # checked with `gh attestation verify <tarball> --repo
+  # christhomas/rust-fs-ext4 --signer-workflow
+  # antimatter-studios/rust-fs-core/.github/workflows/release-cli.yml`.
+  cli:
+    needs: [test, publish]
     permissions:
       contents: write
-      # Build provenance: the OIDC token signs the attestation, and
-      # attestations: write stores it against this repository.
       id-token: write
       attestations: write
-    steps:
-      - name: collect every leg's tarball
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          pattern: cli-*
-          path: dist
-          merge-multiple: true
-
-      # A signed statement that each tarball was built by this workflow from
-      # this commit, before anything is published. An installer checks it
-      # with `gh attestation verify <tarball> --repo <owner>/<repo>
-      # --signer-workflow <owner>/<repo>/.github/workflows/release.yml`.
-      - name: attest the tarballs' build provenance
-        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
-        with:
-          subject-path: dist/*.tar.gz
-
-      # The release for a tag may not exist yet — this repo's tags have
-      # historically been published to crates.io without a GitHub
-      # release. `gh release create` with the assets uploads them to a
-      # draft and publishes it once they are all there; a release that
-      # already exists (a re-run) gets them in one `upload`.
-      - name: create the release, or upload to it
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          tag="$GITHUB_REF_NAME"
-          shopt -s nullglob
-          assets=(dist/*.tar.gz)
-          if [ "${#assets[@]}" -ne 2 ]; then
-            echo "expected 2 tarballs (one per package-cli leg), found ${#assets[@]}: ${assets[*]}" >&2
-            exit 1
-          fi
-          if gh release view "$tag" >/dev/null 2>&1; then
-            gh release upload "$tag" "${assets[@]}" --clobber
-          else
-            gh release create "$tag" "${assets[@]}" --title "$tag" --generate-notes
-          fi
+    uses: antimatter-studios/rust-fs-core/.github/workflows/release-cli.yml@0f7714910080f5f2a080ed6032cccf19bc338064 # v0.2.23
+    with:
+      core-ref: v0.2.23
+      toolchain: 1.95.0
 
   publish:
     name: publish to crates.io

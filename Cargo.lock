@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "am-fs-core"
-version = "0.2.18"
+version = "0.2.23"
 dependencies = [
  "clap",
  "clap_complete",

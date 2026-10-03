@@ -253,9 +253,11 @@ vars:
   # core's from v0.2.16, run through scripts/core.sh, and it carries the
   # `cli` plumbing and SHARE fix that v0.2.15 brought. test:vm's guest
   # installs its toolchain through `scripts/core.sh guest-rust-toolchain`,
-  # which v0.2.17 added. It is v0.2.18 because ci-gate is core's from that
-  # release, run as `scripts/core.sh ci-gate`.
-  FS_CORE_REF: v0.2.18
+  # which v0.2.17 added. v0.2.18 is where ci-gate became core's, from that
+  # release, run as `scripts/core.sh ci-gate`. It is v0.2.23 because the
+  # release tarball is core's from that release: release.yml calls its
+  # release-cli workflow, which runs `scripts/core.sh package-cli` (#481).
+  FS_CORE_REF: v0.2.23
   LINUX_HARNESS_URL: https://github.com/antimatter-studios/fs-linux-test-harness.git
   LINUX_HARNESS_REF: v0.2.0
 

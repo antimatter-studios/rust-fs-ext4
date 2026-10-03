@@ -499,7 +499,9 @@ jobs:
         id: tier
         run: chore test:cli
       # THE RELEASE TARBALL, built here so a release is not the first time
-      # it is put together: scripts/package-cli.sh stages the install prefix
+      # it is put together: rust-fs-core's package-cli, run through
+      # scripts/core.sh as release.yml's called workflow runs it, stages the
+      # install prefix Cargo.toml's [package.metadata.package-cli] declares
       # from the binary cli:install built, then refuses it unless it holds
       # exactly that layout, every dotted name is a relative symlink to
       # bin/rust-fs-ext4, every name has its man page and completions,
@@ -511,7 +513,7 @@ jobs:
           version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)"
           mkdir -p tmp/package
           cd tmp/package
-          tarball="$(../../scripts/package-cli.sh "$version" linux-x86_64 "${CARGO_TARGET_DIR:-$GITHUB_WORKSPACE/target}/release")"
+          tarball="$(bash ../../scripts/core.sh package-cli "$version" linux-x86_64 "${CARGO_TARGET_DIR:-$GITHUB_WORKSPACE/target}/release" | tail -n 1)"
           tar -tzvf "$tarball"
       - name: Keep the tier logs
         # Not before the tier ran: there is no log then, and this step's red

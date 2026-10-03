@@ -18,6 +18,16 @@ repository = "https://github.com/christhomas/rust-fs-ext4"
 # try to include it and fail on the nightly-only dependency.
 exclude = ["fuzz"]
 
+# WHAT THE RELEASE TARBALL SHIPS, read by rust-fs-core's package-cli
+# (`scripts/core.sh package-cli`, run by release.yml's called release-cli
+# workflow and by ci.yml's `cli` job). Every dotted name the multi-call
+# binary answers to, and its man section; the binary's own `generate
+# names` must list exactly these. The CAVEATS are packaging/CAVEATS, the
+# default.
+[package.metadata.package-cli]
+names = { "mkfs.ext4" = 8, "fsck.ext4" = 8, "fs.ext4" = 1 }
+licenses = ["LICENSE"]
+
 # `tests/support` is a member so clippy reaches it: clippy lints
 # workspace members only, so as a bare path dependency no flag on the
 # root invocation linted it (#410). The root package stays the default
@@ -84,7 +94,7 @@ caseless = "0.2"
 # Strictly additive — ext4's existing BlockDevice trait is unchanged; this
 # adds a bridge module so external `fs_core::BlockDevice` implementors
 # (a `Qcow2Reader`, a `SliceReader`, etc.) can be mounted by ext4.
-am-fs-core = { path = "../rust-fs-core", version = "0.2.18" }
+am-fs-core = { path = "../rust-fs-core", version = "0.2.23" }
 # The command-line tools' argument parser, behind the `cli` feature (see
 # the `rust-fs-ext4` target above). No derive: the builder API keeps each
 # tool's command a function the man pages and completions can be made from.

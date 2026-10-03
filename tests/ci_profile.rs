@@ -1469,7 +1469,7 @@ fn the_release_gate_builds_fixtures_in_the_harness_vm_and_runs_chore_test() {
         }
     }
 
-    for shipping in ["package-cli", "publish"] {
+    for shipping in ["cli", "publish"] {
         assert!(
             needs_of(job(&document, shipping, &path))
                 .iter()
