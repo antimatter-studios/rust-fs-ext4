@@ -3083,7 +3083,44 @@ fn the_fuzz_reproducers_are_kept_on_a_cancelled_run() {
 }
 
 mod dispatch_inputs {
-    use super::inputs_interpolated;
+    use super::{inputs_interpolated, steps_interpolating_inputs};
+    use std::path::Path;
+
+    /// A job that calls a reusable workflow has no `steps:`; the scan
+    /// passes over it and still reports the job after it (#485).
+    #[test]
+    fn a_reusable_workflow_call_is_passed_over_and_the_next_job_still_checked() {
+        let workflow = "\
+on: workflow_dispatch
+jobs:
+  cli:
+    uses: owner/repo/.github/workflows/release-cli.yml@0123456789abcdef0123456789abcdef01234567
+    with:
+      version: ${{ inputs.x }}
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo ${{ inputs.x }}
+";
+        assert_eq!(
+            steps_interpolating_inputs(workflow, Path::new("call.yml")),
+            vec!["jobs.build: ${{ inputs.x }}"]
+        );
+    }
+
+    /// A job with neither `steps:` nor a job-level `uses:` is malformed,
+    /// and the scan still refuses it rather than passing over it (#485).
+    #[test]
+    #[should_panic(expected = "jobs.broken has no steps")]
+    fn a_job_with_no_steps_and_no_uses_still_fails() {
+        let workflow = "\
+on: workflow_dispatch
+jobs:
+  broken:
+    runs-on: ubuntu-latest
+";
+        steps_interpolating_inputs(workflow, Path::new("broken.yml"));
+    }
 
     #[test]
     fn an_input_in_a_run_script_is_found() {
