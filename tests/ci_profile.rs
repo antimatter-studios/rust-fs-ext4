@@ -1479,6 +1479,129 @@ fn the_release_gate_builds_fixtures_in_the_harness_vm_and_runs_chore_test() {
     }
 }
 
+/// The reusable workflow that packages, attests and attaches the release
+/// tarball for every repository in the family.
+const CORE_RELEASE_CLI: &str = "antimatter-studios/rust-fs-core/.github/workflows/release-cli.yml";
+
+/// THE RELEASE TARBALL IS PACKAGED BY RUST-FS-CORE, NOT BY A COPY HERE
+/// (#481). Every repository once carried its own `package-cli` matrix,
+/// attest-and-attach job and `scripts/package-cli.sh`, and the copies
+/// drifted. `release.yml` now calls core's `release-cli.yml` from one job,
+/// `cli`, and keeps none of them.
+///
+/// The call is pinned to a commit SHA, not a tag: the called workflow runs
+/// with this repository's `contents: write`, and a tag is a pointer its
+/// owner can move. Its `core-ref` is the tag `chores.yml` pins the sibling
+/// to, and its `toolchain` the one `rust-toolchain.toml` pins, so the
+/// tarball is built from the same sources the gate tested. And it ships
+/// only after `test` passed and the crate is on crates.io.
+#[test]
+fn the_release_tarball_is_packaged_by_core_release_cli_workflow_at_a_pinned_sha() {
+    let root = manifest_dir();
+    let path = workflow_path("release.yml");
+    let text = read_or_panic(&path);
+    let document = load_document(&text, &path);
+
+    let cli = job(&document, "cli", &path);
+    let uses = field(cli, "uses")
+        .and_then(Yaml::as_str)
+        .unwrap_or_else(|| panic!("release jobs.cli must call {CORE_RELEASE_CLI} with `uses:`"));
+    let (workflow, sha) = uses
+        .split_once('@')
+        .unwrap_or_else(|| panic!("release jobs.cli calls {uses:?}, with no `@<sha>`"));
+    assert_eq!(
+        workflow, CORE_RELEASE_CLI,
+        "release jobs.cli must call rust-fs-core's release-cli workflow"
+    );
+    assert!(
+        sha.len() == 40
+            && sha
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+        "release jobs.cli calls {CORE_RELEASE_CLI} at {sha:?}, which is not a 40-hex commit SHA: \
+         a tag can be moved under a job that holds a write token"
+    );
+
+    let with =
+        field(cli, "with").unwrap_or_else(|| panic!("release jobs.cli passes no `with:` inputs"));
+    let input = |name: &str| {
+        field(with, name)
+            .and_then(Yaml::as_str)
+            .unwrap_or_else(|| panic!("release jobs.cli passes no `{name}` input"))
+            .to_string()
+    };
+    let core_pin = am_fs_core_versions_declared(&read_or_panic(&root.join("chores.yml")))
+        .into_iter()
+        .next()
+        .map(|(_, v)| v)
+        .expect("chores.yml declares the am-fs-core pin");
+    assert_eq!(
+        input("core-ref"),
+        format!("v{core_pin}"),
+        "release jobs.cli must build against the rust-fs-core tag chores.yml pins"
+    );
+    let toolchain = read_or_panic(&root.join("rust-toolchain.toml"))
+        .lines()
+        .find_map(|line| quoted_value_after(line.trim(), "channel"))
+        .expect("rust-toolchain.toml names its channel");
+    assert_eq!(
+        input("toolchain"),
+        toolchain,
+        "release jobs.cli must build with the toolchain rust-toolchain.toml pins"
+    );
+
+    let permissions =
+        field(cli, "permissions").unwrap_or_else(|| panic!("release jobs.cli grants nothing"));
+    for grant in ["contents", "id-token", "attestations"] {
+        assert_eq!(
+            field(permissions, grant).and_then(Yaml::as_str),
+            Some("write"),
+            "release jobs.cli must grant `{grant}: write`, which the attach job needs"
+        );
+    }
+    let needs = needs_of(cli);
+    for needed in ["test", "publish"] {
+        assert!(
+            needs.iter().any(|n| n == needed),
+            "release jobs.cli must need jobs.{needed}: nothing ships untested or unpublished"
+        );
+    }
+
+    // No copy of what core now does is left behind.
+    for copy in [
+        "scripts/package-cli.sh",
+        "tests/scripts/test-package-cli.sh",
+    ] {
+        assert!(
+            !root.join(copy).exists(),
+            "{copy} is a local copy of rust-fs-core's packaging; delete it"
+        );
+    }
+    let jobs = field(&document, "jobs")
+        .and_then(Yaml::as_mapping)
+        .unwrap_or_else(|| panic!("{} has no jobs", path.display()));
+    for (name, body) in jobs.iter() {
+        let name = name.as_str().unwrap_or("?");
+        assert!(
+            !["package-cli", "release"].contains(&name),
+            "release.yml still has its own jobs.{name}; rust-fs-core's release-cli.yml packages \
+             and attaches the tarball"
+        );
+        for step in field(body, "steps")
+            .and_then(Yaml::as_sequence)
+            .into_iter()
+            .flatten()
+        {
+            let uses = field(step, "uses").and_then(Yaml::as_str).unwrap_or("");
+            assert!(
+                !run_of(step).contains("package-cli") && !uses.contains("attest-build-provenance"),
+                "release.yml jobs.{name} packages or attests the tarball itself; \
+                 rust-fs-core's release-cli.yml does that"
+            );
+        }
+    }
+}
+
 /// THE DISTINCTION THIS REPOSITORY NEEDS THAT A PORTED COPY WOULD MISS.
 ///
 /// A workflow carrying a checking debug run under a name other than
