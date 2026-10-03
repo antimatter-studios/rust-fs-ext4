@@ -103,7 +103,8 @@ fn read_or_panic(path: &Path) -> String {
 /// that never asks the build anything buys nothing over deleting it.
 ///
 /// `scripts/test.sh` IS `cargo test`, and is read as one. It picks a
-/// scratch directory and then runs `cargo test --features cli "$@"`, so every argument
+/// scratch directory and then runs `cargo test --features cli "$@"` (inside the
+/// harness's `vm.sh session` when the harness is there), so every argument
 /// it is given -- `--release`, `-r` -- is cargo's, and the rules above
 /// apply to it word for word. `chores.yml` runs the suite through it.
 /// That the script still ends that way is pinned by
@@ -2677,14 +2678,19 @@ tasks:
     }
 
     /// `scripts/test.sh` is read as `cargo test`, which is only true while
-    /// it ends by handing cargo every argument it was given.
+    /// it ends by handing cargo every argument it was given. It may run
+    /// cargo inside the harness's `vm.sh session`, which runs the command
+    /// it is given as it is, arguments and status included; that prefix,
+    /// spelled exactly so, is the only thing allowed in front of cargo.
     #[test]
     fn scripts_test_sh_is_still_cargo_test_with_its_arguments() {
+        const SESSION: &str = "${session[@]+\"${session[@]}\"} ";
         let script = super::read_or_panic(&super::manifest_dir().join(super::TEST_WRAPPER));
         let last = script
             .lines()
             .map(str::trim)
-            .rfind(|line| !line.is_empty() && !line.starts_with('#'));
+            .rfind(|line| !line.is_empty() && !line.starts_with('#'))
+            .map(|line| line.strip_prefix(SESSION).unwrap_or(line));
         assert_eq!(
             last,
             Some("cargo test --features cli \"$@\""),
