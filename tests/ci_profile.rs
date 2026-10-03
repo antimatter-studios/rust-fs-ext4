@@ -2967,6 +2967,10 @@ fn inputs_interpolated(run: &str) -> Vec<String> {
 }
 
 /// Every step of every job in `workflow` whose `run:` interpolates an input.
+///
+/// A job that calls a reusable workflow (a job-level `uses:`) has no
+/// steps here and runs no shell of its own: its `with:` values are
+/// passed as inputs, not pasted into a script, so it is not scanned.
 fn steps_interpolating_inputs(workflow: &str, path: &Path) -> Vec<String> {
     let document = load_document(workflow, path);
     let Some(jobs) = field(&document, "jobs").and_then(Yaml::as_mapping) else {
@@ -2975,6 +2979,9 @@ fn steps_interpolating_inputs(workflow: &str, path: &Path) -> Vec<String> {
     let mut offending = Vec::new();
     for (name, job) in jobs {
         let name = name.as_str().unwrap_or("?");
+        if field(job, "uses").is_some() {
+            continue;
+        }
         for step in steps_of(job, name) {
             for expression in inputs_interpolated(run_of(step)) {
                 offending.push(format!("jobs.{name}: {expression}"));
