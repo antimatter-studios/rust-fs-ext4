@@ -3542,3 +3542,46 @@ mod core_pin_parser {
         assert_eq!(as_version("v0.2.13"), Some("0.2.13".to_string()));
     }
 }
+
+/// Every commit on `main` gets a whole CI run. With `cancel-in-progress: true`
+/// for every event, a merge cancelled the run of the merge before it, and
+/// `ci-ok` failed on jobs that were cancelled rather than broken: a red mark on
+/// a commit nobody had finished testing. And GitHub keeps one pending run per
+/// concurrency group, so a third merge cancels a second one still queued even
+/// with cancelling switched off. So a push is a group of its own, keyed by its
+/// commit, and only a pull request's superseded run is cancelled.
+#[test]
+fn ci_cancels_only_a_pull_requests_superseded_run() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".github/workflows/ci.yml");
+    let text = std::fs::read_to_string(&path).expect("read ci.yml");
+    let (mut group, mut cancel) = (None, None);
+    let mut inside = false;
+    for line in text.lines() {
+        if line.starts_with("concurrency:") {
+            inside = true;
+            continue;
+        }
+        if inside {
+            if !line.starts_with(' ') && !line.trim().is_empty() {
+                break;
+            }
+            if let Some(v) = line.trim().strip_prefix("group:") {
+                group = Some(v.trim().to_string());
+            }
+            if let Some(v) = line.trim().strip_prefix("cancel-in-progress:") {
+                cancel = Some(v.trim().to_string());
+            }
+        }
+    }
+    assert_eq!(
+        cancel.as_deref(),
+        Some("${{ github.event_name == 'pull_request' }}"),
+        "ci.yml cancels a run that is not a pull request's"
+    );
+    let group = group.expect("ci.yml declares a concurrency group");
+    assert!(
+        group.contains("github.event.pull_request.number || github.sha"),
+        "ci.yml's concurrency group is shared between pushes, so a queued push run is \
+         cancelled by the next: {group}"
+    );
+}
