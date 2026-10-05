@@ -262,7 +262,10 @@ vars:
   # v0.3.0 is the release with `vm.sh session`, which the test runner runs
   # cargo through so a run gives the VM and the machine-wide slot back
   # however it ends; v0.2.0 answers it with "unknown command".
-  LINUX_HARNESS_REF: v0.3.0
+  # v0.4.0: concurrent `vm.sh up` calls of one machine wait for the boot
+  # under way instead of racing it, a halt that hangs is forced, and the
+  # SSH forward port is picked at boot when the configured one is taken.
+  LINUX_HARNESS_REF: v0.4.0
 
 # The harness's consumer tasks, as `chore vm:<task>`. OPTIONAL because the
 # harness is a sibling that `chore siblings` itself checks out: without
