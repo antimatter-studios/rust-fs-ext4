@@ -20,12 +20,12 @@
 #
 # STEP 2: every tests/cli/test-*.sh, by glob, so a new one needs no edit
 # here. Each prints its failures, a `test result: ok. N passed; ...` line
-# (the count scripts/test-floor.sh reads, as it does cargo's), and LAST
+# (the count ../rust-fs-core/scripts/test-floor.sh reads, as it does cargo's), and LAST
 # `<name>: all checks passed`. A file that exits 0 without that last line
 # stopped early and is a failure: `exit 0` part-way through is not evidence
 # a file finished.
 #
-# Quiet: the tier runs under scripts/tier.sh, which keeps the whole run in
+# Quiet: the tier runs under ../rust-fs-core/scripts/tier.sh, which keeps the whole run in
 # tmp/logs/cli.log.
 #
 # CLI_TESTS names another directory of test-*.sh files, for

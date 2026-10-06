@@ -56,7 +56,7 @@ fi
 # machine-wide slot, ONE for every repository on the machine. Left to
 # chore's `after_all` reaper, which runs only inside a chore invocation of
 # this repository, a run that reached cargo any other way (this script by
-# hand, scripts/tier.sh) exited with the VM idle and the slot held, and
+# hand, ../rust-fs-core/scripts/tier.sh) exited with the VM idle and the slot held, and
 # every other repository's VM work queued behind it until the guest's idle
 # deadline. `vm.sh session` runs cargo inside a harness session: the VM
 # comes down and the slot is released when the run ends, passed, failed or

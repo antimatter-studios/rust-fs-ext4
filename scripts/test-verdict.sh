@@ -2,7 +2,7 @@
 # test-verdict.sh TIER [TIER...]  the last line a green `chore test` prints
 #
 # One number and one path. Each named tier has a log in tmp/logs/<tier>.log
-# (written by scripts/tier.sh); this reads the cargo result lines out of them
+# (written by ../rust-fs-core/scripts/tier.sh); this reads the cargo result lines out of them
 # and prints the total.
 #
 # WHAT THE NUMBER COUNTS is EXECUTIONS, not distinct tests: `chore test` runs

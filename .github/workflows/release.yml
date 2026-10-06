@@ -73,7 +73,7 @@ jobs:
 
   # THE RELEASE TARBALL is rust-fs-core's release-cli workflow, called here
   # (#481). It builds the multi-call binary natively on darwin-arm64 and
-  # linux-x86_64, packages it with `scripts/core.sh package-cli` from what
+  # linux-x86_64, packages it with `../rust-fs-core/scripts/package-cli.sh` from what
   # Cargo.toml's [package.metadata.package-cli] declares -- bin/rust-fs-ext4,
   # mkfs.ext4, fsck.ext4 and fs.ext4 as relative symlinks to it, the man
   # pages and completions the binary writes, share/rust-fs-ext4/CAVEATS and
@@ -96,9 +96,9 @@ jobs:
       contents: write
       id-token: write
       attestations: write
-    uses: antimatter-studios/rust-fs-core/.github/workflows/release-cli.yml@9e900154a7dff2a6c8f136db31def33bed9f09cc # v0.3.0
+    uses: antimatter-studios/rust-fs-core/.github/workflows/release-cli.yml@6615915c4c1625f64efc8d7ea618284f48b87499 # v0.3.3
     with:
-      core-ref: v0.3.0
+      core-ref: v0.3.3
       toolchain: 1.95.0
 
   publish:

@@ -11,6 +11,15 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **The family's scripts run in place from rust-fs-core, and this repository
+  keeps no copy.** `scripts/core.sh` and `scripts/tier.sh` are gone; CI and
+  chores run `../rust-fs-core/scripts/NAME.sh` at the pinned version
+  (rust-fs-core 0.3.3, #212).
+- **A release's notes are its CHANGELOG section**, and a tag the CHANGELOG
+  does not describe stops before anything is published (rust-fs-core#209).
+
 ## [0.7.2] — 2026-10-06
 
 ### Renamed

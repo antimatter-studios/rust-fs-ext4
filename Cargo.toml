@@ -19,7 +19,7 @@ repository = "https://github.com/antimatter-studios/rust-fs-ext4"
 exclude = ["fuzz"]
 
 # WHAT THE RELEASE TARBALL SHIPS, read by rust-fs-core's package-cli
-# (`scripts/core.sh package-cli`, run by release.yml's called release-cli
+# (`../rust-fs-core/scripts/package-cli.sh`, run by release.yml's called release-cli
 # workflow and by ci.yml's `cli` job). Every dotted name the multi-call
 # binary answers to, and its man section; the binary's own `generate
 # names` must list exactly these. The CAVEATS are packaging/CAVEATS, the
@@ -99,7 +99,7 @@ caseless = "0.2"
 # Strictly additive — ext4's existing BlockDevice trait is unchanged; this
 # adds a bridge module so external `fs_core::BlockDevice` implementors
 # (a `Qcow2Reader`, a `SliceReader`, etc.) can be mounted by ext4.
-rust-fs-core = { path = "../rust-fs-core", version = "0.3.0" }
+rust-fs-core = { path = "../rust-fs-core", version = "0.3.3" }
 # The command-line tools' argument parser, behind the `cli` feature (see
 # the `rust-fs-ext4` target above). No derive: the builder API keeps each
 # tool's command a function the man pages and completions can be made from.

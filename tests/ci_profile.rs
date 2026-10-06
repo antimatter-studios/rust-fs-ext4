@@ -981,7 +981,7 @@ fn runs_chore(steps: &[Yaml], task: &str) -> bool {
         .any(|step| chore_invocations(run_of(step)).iter().any(|t| t == task))
 }
 
-/// Whether running `chore <task>` reaches `scripts/tier.sh` -- the one
+/// Whether running `chore <task>` reaches `../rust-fs-core/scripts/tier.sh` -- the one
 /// thing that writes `tmp/logs/<tier>.log` -- following `task:` items
 /// and `"{{.CHORE_EXE}}" <task>` commands down. A task naming itself
 /// does not loop.
@@ -1002,7 +1002,7 @@ fn chore_writes_a_tier_log(
     path.push(task.to_string());
     let writes = body.cmds.iter().any(|cmd| match cmd {
         ChoreCmd::Shell { command, .. } => {
-            command.contains("scripts/tier.sh")
+            command.contains("../rust-fs-core/scripts/tier.sh")
                 // A task re-entering chore spells it `"{{.CHORE_EXE}}"`.
                 || chore_invocations(&command.replace("\"{{.CHORE_EXE}}\"", "chore"))
                     .iter()
@@ -1062,7 +1062,7 @@ fn unguarded_log_uploads(workflow: &str, chores: &str) -> Vec<String> {
                     return false;
                 };
                 let script = run_of(earlier);
-                let writes = script.contains("scripts/tier.sh")
+                let writes = script.contains("../rust-fs-core/scripts/tier.sh")
                     || chore_invocations(script)
                         .iter()
                         .any(|task| chore_writes_a_tier_log(&tasks, task, &mut Vec::new()));
@@ -3157,7 +3157,7 @@ tasks:
   lint:
     cmds: ['cargo fmt --check']
   test:unit:
-    cmds: ['scripts/tier.sh test:unit unit 1 1 -- cargo test']
+    cmds: ['../rust-fs-core/scripts/tier.sh test:unit unit 1 1 -- cargo test']
   test:
     cmds:
       - task: test:unit
@@ -3233,7 +3233,7 @@ tasks:
   lint:
     cmds: ['cargo fmt --check']
   test:unit:
-    cmds: ['scripts/tier.sh test:unit unit 1 1 -- cargo test']
+    cmds: ['../rust-fs-core/scripts/tier.sh test:unit unit 1 1 -- cargo test']
   test:
     cmds:
       - |

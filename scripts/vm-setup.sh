@@ -32,7 +32,7 @@
 # pkg-config), for `chore test:vm`: the whole suite compiled and run in
 # here, which is how a macOS host runs a Linux test suite at all. NOT THE
 # TOOLCHAIN ITSELF: scripts/guest-suite.sh installs that through
-# `scripts/core.sh guest-rust-toolchain`, rust-fs-core's one copy of the
+# `../rust-fs-core/scripts/guest-rust-toolchain.sh`, rust-fs-core's one copy of the
 # install, which every driver runs and which recovers from an install a
 # reaper or a deadline interrupted. It cannot run from here: the harness
 # ships this one file into the guest, before `test:vm` has staged the core

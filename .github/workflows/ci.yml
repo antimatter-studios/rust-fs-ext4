@@ -405,7 +405,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
-      # The version scripts/semver-check.sh expects. A prebuilt binary,
+      # The version ../rust-fs-core/scripts/semver-check.sh expects. A prebuilt binary,
       # checksum-verified by the action, rather than a ten-minute build.
       CARGO_SEMVER_CHECKS_VERSION: "0.50.0"
       # A failing tier prints only its verdict by default. Here the tail IS
@@ -499,8 +499,8 @@ jobs:
         id: tier
         run: chore test:cli
       # THE RELEASE TARBALL, built here so a release is not the first time
-      # it is put together: rust-fs-core's package-cli, run through
-      # scripts/core.sh as release.yml's called workflow runs it, stages the
+      # it is put together: rust-fs-core's package-cli, run in place from
+      # ../rust-fs-core as release.yml's called workflow runs it, stages the
       # install prefix Cargo.toml's [package.metadata.package-cli] declares
       # from the binary cli:install built, then refuses it unless it holds
       # exactly that layout, every dotted name is a relative symlink to
@@ -513,7 +513,7 @@ jobs:
           version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)"
           mkdir -p tmp/package
           cd tmp/package
-          tarball="$(bash ../../scripts/core.sh package-cli "$version" linux-x86_64 "${CARGO_TARGET_DIR:-$GITHUB_WORKSPACE/target}/release" | tail -n 1)"
+          tarball="$(bash ../../../rust-fs-core/scripts/package-cli.sh "$version" linux-x86_64 "${CARGO_TARGET_DIR:-$GITHUB_WORKSPACE/target}/release" | tail -n 1)"
           tar -tzvf "$tarball"
       - name: Keep the tier logs
         # Not before the tier ran: there is no log then, and this step's red

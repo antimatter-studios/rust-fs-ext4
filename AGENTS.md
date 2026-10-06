@@ -423,7 +423,7 @@ reliable proof is a real `e2fsck`, not the driver's own readers.
 
 `chore check:ci-gate` holds both halves of the aggregate mechanically — every
 job in `ci.yml` must appear in `ci-ok`'s `needs:`, and `.github-guard` must
-require `ci-ok` and nothing else. The task runs `scripts/core.sh ci-gate` and
+require `ci-ok` and nothing else. The task runs `../rust-fs-core/scripts/ci-gate.sh` and
 nothing else, so the script is what can be tested, reviewed and run without
 `chore` at all.
 

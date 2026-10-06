@@ -55,7 +55,7 @@ cd /repo
 # core is in the guest, which is why vm-setup.sh cannot do it. It reads
 # rust-toolchain.toml and installs into RUSTUP_HOME and CARGO_HOME, and
 # over a whole toolchain it costs one manifest check (rust-fs-core#190).
-scripts/core.sh guest-rust-toolchain
+bash ../rust-fs-core/scripts/guest-rust-toolchain.sh
 command -v cargo >/dev/null ||
     { echo "guest-suite.sh: no cargo in the guest after the toolchain install." >&2; exit 1; }
 

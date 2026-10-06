@@ -9,7 +9,7 @@
 # to one stray target sails through it. So every floor chores.yml declares
 # must refuse a run that executed ONE test -- the shape of a selection that
 # stopped matching all but one file -- which is to say it must be at least 2.
-# The floor itself is rust-fs-core's (scripts/core.sh test-floor), tested
+# The floor itself is rust-fs-core's (../rust-fs-core/scripts/test-floor.sh), tested
 # there; what is this repository's is the numbers, so they are what is
 # checked here.
 #
@@ -30,25 +30,25 @@ UNFLOORED='scripts semver'
 fails=0
 fail() { echo "FAIL  $*" >&2; fails=$((fails + 1)); }
 
-# `scripts/core.sh test-floor [--refuse-ignored] <tier> <floor>`, wherever
+# `../rust-fs-core/scripts/test-floor.sh [--refuse-ignored] <tier> <floor>`, wherever
 # chores.yml calls it.
-floors="$(grep -oE 'core\.sh test-floor +(--refuse-ignored +)?[a-z0-9_-]+ +[0-9]+' "$CHORES" |
+floors="$(grep -oE 'test-floor\.sh +(--refuse-ignored +)?[a-z0-9_-]+ +[0-9]+' "$CHORES" |
     awk '{ print $(NF-1), $NF }')"
 if [ -z "$floors" ]; then
-    fail "chores.yml calls scripts/core.sh test-floor nowhere"
+    fail "chores.yml calls ../rust-fs-core/scripts/test-floor.sh nowhere"
 fi
 
-# `scripts/tier.sh <label> <tier> <lines> <bytes>`; the label may be quoted.
+# `../rust-fs-core/scripts/tier.sh <label> <tier> <lines> <bytes>`; the label may be quoted.
 tiers="$(grep -oE 'scripts/tier\.sh +("[^"]*"|[^ ]+) +[a-z0-9_-]+ +[0-9]+ +[0-9]+' "$CHORES" |
     sed -E 's/^scripts\/tier\.sh +("[^"]*"|[^ ]+) +([a-z0-9_-]+) .*/\2/' | sort -u)"
 if [ -z "$tiers" ]; then
-    fail "chores.yml runs no tier through scripts/tier.sh"
+    fail "chores.yml runs no tier through ../rust-fs-core/scripts/tier.sh"
 fi
 
 for tier in $tiers; do
     case " $UNFLOORED " in *" $tier "*) continue ;; esac
     if ! printf '%s\n' "$floors" | grep -qE "^$tier "; then
-        fail "the $tier tier has no scripts/core.sh test-floor call in chores.yml"
+        fail "the $tier tier has no ../rust-fs-core/scripts/test-floor.sh call in chores.yml"
     fi
 done
 

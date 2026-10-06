@@ -4,7 +4,7 @@
 #
 # Quiet-by-default is a convention, and a convention rots in a week. This is
 # the number that fails the build instead: a tier added later without going
-# through scripts/tier.sh, or given a budget of zero (which output-budget.sh
+# through ../rust-fs-core/scripts/tier.sh, or given a budget of zero (which output-budget.sh
 # reads as "no budget"), fails here rather than being noticed the next time
 # somebody scrolls past three thousand lines.
 #
@@ -39,8 +39,8 @@ for tier in test:unit test:images test:oracle test:kernel test:lwext4 test:wasm 
         continue
     fi
     case "$block" in
-        *scripts/tier.sh*) ;;
-        *) note "$tier does not run through scripts/tier.sh, so its output is unbounded" ;;
+        *../rust-fs-core/scripts/tier.sh*) ;;
+        *) note "$tier does not run through ../rust-fs-core/scripts/tier.sh, so its output is unbounded" ;;
     esac
     # tier.sh LABEL LOG MAX-LINES MAX-BYTES: a zero in either position is
     # "no budget" to output-budget.sh, which is the shape this test exists
@@ -51,10 +51,8 @@ for tier in test:unit test:images test:oracle test:kernel test:lwext4 test:wasm 
 done
 
 # --- 2. A budget that is breached fails the run. ---------------------------
-# The wrapper is rust-fs-core's. This reads it straight from the sibling
-# rather than taking a copy the way tier.sh does: the copy exists so a run is
-# not disturbed mid-flight, and has nothing to do with the behaviour under
-# test here.
+# The wrapper is rust-fs-core's, run in place from the sibling the way its
+# tier.sh runs it.
 budget="$REPO/../rust-fs-core/scripts/output-budget.sh"
 if [ ! -f "$budget" ]; then
     note "../rust-fs-core/scripts/output-budget.sh is missing -- run 'chore siblings'"
@@ -98,36 +96,6 @@ else
     out="$(OUTPUT_BUDGET_VERBOSE=1 "$budget" --log "$work/v.log" --max-lines 5 --label v -- echo hello 2>&1)"
     case "$out" in *hello*) ;; *) note "--verbose did not stream the output: $out" ;; esac
 fi
-
-# --- 3. The resolver refuses a core it cannot verify. ----------------------
-#
-# scripts/tier.sh reads the wrapper out of rust-fs-core at run time and keeps
-# no copy of its own. The whole arrangement rests on it REFUSING rather than
-# improvising, and a refusal nobody executes has never been shown to happen --
-# which is the same defect as a test that skips. So both refusals are driven
-# here, through FS_CORE_ROOT, which exists for exactly this.
-resolver_work="$(mktemp -d "$REPO/tmp/tier-resolver-test.XXXXXX")"
-trap 'rm -rf "$work" "$resolver_work"' EXIT
-
-# A core that is not there. FS_CORE_ROOT is authoritative: naming a directory
-# that holds no wrapper is an answer, not a reason to go looking elsewhere.
-out="$(FS_CORE_ROOT="$resolver_work/nowhere" \
-          bash "$REPO/scripts/tier.sh" t log 10 100 -- true 2>&1)"
-rc=$?
-[ "$rc" != 0 ] || note "tier.sh ran a tier with no rust-fs-core to get the wrapper from"
-case "$out" in *"rust-fs-core"*) ;; *) note "the refusal did not name rust-fs-core: $out" ;; esac
-
-# A core that is present and wrong. This is the case that must NOT fall
-# through to the next candidate: "core is broken" reported as "core is
-# missing" is a quieter and much more confusing failure.
-mkdir -p "$resolver_work/wrong/scripts"
-printf '#!/usr/bin/env bash\necho "some-other-wrapper 9"\n' \
-    > "$resolver_work/wrong/scripts/output-budget.sh"
-out="$(FS_CORE_ROOT="$resolver_work/wrong" \
-          bash "$REPO/scripts/tier.sh" t log 10 100 -- true 2>&1)"
-rc=$?
-[ "$rc" != 0 ] || note "tier.sh accepted a wrapper that is not rust-fs-core's"
-case "$out" in *"--version"*) ;; *) note "the refusal did not say what it checked: $out" ;; esac
 
 if [ "$fails" -gt 0 ]; then
     echo "FAIL  $fails output-budget violation(s)" >&2

@@ -246,18 +246,18 @@ vars:
   # org, and a URL rebuilt from a repo name points at a repository that
   # does not exist for exactly the ones that are not.
   FS_CORE_URL: https://github.com/antimatter-studios/rust-fs-core.git
-  # scripts/tier.sh reads scripts/output-budget.sh out of core. v0.2.11 is the
+  # ../rust-fs-core/scripts/tier.sh reads ../rust-fs-core/scripts/output-budget.sh out of core. v0.2.11 is the
   # first release that packages it and v0.2.13 is the first that carries the
   # quiet-failure behaviour, so this pin cannot go back below v0.2.13 while
   # the tiers read the wrapper from core. The floor and the semver check are
-  # core's from v0.2.16, run through scripts/core.sh, and it carries the
+  # core's from v0.2.16, run in place from ../rust-fs-core, and it carries the
   # `cli` plumbing and SHARE fix that v0.2.15 brought. test:vm's guest
-  # installs its toolchain through `scripts/core.sh guest-rust-toolchain`,
+  # installs its toolchain through `../rust-fs-core/scripts/guest-rust-toolchain.sh`,
   # which v0.2.17 added. v0.2.18 is where ci-gate became core's, from that
-  # release, run as `scripts/core.sh ci-gate`. It is v0.2.23 because the
+  # release, run as `../rust-fs-core/scripts/ci-gate.sh`. It is v0.2.23 because the
   # release tarball is core's from that release: release.yml calls its
-  # release-cli workflow, which runs `scripts/core.sh package-cli` (#481).
-  FS_CORE_REF: v0.3.0
+  # release-cli workflow, which runs `../rust-fs-core/scripts/package-cli.sh` (#481).
+  FS_CORE_REF: v0.3.3
   LINUX_HARNESS_URL: https://github.com/antimatter-studios/fs-linux-test-harness.git
   # v0.3.0 is the release with `vm.sh session`, which the test runner runs
   # cargo through so a run gives the VM and the machine-wide slot back
@@ -447,8 +447,8 @@ tasks:
     # rather than listed here. CI runs this job with no fixtures present,
     # which is what proves the split.
     cmds:
-      - 'EXPECT_OVERFLOW_CHECKS=1 scripts/tier.sh test:unit unit 1050 65000 -- scripts/test.sh --locked $(scripts/test-targets.sh unit)'
-      - 'bash scripts/core.sh test-floor unit 440'
+      - 'EXPECT_OVERFLOW_CHECKS=1 ../rust-fs-core/scripts/tier.sh test:unit unit 1050 65000 -- scripts/test.sh --locked $(scripts/test-targets.sh unit)'
+      - 'bash ../rust-fs-core/scripts/test-floor.sh unit 440'
 
   # EVERY TIER SAYS HOW FEW TESTS STILL COUNT AS HAVING RUN IT (#271).
   #
@@ -490,8 +490,8 @@ tasks:
     # rather than skipped inside the tests, so what does not run there is
     # visible in the workflow rather than hidden in a green log.
     cmds:
-      - 'scripts/tier.sh test:images images 1400 60000 -- scripts/test.sh --locked --release $(scripts/test-targets.sh images)'
-      - 'bash scripts/core.sh test-floor images 450'
+      - '../rust-fs-core/scripts/tier.sh test:images images 1400 60000 -- scripts/test.sh --locked --release $(scripts/test-targets.sh images)'
+      - 'bash ../rust-fs-core/scripts/test-floor.sh images 450'
 
   test:oracle:
     desc: 'The driver writes, e2fsprogs reads back — every tool call made inside the harness VM'
@@ -512,8 +512,8 @@ tasks:
     # for a run that never reached scripts/test.sh.
     cmds:
       - scripts/tools.sh --check
-      - 'scripts/tier.sh test:oracle oracle 3800 295000 -- scripts/test.sh --locked --release $(scripts/test-targets.sh oracle) -- --show-output'
-      - 'bash scripts/core.sh test-floor oracle 140'
+      - '../rust-fs-core/scripts/tier.sh test:oracle oracle 3800 295000 -- scripts/test.sh --locked --release $(scripts/test-targets.sh oracle) -- --show-output'
+      - 'bash ../rust-fs-core/scripts/test-floor.sh oracle 140'
 
   test:kernel:
     desc: 'The driver writes, THE KERNEL reads back: our images loop-mounted by Linux in the guest'
@@ -524,8 +524,8 @@ tasks:
     # written — plus the reverse direction, and a deliberate corruption
     # that must fail.
     cmds:
-      - 'scripts/tier.sh test:kernel kernel 460 36300 -- scripts/test.sh --locked --release $(scripts/test-targets.sh kernel) -- --show-output'
-      - 'bash scripts/core.sh test-floor kernel 3'
+      - '../rust-fs-core/scripts/tier.sh test:kernel kernel 460 36300 -- scripts/test.sh --locked --release $(scripts/test-targets.sh kernel) -- --show-output'
+      - 'bash ../rust-fs-core/scripts/test-floor.sh kernel 3'
 
   test:lwext4:
     desc: 'CROSS-VALIDATION: lwext4 — a third implementation, built in the guest — reads what we wrote, and we read what it wrote'
@@ -548,8 +548,8 @@ tasks:
     # zero, not a refactor that merges two tests into one.
     cmds:
       - scripts/tools.sh --check
-      - 'scripts/tier.sh test:lwext4 lwext4 85 6800 -- scripts/test.sh --locked --release $(scripts/test-targets.sh lwext4) -- --show-output'
-      - 'bash scripts/core.sh test-floor lwext4 7'
+      - '../rust-fs-core/scripts/tier.sh test:lwext4 lwext4 85 6800 -- scripts/test.sh --locked --release $(scripts/test-targets.sh lwext4) -- --show-output'
+      - 'bash ../rust-fs-core/scripts/test-floor.sh lwext4 7'
 
   tools:wasm:
     desc: 'Install and verify what test:wasm needs: the wasm32 target, the wasm-bindgen test runner at Cargo.lock''s version, and node'
@@ -573,8 +573,8 @@ tasks:
     # one test lost is the signal.
     cmds:
       - scripts/wasm-tools.sh --check
-      - 'CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner scripts/tier.sh test:wasm wasm 170 8000 -- cargo test --locked --target wasm32-unknown-unknown --test wasm'
-      - 'bash scripts/core.sh test-floor wasm 4'
+      - 'CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner ../rust-fs-core/scripts/tier.sh test:wasm wasm 170 8000 -- cargo test --locked --target wasm32-unknown-unknown --test wasm'
+      - 'bash ../rust-fs-core/scripts/test-floor.sh wasm 4'
 
   test:vm:
     desc: 'The whole suite, compiled and run INSIDE the harness VM (how a Mac runs the Linux tests)'
@@ -618,9 +618,9 @@ tasks:
           guest_args="$guest_args $arg"
         done
         # shellcheck disable=SC2086  # the words are the point
-        scripts/tier.sh test:vm vm 3900 193000 -- \
+        bash ../rust-fs-core/scripts/tier.sh test:vm vm 3900 193000 -- \
           ../fs-linux-test-harness/scripts/vm.sh guest-test $guest_args
-        bash scripts/core.sh test-floor vm 1060
+        bash ../rust-fs-core/scripts/test-floor.sh vm 1060
 
   test:
     desc: 'Everything, exactly as CI runs it — natively on Linux, inside the VM anywhere else'
@@ -660,8 +660,8 @@ tasks:
       - task: test:oracle
       - task: test:kernel
       - task: test:lwext4
-      - 'scripts/tier.sh "test:native (whole suite, release)" suite 3700 183000 -- scripts/test.sh --locked --release'
-      - 'bash scripts/core.sh test-floor suite 1060'
+      - '../rust-fs-core/scripts/tier.sh "test:native (whole suite, release)" suite 3700 183000 -- scripts/test.sh --locked --release'
+      - 'bash ../rust-fs-core/scripts/test-floor.sh suite 1060'
       - task: test:scripts
       # The command-line tools, built and staged from this checkout, then
       # tested as installed. A separate invocation because test:cli reads
@@ -692,8 +692,8 @@ tasks:
     # 93 with fsck.ext4, 130 with the write verbs, 158 with the man pages
     # and completions; the floor is about 95% of that.
     cmds:
-      - 'scripts/tier.sh test:cli cli 40 1460 -- scripts/test-cli.sh'
-      - 'bash scripts/core.sh test-floor cli 150'
+      - '../rust-fs-core/scripts/tier.sh test:cli cli 40 1460 -- scripts/test-cli.sh'
+      - 'bash ../rust-fs-core/scripts/test-floor.sh cli 150'
 
   test:scripts:
     desc: The shell tests (tests/scripts/*.sh), every one by glob
@@ -703,7 +703,7 @@ tasks:
     cmds:
       - |
         set -eu
-        scripts/tier.sh test:scripts scripts 50 3000 -- bash -c '
+        bash ../rust-fs-core/scripts/tier.sh test:scripts scripts 50 3000 -- bash -c '
           set -eu
           for t in tests/scripts/*.sh; do
             echo "== $t"
@@ -784,7 +784,7 @@ tasks:
     # 4,000 leaves room for a warning block without masking a flood. A
     # failing run prints every broken item and is not held to it.
     cmds:
-      - 'scripts/tier.sh check:semver semver 40 4000 -- bash scripts/core.sh semver-check'
+      - '../rust-fs-core/scripts/tier.sh check:semver semver 40 4000 -- bash ../rust-fs-core/scripts/semver-check.sh'
 
   lint:
     desc: Formatting and clippy, exactly as CI runs them
@@ -803,11 +803,11 @@ tasks:
     # `--workspace` selects it (#410). `tests/ci_profile.rs` holds both
     # lines to it.
     cmds:
-      - scripts/agents-core-check.sh
+      - bash ../rust-fs-core/scripts/agents-core-check.sh
       # The family scripts are rust-fs-core's alone: fails on a committed copy,
-      # a scripts/core.sh that differs from core's, or a call to a local copy.
-      - bash scripts/core.sh family-check
-      - bash scripts/core.sh ci-gate
+      # or a call to a local copy.
+      - bash ../rust-fs-core/scripts/family-check.sh
+      - bash ../rust-fs-core/scripts/ci-gate.sh
       - scripts/check-provenance.sh
       - cargo fmt --all --check
       # `--features cli`: the command-line tools' target requires it, and
@@ -874,4 +874,4 @@ tasks:
     # strings, and as a cargo test counted towards the executed-test floor the
     # gate itself enforces.
     cmds:
-      - bash scripts/core.sh ci-gate
+      - bash ../rust-fs-core/scripts/ci-gate.sh
