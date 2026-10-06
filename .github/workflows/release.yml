@@ -98,7 +98,7 @@ jobs:
       attestations: write
     uses: antimatter-studios/rust-fs-core/.github/workflows/release-cli.yml@943a3136cd9bc3f8e2ca55ce3bd624adba9f40b7 # v0.3.6
     with:
-      core-ref: v0.3.3
+      core-ref: v0.3.6
       toolchain: 1.95.0
 
   publish:
