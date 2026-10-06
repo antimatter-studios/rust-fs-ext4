@@ -1,14 +1,5 @@
 # Changelog
 
-## [0.8.0] — 2026-10-06
-
-### Changed
-
-- **Published as `rust-fs-ext4`, the repository's name.** The crate was `am-fs-ext4`
-  until its last version, which stays on crates.io pointing here. A
-  dependent changes one line in `Cargo.toml`; the import (`fs_ext4`) and the C symbols are unchanged.
-- **Depends on `rust-fs-core` 0.3.0**, the same library under its new name.
-
 ## [Unreleased]
 
 ### Changed
@@ -19,6 +10,15 @@
   (rust-fs-core 0.3.3, #212).
 - **A release's notes are its CHANGELOG section**, and a tag the CHANGELOG
   does not describe stops before anything is published (rust-fs-core#209).
+
+## [0.8.0] — 2026-10-06
+
+### Changed
+
+- **Published as `rust-fs-ext4`, the repository's name.** The crate was `am-fs-ext4`
+  until its last version, which stays on crates.io pointing here. A
+  dependent changes one line in `Cargo.toml`; the import (`fs_ext4`) and the C symbols are unchanged.
+- **Depends on `rust-fs-core` 0.3.0**, the same library under its new name.
 
 ## [0.7.2] — 2026-10-06
 
