@@ -562,13 +562,6 @@ See [CHANGELOG.md](CHANGELOG.md#070--2026-09-30) for the full notes.
 - `b182836` release 0.1.3.
 - `4352d37` pre-commit hook (`cargo fmt --check` + `clippy`).
 
-### 2026-04-20 — 0.1.1 / 0.1.2 releases
-
-- `8248ff4` 0.1.2: expose `s_state` via
-  `fs_ext4_volume_info_t.mounted_dirty`.
-- `47dfbb5` 0.1.1: docs rewrite, neutral framing, plain-English
-  disclaimer.
-
 ### 2026-04-19 — Stability hardening, perf, fsck audit
 
 - `f8603e9` hard-cap extent tree depth; refuse cycles + spec
