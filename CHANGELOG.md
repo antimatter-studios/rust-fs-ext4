@@ -11,6 +11,12 @@
 - **A release's notes are its CHANGELOG section**, and a tag the CHANGELOG
   does not describe stops before anything is published (rust-fs-core#209).
 
+### Fixed
+
+- **A transient HTTP 5xx from the chore release download no longer fails a CI
+  job.** `scripts/ci-install-chore.sh` retries both downloads up to five times on any error; the checksum check still
+  guards what was fetched.
+
 ## [0.8.0] — 2026-10-06
 
 ### Changed
