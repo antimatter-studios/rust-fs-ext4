@@ -46,7 +46,7 @@ jobs:
       # path dependency), the oracle tools, the kernel-made fixtures in
       # the fs-linux-test-harness VM (ubuntu-latest is x86_64 with KVM),
       # lint, and the whole suite -- which includes the e2fsck checks of
-      # the mkfs_ext4 binary (tests/mkfs_bin_fsck_oracle.rs) that used to
+      # the mkfs.ext4 tool (tests/mkfs_bin_fsck_oracle.rs) that used to
       # be a job of their own here.
       - name: install chore
         run: scripts/ci-install-chore.sh

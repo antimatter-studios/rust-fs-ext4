@@ -17,6 +17,14 @@
   job.** `scripts/ci-install-chore.sh` retries both downloads up to five times on any error; the checksum check still
   guards what was fetched.
 
+### Removed
+
+- **`cargo install` puts only `rust-fs-ext4` on PATH.** The standalone
+  `mkfs_ext4` target, which every `cargo install` installed beside the
+  multi-call binary, is gone; `mkfs.ext4` is the multi-call binary run under
+  that name, with the same flags. `tests/one_binary_on_path.rs` refuses any
+  second `[[bin]]` (#498).
+
 ## [0.8.0] — 2026-10-06
 
 ### Changed
