@@ -3585,3 +3585,87 @@ fn ci_cancels_only_a_pull_requests_superseded_run() {
          cancelled by the next: {group}"
     );
 }
+
+/// Every `curl` command in a shell script or workflow, comments dropped and
+/// `\` continuations joined, so a flag on the next line still counts.
+fn curl_commands(text: &str) -> Vec<String> {
+    let mut commands = Vec::new();
+    let mut joined = String::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with('#') {
+            continue;
+        }
+        let continued = line.ends_with('\\');
+        joined.push_str(line.trim_end_matches('\\'));
+        joined.push(' ');
+        if continued {
+            continue;
+        }
+        if joined
+            .split(|c: char| c.is_whitespace() || c == '(' || c == '|')
+            .any(|word| word == "curl")
+        {
+            commands.push(joined.trim().to_string());
+        }
+        joined.clear();
+    }
+    commands
+}
+
+/// Whether a `curl` command survives one transient server error: it retries
+/// at least three times, and on any error, not only on a refused connection.
+fn retries_a_transient_error(command: &str) -> bool {
+    let words: Vec<&str> = command.split_whitespace().collect();
+    let retries = words
+        .windows(2)
+        .find(|pair| pair[0] == "--retry")
+        .and_then(|pair| pair[1].parse::<u32>().ok())
+        .unwrap_or(0);
+    retries >= 3 && words.contains(&"--retry-all-errors")
+}
+
+/// The chore download retries a transient HTTP 5xx from the release CDN.
+///
+/// GitHub's release download answers an occasional HTTP 500, and a `curl`
+/// with no retry turns that one answer into a red job before any of the
+/// change under test has run. The checksum check that follows the download
+/// still guards what was fetched, so retrying is safe. This covers the
+/// installer script and any workflow that downloads a chore release itself.
+#[test]
+fn the_chore_download_retries_a_transient_server_error() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut sources = Vec::new();
+    let installer = root.join("scripts/ci-install-chore.sh");
+    if installer.exists() {
+        sources.push(installer);
+    }
+    for entry in std::fs::read_dir(root.join(".github/workflows")).expect("read .github/workflows")
+    {
+        sources.push(entry.expect("a workflow").path());
+    }
+    let mut downloads = 0;
+    let mut bare = Vec::new();
+    for path in &sources {
+        let text = std::fs::read_to_string(path).expect("read a chore download source");
+        let is_installer = path.ends_with("scripts/ci-install-chore.sh");
+        for command in curl_commands(&text) {
+            if !is_installer && !command.contains("chore/releases/download") {
+                continue;
+            }
+            downloads += 1;
+            if !retries_a_transient_error(&command) {
+                bare.push(format!("{}: {command}", path.display()));
+            }
+        }
+    }
+    assert!(
+        downloads > 0,
+        "found no chore download to check; the guard is looking in the wrong place"
+    );
+    assert!(
+        bare.is_empty(),
+        "these chore downloads fail the job on one transient HTTP 5xx; \
+         add `--retry 5 --retry-all-errors --retry-delay 2`: {bare:#?}"
+    );
+}
