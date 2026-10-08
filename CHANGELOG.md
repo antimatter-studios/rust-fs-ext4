@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`docs/features.md`, a features page kept current by every pull request.**
+  Each feature's state, the release it shipped in, its tracking issue and the
+  test that checks it. The README's status, "What works", "What doesn't work"
+  and roadmap sections, which still called extent-tree mutation at depth two
+  unsupported, are a short summary pointing to it.
+
 ### Changed
 
 - **The family's scripts run in place from rust-fs-core, and this repository

@@ -16,94 +16,19 @@ or any embedded environment with a `BlockDevice` shim.
 
 ## Status
 
-Read/write driver for the common case across ext2, ext3, and ext4.
-Mount + read is exhaustive against the ext4 feature matrix we test
-against; write is journaled through JBD2 and crash-safe under
-fault-injection sweeps for every multi-block op the driver
-exposes. Specific gaps are listed under "What doesn't work" below.
-
-- 700+ automated tests — 200+ lib unit tests and 450+ integration
-  tests across ~100 test binaries (`cargo test --release`).
-- All 15 multi-block write ops (`5.2.1`–`5.2.15` of the write-support
-  plan) committed atomically through the JBD2 writer with explicit
-  crash-safety sweeps.
-- ext2 and ext3 RW are unlocked (Phase 9.1/9.2/Phase B) via the
-  same flavor-aware extent/indirect dispatcher.
-
-## Features
-
-### Read
-
-- Mount ext2 / ext3 / ext4 images and block devices (block sizes
-  1 KiB, 2 KiB, 4 KiB).
-- Inode parse with extra-fields support; `stat`, `readdir`,
-  `readlink`, `read`, `getxattr`, `listxattr`.
-- Extent trees (depth 0, depth 1, depth ≥ 2 read; uninitialized
-  extents present as zero on read).
-- Indirect-block trees (legacy ext2/3 — direct, indirect,
-  double-indirect, triple-indirect).
-- HTree directory traversal (legacy / `half_md4` / `tea` hash).
-- Inline data (≤ 60 bytes inline file body, plus inline xattr
-  overflow).
-- External xattr blocks; ACL attributes (`system.posix_acl_*`).
-- `metadata_csum` and `csum_seed` verification on every block that
-  has an on-disk checksum (superblock, BGD, inode table, dir tail,
-  extent tail, htree tail, xattr block, journal commit/descriptor
-  blocks).
-- JBD2 journal replay on mount: descriptor / commit / revoke
-  blocks all honoured, including v2 (csum-tail) format.
-- Read-only audit pass (`Filesystem::audit`) reconciles link
-  counts and reports dangling directory entries.
-- Optional LRU block cache (`CachingDevice`) for callback-mode
-  hosts where every read hits a remote/RPC boundary.
-
-### Write
-
-All mutating ops route through the same multi-block transaction
-buffer and commit atomically through `JournalWriter`:
-
-- `chmod`, `chown`, `utimens`, in-inode `setxattr` / `removexattr`.
-- `create`, `unlink`, `mkdir`, `rmdir`.
-- `link` (in-place), `symlink` (inline + slow path), `rename`
-  (POSIX semantics: `EEXIST` on no-clobber, `EINVAL` into own
-  subtree, cross-parent `..` updates).
-- `truncate` shrink and grow (sparse-grow leaves holes; reads
-  return zeros).
-- `setxattr` / `removexattr` on the external xattr block (alloc
-  on first overflow, free when the block becomes empty).
-- File replace (full-content overwrite via fresh extent allocation).
-- Inline-data files: pwrite, replace and truncate in the inode while the
-  result fits, converting the file to extents in the same transaction
-  when it does not.
-- Inline-data directories: entries added and removed in the inode while
-  they fit, converting the directory to a block in the same transaction
-  when they do not.
-- `fallocate(KEEP_SIZE)`, `fallocate(PUNCH_HOLE)`,
-  `fallocate(ZERO_RANGE)`.
-- Extent-tree mutation: depth 0 → 1 promotion and depth-1 inserts.
-
-Crash-safety guarantees: the four-fence JBD2 protocol
-(journal-write → dirty-flag → final-write → clean-flag) is enforced
-per transaction with an explicit flush between each fence. A
-post-remount state is always either pre-op or post-op — never
-torn. Pinned by parameterized fault-injection sweeps (see "Test
-contract" below).
-
-### Filesystem variants
-
-| Variant | Read | Write |
-|---|---|---|
-| ext2 | done | done (indirect-block extents, no journal) |
-| ext3 | done | done (indirect-block extents, JBD2) |
-| ext4 | done | done (extent trees, JBD2) |
-
-ext3 RW landed via Phase B's flavor-aware journal dispatch
-(`jbd2::journal_block_to_physical` and `JournalWriter::open`
-both branch on `EXTENTS_FL`). ext2 has no journal but otherwise
-shares the same write helpers. `tests/mkfs_ext3_oracle.rs` formats both
-flavors, writes through the crate and requires `e2fsck -fn` to pass. An
-ext2/ext3 directory grows through its direct and single-indirect blocks
-only; one that would need the double-indirect block is refused.
+Reads ext2, ext3 and ext4, clean or with a journal to replay (onto the device
+on a writable mount, into memory on a read-only one), with every checksum
+variant, extent trees of any depth, htree and inline-data directories,
+extended attributes and ACLs. Writes are journalled through JBD2 and
+crash-safe under fault-injection sweeps: create, unlink, mkdir, rmdir, link,
+symlink, rename, attributes, positional writes, truncate, fallocate and
+extended attributes, on ext2 and ext3 as well as ext4. `fsck.ext4` checks a
+subset of what e2fsck checks and repairs two kinds of finding; `mkfs.ext4`
+formats all three flavours. **[docs/features.md](docs/features.md) is the
+full list**: every feature, its state (supported, experimental, partial,
+refused, not supported or upcoming), the release it shipped in, its tracking
+issue or write-plan item, and the test that checks it. Every pull request that
+changes behaviour updates it.
 
 ## Command-line tools
 
@@ -164,62 +89,6 @@ rust-fs-ext4 doctor                        # is every tool on PATH ours?
   way, and says what wins and the fix when it does not.
 - `chore test:cli` tests the tools as installed (`doctor` first), and CI
   runs it on every pull request.
-
-## What works
-
-Per-operation, on a clean image:
-
-- `mount` / `mount_rw` / `mount_with_callbacks` /
-  `mount_rw_with_callbacks` / `mount_rw_with_callbacks_lazy`
-  (lazy variant defers journal replay).
-- `stat`, `readdir`, `readlink`, `read`.
-- `getxattr`, `listxattr`, `setxattr` (in-inode + external block),
-  `removexattr` (in-inode + external block).
-- `chmod`, `chown`, `utimens`.
-- `create`, `unlink`, `mkdir`, `rmdir`, `link`, `symlink`, `rename`.
-- `truncate` (shrink and grow).
-- `write` (replace-content; allocates fresh extents and frees old
-  ones in one journaled transaction).
-- `fallocate(KEEP_SIZE)`, `fallocate(PUNCH_HOLE)`,
-  `fallocate(ZERO_RANGE)`.
-- `audit` (read-only fsck — link counts, dangling entries).
-- `fsck_run` (callback-mode audit exposed through the C ABI).
-- `format_filesystem` (in-process `mkfs`; the C-ABI entry FFI hosts
-  call to format a fresh volume is `fs_ext4_mkfs`).
-
-## What doesn't work
-
-Honest gap list — pulled from `docs/ext4-full-write-support.md`
-and the in-tree TODOs:
-
-- **Extent-tree depth ≥ 2 mutation.** Read works; write refuses
-  with a structured error in `extent_mut.rs`. Phase 4 of the
-  write-support plan covers the design (`docs/extent-tree-depth2-design.md`).
-- **HTree internal split.** Leaf split is implemented; once a
-  directory grows past the depth-1 leaf-block capacity (~340
-  extents on 4 KiB blocks), further inserts return `ENOSPC`-shaped
-  errors.
-- **`extend_dir_and_add_entry` buffer-twin.** The fallback path
-  used when an in-place dir-entry insert can't fit still does
-  direct disk writes rather than going through `BlockBuffer`.
-  Refactor pending (~150 LoC of `plan_promote_leaf` adaptation).
-- **JBD2 journal modes.** The writer effectively runs `data=ordered`
-  semantics today; `data=writeback` and `data=journal` are not
-  selectable.
-- **Orphan-list inserts on still-open unlink.** The driver
-  doesn't see open-fd state today; the host (FSKit / FUSE) would
-  need to plumb that through. Reads + replay of pre-existing
-  orphan chains *is* implemented.
-- **Casefold lookups.** The hash function is implemented in
-  `casefold.rs`; HTree wiring is not.
-- **fs-verity, fscrypt, project quota, user/group quota,
-  online-resize, mmap shared writes** — not implemented.
-- **EA refcount sharing on external xattr blocks** — single-owner
-  only; never shares (deferred until a consumer needs it).
-- **Indirect-path file replace is un-journaled.** The
-  indirect-block replace helper writes data blocks directly. Only
-  applies to ext2 mounts (which have no journal anyway) and
-  ext3 mounts that disable the journal.
 
 ## Architecture
 
@@ -341,38 +210,6 @@ credited in the License section.
   the on-disk bitmap against every block claimed by the inode
   tree; pinned by `tests/verify_basic.rs`, also runnable as a
   post-mutation check from any integration test.
-
-## Roadmap
-
-Pulled from `docs/ext4-full-write-support.md` — items not yet
-ticked. Numbering follows the plan doc.
-
-- [ ] **3.5** EA refcount sharing on external xattr blocks.
-- [ ] **4.1–4.6** Extent-tree depth ≥ 2 mutation (index-block
-      split, recursive descent, merge-on-shrink, index csum).
-- [ ] **5.3.1–5.3.3** JBD2 journal modes (`data=ordered`
-      explicit / `data=writeback` / `data=journal`).
-- [ ] **6.3** Orphan-list insert on still-open unlink (gated on
-      host fd-tracking).
-- [ ] **6.4** Link-count audit auto-repair under a recovery
-      transaction.
-- [ ] **7.2** Checked arithmetic in remaining hot sites (rare in
-      practice; cosmetic).
-- [ ] **7.3** Full FFI input-validation sweep.
-- [ ] **7.4** Richer `Error` variants (cosmetic; `Corrupt(&str)`
-      carries enough context today).
-- [ ] **8.2** Cross-call extent-lookup memoization.
-- [ ] **8.4** Coalesce adjacent dirty blocks inside the
-      `BlockBuffer`.
-- [ ] **9.3** Casefold HTree wiring.
-- [ ] **9.4** Project quota.
-- [ ] **9.5** User/group disk quota.
-- [ ] **9.6** fs-verity.
-- [ ] **9.7** fscrypt v2.
-- [ ] **9.8** Online resize.
-- [ ] **9.9** mmap shared writes (host-integration dependent).
-- [ ] `extend_dir_and_add_entry` buffer-twin (the last direct-disk-write
-      helper inside the otherwise-buffered write path).
 
 ## Changelog
 

@@ -154,6 +154,16 @@ it**. Do not silence output to fit, and do not route around `tier.sh`.
 <!-- END SHARED BLOCK: agent-core v2 -->
 
 
+## Keep the features page current
+
+`docs/features.md` lists every feature with its state, the release it shipped
+in, its tracking issue and the test that checks it. **A pull request that
+adds, fixes, refuses or removes behaviour updates its row in the same pull
+request**, with the PR number under **Since** (`Unreleased (#N)` until a
+release, then the version). A finding that leaves something unsupported gets
+a row too, naming its issue. Releases turn every `Unreleased` into the
+version they ship as.
+
 ## Clean room
 
 This crate is MIT-licensed, and it can only stay that way if nothing in it
