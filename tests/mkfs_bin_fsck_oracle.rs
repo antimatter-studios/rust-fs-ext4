@@ -1,4 +1,5 @@
-//! The `mkfs_ext4` binary's output, checked by e2fsprogs on the host.
+//! `mkfs.ext4`'s output (the multi-call binary run under that name),
+//! checked by e2fsprogs.
 //!
 //! This was the `validate-mkfs-bin` CI job (and `validate-fsck` in
 //! release.yml): shell steps that only ever ran on a GitHub runner. As a
@@ -23,9 +24,9 @@
 //! oracle.
 
 use fs_ext4_test_support::oracle;
-use std::process::Command;
+mod cli_support;
 
-const MKFS: &str = env!("CARGO_BIN_EXE_mkfs_ext4");
+const MKFS: &str = "mkfs.ext4";
 
 fn image(name: &str, size: u64) -> String {
     let path = fs_ext4_test_support::temp_path!("mkfs_bin_fsck_{}_{name}.img", std::process::id());
@@ -40,14 +41,14 @@ fn image(name: &str, size: u64) -> String {
 /// THIS CRATE'S OWN `mkfs.ext4`, on the host: it is the thing under
 /// test, not an oracle, and it is a Rust binary the host just built.
 fn mkfs_bin(args: &[&str]) -> String {
-    let out = Command::new(MKFS)
+    let out = cli_support::tool(MKFS)
         .args(args)
         .output()
         .unwrap_or_else(|e| panic!("run {MKFS}: {e}"));
-    report("mkfs_ext4", args, out.status.code());
+    report(MKFS, args, out.status.code());
     assert!(
         out.status.success(),
-        "mkfs_ext4 {} failed ({:?}):\n{}{}",
+        "{MKFS} {} failed ({:?}):\n{}{}",
         args.join(" "),
         out.status.code(),
         String::from_utf8_lossy(&out.stdout),

@@ -1,4 +1,5 @@
-//! Smoke test for the `mkfs.ext4` (mkfs_ext4) binary.
+//! Smoke test for `mkfs.ext4`, the multi-call `rust-fs-ext4` binary run
+//! under that name (it was a standalone `mkfs_ext4` target until #498).
 //!
 //! Pre-creates a 32 MiB regular file, runs the binary against it with a
 //! known label + UUID, then re-opens the file via the crate's own mount
@@ -16,7 +17,9 @@
 
 use fs_ext4::block_io::FileDevice;
 use fs_ext4::fs::Filesystem;
-use std::process::Command;
+mod cli_support;
+
+use cli_support::tool;
 use std::sync::Arc;
 
 const SIZE_BYTES: u64 = 32 * 1024 * 1024;
@@ -35,7 +38,6 @@ fn unique_tmp_path(suffix: &str) -> std::path::PathBuf {
 
 #[test]
 fn mkfs_bin_formats_a_pre_sized_file_and_mounts_clean() {
-    let bin = env!("CARGO_BIN_EXE_mkfs_ext4");
     let img = unique_tmp_path("img");
     let img_str = img.to_string_lossy().into_owned();
 
@@ -46,16 +48,16 @@ fn mkfs_bin_formats_a_pre_sized_file_and_mounts_clean() {
         f.set_len(SIZE_BYTES).expect("set_len");
     }
 
-    // Run: mkfs_ext4 -L BINSMOKE -U <uuid> <img>
-    let out = Command::new(bin)
+    // Run: mkfs.ext4 -L BINSMOKE -U <uuid> <img>
+    let out = tool("mkfs.ext4")
         .args(["-L", TEST_LABEL, "-U", TEST_UUID, &img_str])
         .output()
-        .expect("spawn mkfs_ext4");
+        .expect("spawn mkfs.ext4");
 
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         panic!(
-            "mkfs_ext4 failed: status={:?}\nstderr:\n{stderr}",
+            "mkfs.ext4 failed: status={:?}\nstderr:\n{stderr}",
             out.status
         );
     }
@@ -98,20 +100,19 @@ fn mkfs_bin_create_size_creates_then_formats() {
     // --create-size end-to-end: point at a non-existent path with
     // --create-size 32M, expect the binary to create + size + format.
     // No prior `truncate` step.
-    let bin = env!("CARGO_BIN_EXE_mkfs_ext4");
     let img = unique_tmp_path("createsize");
     let img_str = img.to_string_lossy().into_owned();
     // Make sure the path doesn't exist (test ordering can leave files
     // behind from a previous panic).
     let _ = std::fs::remove_file(&img);
 
-    let out = Command::new(bin)
+    let out = tool("mkfs.ext4")
         .args(["--create-size", "32M", "-L", "CREATED", &img_str])
         .output()
-        .expect("spawn mkfs_ext4 --create-size");
+        .expect("spawn mkfs.ext4 --create-size");
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
-        panic!("mkfs_ext4 --create-size failed: {stderr}");
+        panic!("mkfs.ext4 --create-size failed: {stderr}");
     }
 
     // File should exist at exactly 32 MiB (1024-based suffix).
@@ -136,25 +137,24 @@ fn mkfs_bin_create_size_is_idempotent_on_existing_file() {
     // succeed (leave-as-is path). Catches regressions where we'd
     // accidentally truncate an existing file back to the requested
     // size, destroying the formatted bytes.
-    let bin = env!("CARGO_BIN_EXE_mkfs_ext4");
     let img = unique_tmp_path("idempot");
     let img_str = img.to_string_lossy().into_owned();
     let _ = std::fs::remove_file(&img);
 
     // First call creates + formats.
-    let out1 = Command::new(bin)
+    let out1 = tool("mkfs.ext4")
         .args(["--create-size", "32M", "-L", "FIRST", &img_str])
         .output()
-        .expect("spawn mkfs_ext4 first call");
+        .expect("spawn mkfs.ext4 first call");
     assert!(out1.status.success(), "first call should succeed");
 
     // Second call against the same path should NOT explode and should
     // re-format (the binary's contract is "format this thing"; we
     // just don't want it to crash on the metadata check).
-    let out2 = Command::new(bin)
+    let out2 = tool("mkfs.ext4")
         .args(["--create-size", "32M", "-L", "SECOND", &img_str])
         .output()
-        .expect("spawn mkfs_ext4 second call");
+        .expect("spawn mkfs.ext4 second call");
     assert!(
         out2.status.success(),
         "second call should succeed (idempotent re-format); stderr: {}",
@@ -171,7 +171,6 @@ fn mkfs_bin_create_size_is_idempotent_on_existing_file() {
 
 #[test]
 fn mkfs_bin_dry_run_does_not_modify_file() {
-    let bin = env!("CARGO_BIN_EXE_mkfs_ext4");
     let img = unique_tmp_path("dryrun");
     let img_str = img.to_string_lossy().into_owned();
 
@@ -180,13 +179,13 @@ fn mkfs_bin_dry_run_does_not_modify_file() {
     let pattern = vec![0xAAu8; SIZE_BYTES as usize];
     std::fs::write(&img, &pattern).expect("seed pattern");
 
-    let out = Command::new(bin)
+    let out = tool("mkfs.ext4")
         .args(["-n", "-L", "DRYRUN", &img_str])
         .output()
-        .expect("spawn mkfs_ext4 -n");
+        .expect("spawn mkfs.ext4 -n");
     assert!(
         out.status.success(),
-        "dry-run mkfs_ext4 should exit 0; stderr: {}",
+        "dry-run mkfs.ext4 should exit 0; stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
 
@@ -208,7 +207,7 @@ fn mkfs_bin_dry_run_does_not_modify_file() {
 // ---------------------------------------------------------------------------
 // Flag-parsing behaviour, checked through the built binary.
 //
-// The unit tests inside src/bin/mkfs_ext4.rs cover the parse table directly.
+// The unit tests in src/cli/ext4/mkfs.rs cover the parse table directly.
 // These three exist because each of the bugs below was found by running the
 // binary and reading what it printed, and what it printed is the part a
 // caller actually experiences.
@@ -219,7 +218,6 @@ fn mkfs_bin_dash_c_does_not_swallow_the_device_path() {
     // `-c` is boolean in the standard CLI. Parsed as argument-taking, it ate
     // the image path and the tool then reported "missing positional <device>
     // argument" — about the path it had just consumed.
-    let bin = env!("CARGO_BIN_EXE_mkfs_ext4");
     let img = unique_tmp_path("dashc");
     let img_str = img.to_string_lossy().into_owned();
     {
@@ -228,10 +226,10 @@ fn mkfs_bin_dash_c_does_not_swallow_the_device_path() {
     }
 
     // -n so this stays a parse test and writes nothing.
-    let out = Command::new(bin)
+    let out = tool("mkfs.ext4")
         .args(["-n", "-c", &img_str])
         .output()
-        .expect("spawn mkfs_ext4 -n -c");
+        .expect("spawn mkfs.ext4 -n -c");
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
 
     assert!(
@@ -256,16 +254,15 @@ fn mkfs_bin_rejects_bad_block_size_before_opening_the_device() {
     // which runs after the device is open read-write and after the tool has
     // printed that it is formatting — so a rejected argument read as a format
     // that failed halfway.
-    let bin = env!("CARGO_BIN_EXE_mkfs_ext4");
     let img = unique_tmp_path("badbs");
     let img_str = img.to_string_lossy().into_owned();
     let pattern = vec![0xAAu8; SIZE_BYTES as usize];
     std::fs::write(&img, &pattern).expect("seed pattern");
 
-    let out = Command::new(bin)
+    let out = tool("mkfs.ext4")
         .args(["-b", "3000", &img_str])
         .output()
-        .expect("spawn mkfs_ext4 -b 3000");
+        .expect("spawn mkfs.ext4 -b 3000");
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
 
     assert!(!out.status.success(), "-b 3000 must fail");
@@ -290,7 +287,6 @@ fn mkfs_bin_rejects_bad_block_size_before_opening_the_device() {
 fn mkfs_bin_quiet_silences_warnings_from_either_side() {
     // `-q` was read during the parse loop, so it only silenced flags that
     // came after it: `-q -m 1` was quiet and `-m 1 -q` was not.
-    let bin = env!("CARGO_BIN_EXE_mkfs_ext4");
     let img = unique_tmp_path("quiet");
     let img_str = img.to_string_lossy().into_owned();
     {
@@ -299,7 +295,7 @@ fn mkfs_bin_quiet_silences_warnings_from_either_side() {
     }
 
     let run = |args: &[&str]| -> String {
-        let out = Command::new(bin).args(args).output().expect("spawn");
+        let out = tool("mkfs.ext4").args(args).output().expect("spawn");
         assert!(out.status.success(), "{args:?} should succeed");
         String::from_utf8_lossy(&out.stderr).into_owned()
     };
@@ -331,12 +327,11 @@ fn mkfs_bin_quiet_silences_warnings_from_either_side() {
 /// carries: the crate is published as `rust-fs-ext4`.
 #[test]
 fn mkfs_bin_version_names_the_tool_and_the_crate() {
-    let bin = env!("CARGO_BIN_EXE_mkfs_ext4");
     for flag in ["--version", "-V"] {
-        let out = Command::new(bin)
+        let out = tool("mkfs.ext4")
             .arg(flag)
             .output()
-            .expect("spawn mkfs_ext4");
+            .expect("spawn mkfs.ext4");
 
         assert!(out.status.success(), "{flag} must exit 0: {out:?}");
         assert_eq!(
