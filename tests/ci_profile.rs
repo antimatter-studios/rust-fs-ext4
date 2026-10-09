@@ -936,6 +936,35 @@ fn assert_unconditional(job: &Yaml, name: &str, workflow: &str) {
         !carries_a_non_gating_key(&keys_of(job)),
         "{workflow} jobs.{name} must not be conditional or allowed to fail"
     );
+    assert_steps_unconditional(job, name, workflow);
+}
+
+/// As `assert_unconditional`, but the job may carry the one condition
+/// rust-fs-core's ci-gate accepts: `if: needs.changes.outputs.code ==
+/// 'true'`, needing `changes`. It is skipped, with the jobs after it, for a
+/// change to documentation alone, and ci-ok accepts that skip only then.
+/// Any other condition, and `continue-on-error`, is still refused.
+fn assert_unconditional_or_skipped_for_documentation(job: &Yaml, name: &str, workflow: &str) {
+    let keys = keys_of(job);
+    assert!(
+        !keys.iter().any(|k| k == "continue-on-error"),
+        "{workflow} jobs.{name} must not be allowed to fail"
+    );
+    if let Some(condition) = field(job, "if") {
+        assert_eq!(
+            condition.as_str(),
+            Some("needs.changes.outputs.code == 'true'"),
+            "{workflow} jobs.{name} may be skipped only for a change to documentation alone"
+        );
+        assert!(
+            needs_of(job).iter().any(|n| n == "changes"),
+            "{workflow} jobs.{name} is gated on the changes job, so it must need it"
+        );
+    }
+    assert_steps_unconditional(job, name, workflow);
+}
+
+fn assert_steps_unconditional(job: &Yaml, name: &str, workflow: &str) {
     for (at, step) in steps_of(job, name).iter().enumerate() {
         let keys = keys_of(step);
         // A STEP THAT RUNS NO COMMAND CANNOT GATE, AND MAY BE
@@ -1243,7 +1272,7 @@ fn the_pr_gate_builds_fixtures_once_in_the_harness_vm_and_tests_both_architectur
 
     // jobs.fixtures
     let fixtures = job(&document, "fixtures", &path);
-    assert_unconditional(fixtures, "fixtures", "ci.yml");
+    assert_unconditional_or_skipped_for_documentation(fixtures, "fixtures", "ci.yml");
     let runner = field(fixtures, "runs-on")
         .and_then(Yaml::as_str)
         .unwrap_or("");

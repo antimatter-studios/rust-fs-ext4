@@ -20,7 +20,7 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 rust-fs-ext4 = { path = ".." }
-rust-fs-core = { path = "../../rust-fs-core", version = "0.3.7" }
+rust-fs-core = { path = "../../rust-fs-core", version = "0.3.8" }
 
 [[bin]]
 name = "image"
