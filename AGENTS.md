@@ -15,7 +15,7 @@ with every repository in this family**. Do not edit it here: change the
 canonical copy and propagate it, or `scripts/agents-core-check.sh` will fail.
 Everything after the END marker is specific to this repository.
 
-<!-- BEGIN SHARED BLOCK: agent-core v2 sha256:38af4d2c5377d38ab382baa4eab4aa679841e2b4eba4f4d01dacd255ffa7d32e -->
+<!-- BEGIN SHARED BLOCK: agent-core v5 sha256:93dca03d900fede9964388123030f779939bc99b8b9943f092051be6c9134126 -->
 ## Claiming work
 
 Several agents work these repositories at the same time. Before you start on
@@ -95,6 +95,19 @@ prove that same check is green, *then* confirm the full baseline still passes.
 Never write the fix before you have a red. A fix with no failing test to its
 name is a claim, not a result.
 
+**Red and green happen in one pull request, on one branch.** Push the commit
+that adds the failing test on its own, and let CI show it red on that pull
+request. Then push the fix to the **same branch**, with the test untouched,
+until the same pull request is green.
+
+- Never put a fix in a second pull request, stacked or not. A pull request
+  that only holds a red commit can never merge, and it blocks every pull
+  request built on it.
+- Never push the test and the fix together. The red has to be visible in CI,
+  not claimed in the description.
+- Wait for the red run to finish before pushing the fix: a new push cancels
+  the run in progress.
+
 ## Nothing skips
 
 A test that cannot run **fails**, naming the task that would provide what it
@@ -143,6 +156,23 @@ it**. Do not silence output to fit, and do not route around `tier.sh`.
 - **No AI attribution and no co-author trailers**, in commits or in pull
   request descriptions.
 - `main` takes **squash merges only**.
+- **Bring a branch up to date before every push.** `git fetch origin`, and
+  if `main` has moved past the branch, rebase onto `origin/main` first,
+  resolving any conflicts then, while they are small. Synced first, the run
+  tests the branch close to how it will land. And a branch synced at every
+  push never goes stale: each sync takes in only what landed since the last
+  one, so conflicts stay few and small. Sync when you are pushing anyway; a
+  push made only to bring a branch up to date buys a whole CI run and
+  nothing else.
+- **`main` merges through a merge queue.** A pull request whose own CI is
+  green goes into the queue: `gh pr merge --squash` adds it. The queue tests
+  each group on a temporary branch, `main` plus the queued pull requests in
+  order, and squash-merges each one only when that run is green, so what
+  lands is exactly the tree CI ran. That run is what "branches must be up to
+  date" used to buy, at one run per group instead of one per pull request per
+  merge: never update a branch only so that it can merge. Every workflow
+  that gates `main` triggers on `merge_group`, or the queue never sees its
+  result and nothing merges.
 
 ## Project rules
 
@@ -151,7 +181,7 @@ it**. Do not silence output to fit, and do not route around `tier.sh`.
   copying it is not.
 - **Each of these is a standalone project.** Never mention a consuming
   application in the README, the source, or CLI help.
-<!-- END SHARED BLOCK: agent-core v2 -->
+<!-- END SHARED BLOCK: agent-core v5 -->
 
 
 ## Keep the features page current
