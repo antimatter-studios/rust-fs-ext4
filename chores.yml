@@ -804,6 +804,7 @@ tasks:
     # lines to it.
     cmds:
       - bash ../rust-fs-core/scripts/agents-core-check.sh
+      - bash ../rust-fs-core/scripts/changelog-check.sh
       # The family scripts are rust-fs-core's alone: fails on a committed copy,
       # or a call to a local copy.
       - bash ../rust-fs-core/scripts/family-check.sh
