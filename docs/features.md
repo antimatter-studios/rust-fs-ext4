@@ -41,9 +41,9 @@ States:
 | `sparse_super2` backup superblocks | Supported | 0.6.0 | | `sparse_super2_backup_bgs_oracle.rs` |
 | 32-byte descriptors on non-64bit volumes | Supported | 0.6.0 | | `non_64bit_desc_size.rs` |
 | Timestamps past 2038, epoch-extension bits | Supported | 0.5.0; automatic times 0.6.0 (#324) | | `timestamps_past_2038_oracle.rs` |
-| JBD2 replay on a writable mount: descriptor, commit and revoke blocks, v2 and v3 checksums | Supported | 0.1.0; checksums 0.6.0 (#229) | | `journal_replay.rs`, `jbd2_checksums_oracle.rs`, `journal_mount_recovery.rs` |
+| JBD2 replay on a writable mount: descriptor, commit and revoke blocks, v2 and v3 checksums; the superblock's free block and inode counts recounted from the group descriptors when recovery completes | Supported | 0.1.0; checksums 0.6.0 (#229); recount Unreleased (#507) | | `journal_replay.rs`, `jbd2_checksums_oracle.rs`, `journal_mount_recovery.rs`, `lazy_write_over_kernel_log.rs` |
 | Replay into memory on a read-only mount, the device untouched | Supported | 0.6.0 (#234) | | `ro_mount_replays_in_memory.rs` |
-| Lazy replay (`mount_rw_with_callbacks_lazy`) | Supported | 0.1.4 | | `capi_lazy_replay.rs`, `lazy_replay_reloads_state.rs` |
+| Lazy replay (`mount_rw_with_callbacks_lazy`); writes refused until the log is replayed | Supported | 0.1.4; refusal 0.6.0 (#409) | | `capi_lazy_replay.rs`, `lazy_replay_reloads_state.rs`, `lazy_write_over_kernel_log.rs` |
 | Orphan list read and replayed | Supported | 0.1.4 | | `orphan_list_basic.rs`, `orphan_recovery.rs` |
 | Names that are not UTF-8 | Supported | 0.6.0 (#420) | | `non_utf8_names_oracle.rs`, `capi_non_utf8_path.rs` |
 | `bigalloc` volumes | Supported, read-only | 0.6.0 (#237) | | `bigalloc_read_oracle.rs` |
@@ -94,7 +94,7 @@ reading the result back in the guest.
 | HTree interior index node split | Partial: a full interior node is refused | | | |
 | ext2 and ext3 writes (indirect block maps) | Supported | 0.4.0 (#22) | | `mkfs_ext3_oracle.rs`, `ext2_basic.rs` |
 | An ext2/ext3 directory that needs the double-indirect block | Refused | 0.6.0 | | `src/fs.rs` unit tests |
-| Multiple block groups, uninitialised groups | Supported | 0.4.0; uninit groups 0.4.1, 0.6.0 | | `allocations_into_an_uninit_group.rs`, `uninit_group_flags_cleared.rs` |
+| Multiple block groups, uninitialised groups | Supported | 0.4.0; uninit groups 0.4.1, 0.6.0 | | `allocations_into_an_uninit_group.rs`, `uninit_group_flags_cleared.rs`, `lazy_write_over_kernel_log.rs` |
 | A volume with a read-only-compatible bit the writer does not maintain (quota, project, orphan file, bigalloc) | Refused for writing | 0.6.0 (#77) | write plan 9.4, 9.5 | `ro_compat_write_guard.rs` |
 | Writing an `mmp`, `casefold` or `encrypt` volume | Refused | 0.6.0 (#76) | | `feature_matrix.rs` (mmp), `encrypt_per_inode.rs` |
 | JBD2 journal modes other than ordered | Not supported | | write plan 5.3 | |
