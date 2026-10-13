@@ -67,6 +67,40 @@ pub(crate) fn write_needs_recovery(dev: &dyn crate::block_io::BlockDevice, on: b
     dev.write_at(at, &sb)
 }
 
+/// Clear `needs_recovery` in the primary superblock, and in the same write
+/// set its free block and inode counts to the sums over the group
+/// descriptors.
+///
+/// Those two summary counts are the one part of a crashed volume the
+/// descriptors do not vouch for. The kernel keeps them in memory and writes
+/// them back lazily, not with each transaction, so its log carries the
+/// descriptors' counts and leaves the superblock's behind; once the log is
+/// replayed, `e2fsck -fn` reports "Free blocks count wrong" and "Free
+/// inodes count wrong" until something recounts (#506,
+/// `tests/lazy_write_over_kernel_log.rs`). Recovery is where the volume is
+/// brought back to consistent, so the recount happens here.
+fn finish_recovery(fs: &Filesystem) -> Result<()> {
+    let at = crate::superblock::SUPERBLOCK_OFFSET;
+    let mut raw = vec![0u8; 1024];
+    fs.dev.read_at(at, &mut raw)?;
+    let sb = crate::superblock::Superblock::parse(raw.clone())?;
+    let csum = crate::checksum::Checksummer::from_superblock(&sb);
+    let groups = crate::bgd::read_all(fs.dev.as_ref(), &sb, &csum)?;
+    let free_blocks: u64 = groups.iter().map(|g| g.free_blocks_count as u64).sum();
+    let free_inodes: u64 = groups.iter().map(|g| g.free_inodes_count as u64).sum();
+    let free_inodes = u32::try_from(free_inodes).map_err(|_| {
+        Error::Corrupt("journal_apply: the group descriptors count more free inodes than fit")
+    })?;
+    raw[0x0C..0x10].copy_from_slice(&(free_blocks as u32).to_le_bytes());
+    if sb.is_64bit() {
+        raw[0x158..0x15C].copy_from_slice(&((free_blocks >> 32) as u32).to_le_bytes());
+    }
+    raw[0x10..0x14].copy_from_slice(&free_inodes.to_le_bytes());
+    // Clearing the flag re-stamps the checksum over the counts as well.
+    set_needs_recovery_in(&mut raw, false);
+    fs.dev.write_at(at, &raw)
+}
+
 /// Record a replayed journal as done: `s_start = 0` and `s_sequence` the one
 /// past the first uncommitted transaction, checksum redone, flushed.
 fn mark_journal_clean(fs: &Filesystem, jsb: &JournalSuperblock, plan: &ReplayPlan) -> Result<()> {
@@ -294,9 +328,10 @@ pub fn replay_if_dirty(fs: &Filesystem) -> Result<usize> {
     };
     if jsb.is_clean() {
         // A crash between the clean journal and the cleared flag leaves
-        // the flag behind with nothing to recover.
+        // the flag behind with nothing to recover, and the summary counts
+        // as stale as after any other crash.
         if fs.sb.feature_incompat & crate::features::Incompat::RECOVER.bits() != 0 {
-            write_needs_recovery(fs.dev.as_ref(), false)?;
+            finish_recovery(fs)?;
             fs.dev.flush()?;
         }
         return Ok(0);
@@ -311,7 +346,7 @@ pub fn replay_if_dirty(fs: &Filesystem) -> Result<usize> {
     let plan = crate::journal::walk(fs, &jsb)?;
     let applied = apply(fs, &plan)?;
     mark_journal_clean(fs, &jsb, &plan)?;
-    write_needs_recovery(fs.dev.as_ref(), false)?;
+    finish_recovery(fs)?;
     fs.dev.flush()?;
     Ok(applied)
 }
