@@ -6,12 +6,16 @@
 //! workflow_call and any event not known here, runs the full one.
 //! `scripts/ci-ok.sh` is the `ci-ok` verdict: it accepts a skipped job
 //! only where that plan skipped it, and refuses a missing or invalid
-//! plan, a missing job, and any failure or cancellation. Both are pinned
-//! here row by row so that a profile cannot quietly drop a leg.
+//! plan, a missing job, and any failure or cancellation.
+//!
+//! A test here spawns no shell (tests/test_contract.rs), so the rows are
+//! executed by `scripts/test-ci-plan.sh`, which the `changes` job runs on
+//! every event before it plans the profile. This file pins the schema
+//! both sides share, the job lists in ci-ok.sh, the guard and the
+//! workflow, and that the guard grades every row family named below, so
+//! that a profile cannot quietly drop a leg.
 
-use std::io::Write;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
 
 const ALL: [&str; 11] = [
     "changes",
@@ -36,169 +40,137 @@ const FULL_ONLY: [&str; 6] = [
 ];
 const VM_ONLY: [&str; 4] = ["fixtures", "test", "test-arm64", "suite-in-vm"];
 
-fn script(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("scripts")
-        .join(name)
+fn read(relative: &str) -> String {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(relative);
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
 }
 
-fn plan(event: &str) -> String {
-    let out = Command::new("bash")
-        .arg(script("ci-plan.sh"))
-        .arg(event)
-        .output()
-        .expect("bash runs scripts/ci-plan.sh");
-    assert!(out.status.success(), "ci-plan.sh failed for {event:?}");
-    String::from_utf8(out.stdout).unwrap().trim().to_string()
+fn guard() -> String {
+    read("scripts/test-ci-plan.sh")
 }
 
-fn verdict(profile: Option<&str>, code: Option<&str>, results: &[(&str, &str)]) -> bool {
-    let mut cmd = Command::new("bash");
-    cmd.arg(script("ci-ok.sh"))
-        .env_remove("PROFILE")
-        .env_remove("CODE")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    if let Some(p) = profile {
-        cmd.env("PROFILE", p);
-    }
-    if let Some(c) = code {
-        cmd.env("CODE", c);
-    }
-    let mut child = cmd.spawn().expect("bash runs scripts/ci-ok.sh");
-    let mut input = String::new();
-    for (job, result) in results {
-        input.push_str(&format!("{job} {result}\n"));
-    }
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(input.as_bytes())
-        .unwrap();
-    child.wait().unwrap().success()
+/// The words of a `name=(...)` bash array or a `name="..."` list.
+fn list(text: &str, opener: &str, closer: char) -> Vec<String> {
+    let at = text
+        .find(opener)
+        .unwrap_or_else(|| panic!("no {opener:?} list"));
+    let rest = &text[at + opener.len()..];
+    let end = rest.find(closer).expect("list is closed");
+    rest[..end].split_whitespace().map(str::to_string).collect()
 }
 
-/// What each job reports when the plan is followed exactly.
-fn as_planned(profile: &str, code: &str) -> Vec<(&'static str, &'static str)> {
-    ALL.iter()
-        .map(|&job| {
-            let skipped = (profile == "quick" && FULL_ONLY.contains(&job))
-                || (code == "false" && VM_ONLY.contains(&job));
-            (job, if skipped { "skipped" } else { "success" })
-        })
-        .collect()
+fn names(jobs: &[&str]) -> Vec<String> {
+    jobs.iter().map(|j| j.to_string()).collect()
 }
 
-fn with(
-    mut rows: Vec<(&'static str, &'static str)>,
-    job: &str,
-    result: &'static str,
-) -> Vec<(&'static str, &'static str)> {
-    for row in rows.iter_mut() {
-        if row.0 == job {
-            row.1 = result;
-        }
+/// The guard runs in the `changes` job, before the profile is planned,
+/// so no event can plan a profile whose truth table did not hold.
+fn assert_guard_is_wired() {
+    let ci = read(".github/workflows/ci.yml");
+    let grade = ci
+        .find("run: bash scripts/test-ci-plan.sh")
+        .expect("ci.yml runs scripts/test-ci-plan.sh");
+    let changes = ci.find("\n  changes:\n").expect("ci.yml has a changes job");
+    let plan = ci
+        .find("profile=\"$(bash scripts/ci-plan.sh \"$EVENT\")\"")
+        .expect("ci.yml plans the profile with scripts/ci-plan.sh");
+    assert!(
+        changes < grade && grade < plan,
+        "the guard must run in changes, before the plan"
+    );
+    assert!(ci.contains("EVENT: ${{ github.event_name }}"));
+}
+
+fn assert_guard_grades(rows: &[&str]) {
+    assert_guard_is_wired();
+    let text = guard();
+    for row in rows {
+        assert!(
+            text.contains(row),
+            "scripts/test-ci-plan.sh no longer grades {row:?}"
+        );
     }
-    rows
+    assert!(text
+        .trim_end()
+        .ends_with("echo \"test-ci-plan.sh: all checks passed\""));
 }
 
 #[test]
 fn only_a_pull_request_runs_the_quick_profile() {
-    assert_eq!(plan("pull_request"), "quick");
-    for event in [
-        "merge_group",
-        "push",
-        "workflow_dispatch",
-        "workflow_call",
-        "schedule",
-        "release",
-        "",
-        "pull_request_target",
-    ] {
-        assert_eq!(
-            plan(event),
-            "full",
-            "event {event:?} must run the full profile"
-        );
-    }
+    assert_guard_grades(&[
+        "ci-plan.sh\" pull_request)\" && [[ \"$got\" == quick ]]",
+        "for event in merge_group push workflow_dispatch workflow_call schedule release \"\" pull_request_target; do",
+        "[[ \"$got\" == full ]]",
+    ]);
 }
 
 #[test]
 fn every_planned_outcome_is_green() {
-    for profile in ["quick", "full"] {
-        for code in ["true", "false"] {
-            assert!(
-                verdict(Some(profile), Some(code), &as_planned(profile, code)),
-                "profile {profile}, code {code}: the planned outcome must pass"
-            );
-        }
-    }
+    let text = guard();
+    assert_eq!(list(&text, "\nALL=(", ')'), names(&ALL));
+    assert_eq!(list(&text, "\nFULL_ONLY=(", ')'), names(&FULL_ONLY));
+    assert_eq!(list(&text, "\nVM_ONLY=(", ')'), names(&VM_ONLY));
+    let ok = read("scripts/ci-ok.sh");
+    assert_eq!(list(&ok, "\nall=\"", '"'), names(&ALL));
+    assert_eq!(list(&ok, "\nfull_only=\"", '"'), names(&FULL_ONLY));
+    assert_eq!(list(&ok, "\nvm_only=\"", '"'), names(&VM_ONLY));
+    let ci = read(".github/workflows/ci.yml");
+    let needs: Vec<String> = list(
+        &ci[ci.find("\n  ci-ok:\n").expect("ci.yml has a ci-ok job")..],
+        "\n    needs: [changes,",
+        ']',
+    )
+    .iter()
+    .map(|j| j.trim_end_matches(',').to_string())
+    .collect();
+    assert_eq!(
+        needs,
+        names(&ALL[1..]),
+        "ci-ok needs every job the verdict reads"
+    );
+    assert_guard_grades(&[
+        "expect pass \"profile $profile, code $code: the planned outcome\" \"$profile\" \"$code\" \"$profile\" \"$code\"",
+        "{ [[ \"$profile\" == quick ]] && in_list \"$job\" \"${FULL_ONLY[@]}\"; } ||",
+        "{ [[ \"$code\" == false ]] && in_list \"$job\" \"${VM_ONLY[@]}\"; }; then",
+    ]);
 }
 
 #[test]
 fn a_full_run_that_skips_a_full_only_job_fails() {
-    for job in FULL_ONLY {
-        let rows = with(as_planned("full", "true"), job, "skipped");
-        assert!(
-            !verdict(Some("full"), Some("true"), &rows),
-            "full run with {job} skipped must fail"
-        );
-    }
-    for job in ["wasm", "cli"] {
-        let rows = with(as_planned("full", "false"), job, "skipped");
-        assert!(
-            !verdict(Some("full"), Some("false"), &rows),
-            "documentation-only full run with {job} skipped must fail"
-        );
-    }
+    assert_guard_grades(&[
+        "for job in \"${FULL_ONLY[@]}\"; do\n  expect fail \"full run with $job skipped\" full true full true \"$job\" skipped",
+        "for job in wasm cli; do\n  expect fail \"documentation-only full run with $job skipped\" full false full false \"$job\" skipped",
+    ]);
 }
 
 #[test]
 fn a_quick_run_never_accepts_a_skipped_quick_job() {
-    for job in ["changes", "unit", "semver", "msrv", "provenance"] {
-        for profile in ["quick", "full"] {
-            let rows = with(as_planned(profile, "true"), job, "skipped");
-            assert!(
-                !verdict(Some(profile), Some("true"), &rows),
-                "{profile} run with {job} skipped must fail"
-            );
-        }
-    }
+    let text = guard();
+    assert_eq!(
+        list(&text, "\nQUICK=(", ')'),
+        names(&["changes", "unit", "semver", "msrv", "provenance"])
+    );
+    assert_guard_grades(&[
+        "for job in \"${QUICK[@]}\"; do\n  for profile in quick full; do\n    expect fail \"$profile run with $job skipped\" \"$profile\" true \"$profile\" true \"$job\" skipped",
+    ]);
 }
 
 #[test]
 fn a_failed_cancelled_or_missing_job_fails_every_profile() {
-    for profile in ["quick", "full"] {
-        for code in ["true", "false"] {
-            for job in ALL {
-                for result in ["failure", "cancelled", "", "neutral"] {
-                    let rows = with(as_planned(profile, code), job, result);
-                    assert!(
-                        !verdict(Some(profile), Some(code), &rows),
-                        "{profile}/{code}: {job} {result:?} must fail"
-                    );
-                }
-                let rows: Vec<_> = as_planned(profile, code)
-                    .into_iter()
-                    .filter(|r| r.0 != job)
-                    .collect();
-                assert!(
-                    !verdict(Some(profile), Some(code), &rows),
-                    "{profile}/{code}: missing {job} must fail"
-                );
-            }
-        }
-    }
+    assert_guard_grades(&[
+        "for result in failure cancelled \"\" neutral; do",
+        "expect fail \"$profile/$code: $job '$result'\" \"$profile\" \"$code\" \"$profile\" \"$code\" \"$job\" \"$result\"",
+        "expect fail \"$profile/$code: missing $job\" \"$profile\" \"$code\" \"$profile\" \"$code\" \"$job\" --omit",
+    ]);
 }
 
 #[test]
 fn a_missing_or_invalid_plan_fails() {
-    let rows = as_planned("full", "true");
-    assert!(!verdict(None, Some("true"), &rows));
-    assert!(!verdict(Some(""), Some("true"), &rows));
-    assert!(!verdict(Some("fast"), Some("true"), &rows));
-    assert!(!verdict(Some("full"), None, &rows));
-    assert!(!verdict(Some("full"), Some("maybe"), &rows));
+    assert_guard_grades(&[
+        "expect fail \"unset profile\" \"<unset>\" true full true",
+        "expect fail \"empty profile\" \"\" true full true",
+        "expect fail \"profile fast\" fast true full true",
+        "expect fail \"unset code\" full \"<unset>\" full true",
+        "expect fail \"code maybe\" full maybe full true",
+    ]);
 }

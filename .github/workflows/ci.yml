@@ -128,6 +128,8 @@ jobs:
         run: scripts/ci-install-chore.sh
       - name: chore siblings
         run: chore siblings
+      - name: Grade the profile planner and verdict
+        run: bash scripts/test-ci-plan.sh
       - name: Plan the profile
         id: plan
         env:
