@@ -951,10 +951,14 @@ fn assert_unconditional_or_skipped_for_documentation(job: &Yaml, name: &str, wor
         "{workflow} jobs.{name} must not be allowed to fail"
     );
     if let Some(condition) = field(job, "if") {
-        assert_eq!(
-            condition.as_str(),
-            Some("needs.changes.outputs.code == 'true'"),
-            "{workflow} jobs.{name} may be skipped only for a change to documentation alone"
+        assert!(
+            matches!(
+                condition.as_str(),
+                Some("needs.changes.outputs.code == 'true'")
+                    | Some("needs.changes.outputs.profile == 'full' && needs.changes.outputs.code == 'true'")
+            ),
+            "{workflow} jobs.{name} may be skipped only for a change to documentation alone, \
+             or for the quick profile that scripts/ci-plan.sh plans for a pull request"
         );
         assert!(
             needs_of(job).iter().any(|n| n == "changes"),

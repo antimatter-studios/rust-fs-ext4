@@ -88,6 +88,10 @@ on:
   # decides whether they land. The queue reads ci-ok only from a workflow
   # that triggers here.
   merge_group:
+  # A full run of any branch on request: the full profile, every VM,
+  # fixture and oracle job, for a stack layer whose pull request ran the
+  # quick one.
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
@@ -114,6 +118,8 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       code: ${{ steps.c.outputs.code }}
+      # quick for a pull request, full for everything else (scripts/ci-plan.sh).
+      profile: ${{ steps.plan.outputs.profile }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -122,6 +128,15 @@ jobs:
         run: scripts/ci-install-chore.sh
       - name: chore siblings
         run: chore siblings
+      - name: Plan the profile
+        id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          profile="$(bash scripts/ci-plan.sh "$EVENT")"
+          echo "profile=$profile ($EVENT)"
+          echo "profile=$profile" >> "$GITHUB_OUTPUT"
       - name: Classify the change
         id: c
         env:
@@ -198,6 +213,10 @@ jobs:
       - name: chore test:unit
         id: tier
         run: chore test:unit
+      - name: chore lint
+        # The quick profile's lint: test and test-arm64 lint too, but run
+        # only in the full profile.
+        run: chore lint
       - name: Keep the tier logs
         # A quiet tier writes its detail to tmp/logs/<tier>.log and prints a
         # verdict; without this the detail dies with the runner and the only
@@ -215,7 +234,7 @@ jobs:
   fixtures:
     name: fixtures (harness VM, x86_64 KVM)
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.profile == 'full' && needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -421,6 +440,8 @@ jobs:
 
   wasm:
     name: wasm32 (browser build, tests under Node)
+    needs: changes
+    if: needs.changes.outputs.profile == 'full'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -532,6 +553,8 @@ jobs:
 
   cli:
     name: cli (the installed tools, on PATH)
+    needs: changes
+    if: needs.changes.outputs.profile == 'full'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -604,19 +627,15 @@ jobs:
     needs: [changes, unit, fixtures, test, test-arm64, suite-in-vm, wasm, semver, msrv, cli, provenance]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
       - name: Every job ran and succeeded
         env:
           NEEDS: ${{ toJSON(needs) }}
-          # false only for a change to documentation alone: then, and only
-          # then, a skipped job is not a failed one.
+          # The plan the changes job made: quick or full, and false only for
+          # a change to documentation alone. scripts/ci-ok.sh accepts a skip
+          # only where that plan made one, and refuses a missing plan.
+          PROFILE: ${{ needs.changes.outputs.profile }}
           CODE: ${{ needs.changes.outputs.code }}
         run: |
           set -euo pipefail
-          echo "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
-          echo "code changed: $CODE"
-          bad="$(echo "$NEEDS" | jq -r --arg code "$CODE" '[to_entries[] | select(.value.result != "success" and ($code != "false" or .value.result != "skipped")) | .key] | join(", ")')"
-          if [ -n "$bad" ]; then
-            echo "::error::not green: $bad (failed, cancelled or skipped)"
-            exit 1
-          fi
-          echo "all required jobs succeeded"
+          echo "$NEEDS" | jq -r 'to_entries[] | "\(.key) \(.value.result)"' | bash scripts/ci-ok.sh
