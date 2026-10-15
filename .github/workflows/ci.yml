@@ -103,6 +103,14 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   CHORE_VERSION: "0.11.0"
+  # The jobs the full profile alone runs (`if: needs.changes.outputs.profile
+  # == 'full'`), declared to rust-fs-core's ci-gate.sh, which `chore lint`
+  # runs in the unit job. ci-gate recognises only the `code` path gate on its
+  # own, so a profile-gated job in ci-ok's needs must be named here. They stay
+  # in ci-ok's needs: scripts/ci-ok.sh still judges each one's result, and
+  # accepts its skip only under the quick plan; under the full plan a skip,
+  # failure or cancellation of any of them still fails ci-ok.
+  CI_GATE_NON_GATING: fixtures wasm cli
 
 jobs:
   # Does this change need the full pipeline? rust-fs-core's
