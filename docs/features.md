@@ -1,16 +1,18 @@
 # Features
 
 What this driver does today, what it refuses, and what is coming. **Every
-pull request that adds, fixes, refuses or removes behaviour updates its row
-here, in the same pull request** (AGENTS.md). The reasoning behind each change
+pull request that adds, fixes, refuses or removes behaviour adds its row to
+[`features.d/`](../features.d/README.md), in the same pull request**, and the
+next release writes it here (AGENTS.md). The reasoning behind each change
 is in [CHANGELOG.md](../CHANGELOG.md); the feature-bit decisions are in
 [format-conformance-gaps.md](format-conformance-gaps.md) and the write plan in
 [ext4-full-write-support.md](ext4-full-write-support.md).
 
 **Since** is the release a row's current state shipped in, with the issue or
 pull request that landed it where the history names one. Work merged after
-the last release is **Unreleased (#N)** until the next one. **Tracking** names
-the open issue, or the write-plan item, for anything not finished.
+the last release is **Unreleased (#N)** in its `features.d/` fragment until
+the next one. **Tracking** names the open issue, or the write-plan item, for
+anything not finished.
 
 States:
 
@@ -41,7 +43,7 @@ States:
 | `sparse_super2` backup superblocks | Supported | 0.6.0 | | `sparse_super2_backup_bgs_oracle.rs` |
 | 32-byte descriptors on non-64bit volumes | Supported | 0.6.0 | | `non_64bit_desc_size.rs` |
 | Timestamps past 2038, epoch-extension bits | Supported | 0.5.0; automatic times 0.6.0 (#324) | | `timestamps_past_2038_oracle.rs` |
-| JBD2 replay on a writable mount: descriptor, commit and revoke blocks, v2 and v3 checksums; the superblock's free block and inode counts recounted from the group descriptors when recovery completes | Supported | 0.1.0; checksums 0.6.0 (#229); recount Unreleased (#507) | | `journal_replay.rs`, `jbd2_checksums_oracle.rs`, `journal_mount_recovery.rs`, `lazy_write_over_kernel_log.rs` |
+| JBD2 replay on a writable mount: descriptor, commit and revoke blocks, v2 and v3 checksums | Supported | 0.1.0; checksums 0.6.0 (#229) | | `journal_replay.rs`, `jbd2_checksums_oracle.rs`, `journal_mount_recovery.rs` |
 | Replay into memory on a read-only mount, the device untouched | Supported | 0.6.0 (#234) | | `ro_mount_replays_in_memory.rs` |
 | Lazy replay (`mount_rw_with_callbacks_lazy`); writes refused until the log is replayed | Supported | 0.1.4; refusal 0.6.0 (#409) | | `capi_lazy_replay.rs`, `lazy_replay_reloads_state.rs`, `lazy_write_over_kernel_log.rs` |
 | Orphan list read and replayed | Supported | 0.1.4 | | `orphan_list_basic.rs`, `orphan_recovery.rs` |
