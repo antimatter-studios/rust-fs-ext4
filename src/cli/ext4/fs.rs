@@ -1,7 +1,7 @@
 //! `fs.ext4 <target> <verb>`: an errand inside an ext4 image or device,
 //! without mounting it.
 //!
-//! The verbs are the shared set: `ls`, `read`, `write`, `mkdir`,
+//! The verbs are the shared set: `ls`, `stat`, `read`, `write`, `mkdir`,
 //! `get`/`info`, `set`, `resize`. Metadata is JSON (or `--text`); file content is raw bytes.
 //! A verb the library cannot do yet still exists and answers `not
 //! implemented` with exit status 3, so a script moved between filesystems
@@ -15,7 +15,7 @@ use clap::{value_parser, Arg, ArgAction, ArgMatches, Command as Cmd};
 use fs_core::cli::{CliError, Json, Outcome, Tool};
 use fs_ext4::dir::DirEntryType;
 use fs_ext4::features::{Compat, Incompat, RoCompat};
-use fs_ext4::inode::Inode;
+use fs_ext4::inode::{Inode, InodeFlags};
 use fs_ext4::Filesystem;
 
 pub const TOOL: Tool = Tool {
@@ -83,6 +83,24 @@ fn command() -> Cmd {
                     "Examples:\n  fs.ext4 disk.img ls /etc\n  \
                      fs.ext4 disk.img ls / | jq -r '.[].name'\n  \
                      fs.ext4 disk.img ls --text /",
+                ),
+        )
+        .subcommand(
+            Cmd::new("stat")
+                .about("Report one path: identity, type, mode, owner, links, sizes and every time")
+                .arg(
+                    Arg::new("path")
+                        .value_name("PATH")
+                        .required(true)
+                        .value_parser(value_parser!(OsString)),
+                )
+                .after_help(
+                    "Examples:\n  fs.ext4 disk.img stat /etc/hostname\n  \
+                     fs.ext4 disk.img stat /var/log | jq .nlink\n  \
+                     fs.ext4 disk.img stat --text /bin/sh\n\n\
+                     A symlink is reported, not followed. Times are seconds since the epoch \
+                     plus nanoseconds; a field the inode has no room for (the nanoseconds and \
+                     the creation time of a 128-byte inode) is null.",
                 ),
         )
         .subcommand(
@@ -209,6 +227,7 @@ fn run(matches: &ArgMatches) -> Result<Outcome, CliError> {
         .unwrap_or(0);
     match verb {
         "ls" => ls(&open(target, offset)?, path_arg(sub)),
+        "stat" => stat(&open(target, offset)?, path_arg(sub)),
         "read" => read(&open(target, offset)?, path_arg(sub), sub.get_one("output")),
         "write" => write(target, offset, path_arg(sub)),
         "mkdir" => mkdir(target, offset, path_arg(sub)),
@@ -373,6 +392,110 @@ fn ls(fs: &Filesystem, path: &[u8]) -> Result<Outcome, CliError> {
         .collect::<Vec<_>>()
         .join("\n");
     Ok(Outcome::report(Json::Arr(entries)).with_text(text))
+}
+
+/// How many bytes past the 128-byte base inode `i_extra_isize` says are
+/// valid: zero for a 128-byte inode, which has none.
+fn extra_isize(raw: &[u8]) -> u16 {
+    if raw.len() < 0x82 {
+        return 0;
+    }
+    u16::from_le_bytes([raw[0x80], raw[0x81]])
+}
+
+/// A device node's major and minor numbers, from the first two words of
+/// `i_block`. The first word holds a pair that fits the old 8-bit
+/// encoding; when it is zero, the pair is in the second word's wider one.
+/// tests/cli_stat_kernel.rs pins both against nodes Linux made.
+fn device_numbers(block: &[u8; 60]) -> (u32, u32) {
+    let old = u32::from_le_bytes([block[0], block[1], block[2], block[3]]);
+    if old != 0 {
+        return ((old >> 8) & 0xff, old & 0xff);
+    }
+    let new = u32::from_le_bytes([block[4], block[5], block[6], block[7]]);
+    ((new >> 8) & 0xfff, (new & 0xff) | ((new >> 12) & 0xf_ff00))
+}
+
+/// `stat PATH`: one path's identity, type, mode, owner, links, sizes and
+/// every time, the shared keys first and ext4's own under `ext4`. A
+/// symlink is reported, not followed. Times are signed seconds plus
+/// nanoseconds; a field the inode has no room for -- the nanoseconds and
+/// the creation time, as `i_extra_isize` says -- is null, not zero.
+fn stat(fs: &Filesystem, path: &[u8]) -> Result<Outcome, CliError> {
+    let ino = fs
+        .lookup_path_bytes(path)
+        .map_err(|e| driver_error(path, e))?;
+    let (inode, raw) = fs
+        .read_inode_verified(ino)
+        .map_err(|e| driver_error(path, e))?;
+    let kind = DirEntryType::from_mode(inode.mode);
+    let extra = extra_isize(&raw);
+    // The extended area's fields, each present once i_extra_isize reaches
+    // past it (the ext4 documentation, "Inode Table").
+    let nsec = |covered: u16, value: u32| (extra >= covered).then_some(u64::from(value));
+    let huge = fs.sb.feature_ro_compat & RoCompat::HUGE_FILE.bits() != 0
+        && inode.flags & InodeFlags::HUGE_FILE.bits() != 0;
+    let unit = if huge {
+        u64::from(fs.sb.block_size())
+    } else {
+        512
+    };
+
+    let mut fields = vec![("path", Json::from(show(path)))];
+    if std::str::from_utf8(path).is_err() {
+        fields.push((
+            "path_hex",
+            Json::from(path.iter().map(|b| format!("{b:02x}")).collect::<String>()),
+        ));
+    }
+    fields.extend([
+        ("inode", Json::from(ino)),
+        ("type", Json::from(type_name(kind))),
+        ("mode", Json::from(format!("{:04o}", inode.mode & 0o7777))),
+        ("uid", Json::from(inode.uid)),
+        ("gid", Json::from(inode.gid)),
+        ("nlink", Json::from(inode.links_count)),
+        ("size", Json::from(inode.size)),
+        (
+            "allocated_bytes",
+            Json::from(inode.blocks.saturating_mul(unit)),
+        ),
+        ("atime", Json::from(inode.atime)),
+        ("atime_nsec", Json::from(nsec(16, inode.atime_nsec))),
+        ("mtime", Json::from(inode.mtime)),
+        ("mtime_nsec", Json::from(nsec(12, inode.mtime_nsec))),
+        ("ctime", Json::from(inode.ctime)),
+        ("ctime_nsec", Json::from(nsec(8, inode.ctime_nsec))),
+        ("btime", Json::from((extra >= 20).then_some(inode.crtime))),
+        ("btime_nsec", Json::from(nsec(24, inode.crtime_nsec))),
+    ]);
+    match kind {
+        DirEntryType::Symlink => fields.push((
+            "target",
+            Json::from(
+                fs.read_link_ino(ino)
+                    .map(|t| show(&t))
+                    .map_err(|e| driver_error(path, e))?,
+            ),
+        )),
+        DirEntryType::CharDev | DirEntryType::BlockDev => {
+            let (major, minor) = device_numbers(&inode.block);
+            fields.push(("major", Json::from(major)));
+            fields.push(("minor", Json::from(minor)));
+        }
+        _ => {}
+    }
+    fields.push((
+        "ext4",
+        Json::object([
+            ("flags", flag_names::<InodeFlags>(inode.flags)),
+            ("generation", Json::from(inode.generation)),
+            ("file_acl", Json::from(inode.file_acl)),
+            ("blocks", Json::from(inode.blocks)),
+            ("extra_isize", Json::from(extra)),
+        ]),
+    ));
+    Ok(Outcome::report(Json::object(fields)))
 }
 
 /// Stream a regular file's bytes. Each chunk is read before it is

@@ -56,7 +56,7 @@ fn every_name_has_a_man_page_in_its_section_naming_its_subcommands() {
     }
     // fs.ext4's subcommands have pages of their own, which its list names.
     for verb in [
-        "ls", "read", "write", "mkdir", "get", "info", "set", "resize",
+        "ls", "stat", "read", "write", "mkdir", "get", "info", "set", "resize",
     ] {
         assert!(
             share.join(format!("man/man1/fs.ext4-{verb}.1")).is_file(),
