@@ -61,6 +61,7 @@ for name in $(rust-fs-ext4 generate names); do ln -s rust-fs-ext4 "$name"; done
 mkfs.ext4 --size 64M --label BACKUP disk.img
 fsck.ext4 disk.img                         # -y to repair
 fs.ext4 disk.img ls /
+fs.ext4 disk.img ls -R --max-depth 8 --limit 1000 /etc
 fs.ext4 disk.img stat /etc/fstab
 fs.ext4 disk.img read /etc/fstab > fstab
 fs.ext4 disk.img write /notes.txt < notes.txt
@@ -78,6 +79,18 @@ rust-fs-ext4 doctor                        # is every tool on PATH ours?
   failed, 2 wrong command line, 3 not implemented. `fsck.ext4` keeps
   fsck(8)'s statuses instead: 0 clean, 1 corrected, 4 uncorrected, 8
   operational error, 16 usage.
+- **`ls --recursive`** (`-R`) walks the tree under PATH: each entry is the
+  `ls` entry plus `path`, from the root of the volume, and `depth`, PATH's
+  own entries being depth 1 (a PATH that is not a directory is the one
+  entry, at depth 0). The walk is depth first with each directory's names
+  sorted as bytes, so two runs over one volume print the same thing. A
+  symlink is listed and never followed, and a directory whose inode was
+  already visited is listed with `"revisited": true` and not entered
+  again, so a damaged volume whose directories form a cycle still ends.
+  `--max-depth` (default 64) and `--limit` (default 100000) bound it: a
+  tree that exactly fits succeeds, while one more entry past either bound,
+  or a directory that cannot be read, exits 1 with the entries collected
+  so far still on stdout and the bound or the path named on stderr.
 - **`get`/`info`** report `fs`, `label`, `total_bytes`, `free_bytes`,
   `block_size` and `dirty`, with ext4's own fields under `ext4`.
 - **`set label <value>`** rewrites the label, at most 16 bytes, in the

@@ -166,27 +166,34 @@ pub fn corrupt_group_free_blocks(image: &str, extra: u16) {
 /// header is zeroed, with the inode's checksum restamped so it is the
 /// extent tree, not the checksum, that is wrong.
 pub fn destroy_root_extent_header(image: &str) {
+    destroy_extent_header(image, 2);
+}
+
+/// [`destroy_root_extent_header`] for any inode: `ino`'s extent header is
+/// zeroed and its checksum restamped, so the inode itself still reads and
+/// only its contents cannot be found.
+pub fn destroy_extent_header(image: &str, ino: u32) {
     use fs_ext4::block_io::{BlockDevice, FileDevice};
     let fs = fs_ext4::Filesystem::mount(std::sync::Arc::new(
         FileDevice::open(image).expect("open image"),
     ))
     .expect("mount image");
     let (block, offset) =
-        fs_ext4::bgd::locate_inode(&fs.sb, &fs.groups, 2).expect("locate the root inode");
+        fs_ext4::bgd::locate_inode(&fs.sb, &fs.groups, ino).expect("locate the inode");
     let at = block * u64::from(fs.sb.block_size()) + u64::from(offset);
     let dev = FileDevice::open_rw(image).expect("open image rw");
     let mut raw = vec![0u8; usize::from(fs.sb.inode_size)];
-    dev.read_at(at, &mut raw).expect("read the root inode");
+    dev.read_at(at, &mut raw).expect("read the inode");
     raw[0x28..0x28 + 12].fill(0);
     let generation = u32::from_le_bytes(raw[0x64..0x68].try_into().unwrap());
-    if let Some((lo, hi)) = fs.csum.compute_inode_checksum(2, generation, &raw) {
+    if let Some((lo, hi)) = fs.csum.compute_inode_checksum(ino, generation, &raw) {
         raw[0x7C..0x7E].copy_from_slice(&lo.to_le_bytes());
         let extra_isize = u16::from_le_bytes([raw[0x80], raw[0x81]]);
         if raw.len() > 0x84 && extra_isize >= 4 {
             raw[0x82..0x84].copy_from_slice(&hi.to_le_bytes());
         }
     }
-    dev.write_at(at, &raw).expect("write the root inode");
+    dev.write_at(at, &raw).expect("write the inode");
     dev.flush().expect("flush");
 }
 
