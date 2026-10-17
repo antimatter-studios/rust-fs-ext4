@@ -63,6 +63,14 @@ fn every_name_has_a_man_page_in_its_section_naming_its_subcommands() {
             "no fs.ext4-{verb}.1"
         );
     }
+    // ls's page carries its recursive walk and both of its bounds. roff
+    // writes every hyphen as `\-`, so the options are matched as roff
+    // spells them: `--max-depth` is `\-\-max\-depth` on the page.
+    let ls = std::fs::read_to_string(share.join("man/man1/fs.ext4-ls.1")).unwrap();
+    for option in ["recursive", "max-depth", "limit"] {
+        let roff = format!("--{option}").replace('-', "\\-");
+        assert!(ls.contains(&roff), "fs.ext4-ls.1 omits --{option}");
+    }
 }
 
 #[test]
@@ -86,6 +94,16 @@ fn every_name_has_a_zsh_bash_and_fish_completion() {
             std::fs::read_to_string(share.join(format!("fish/vendor_completions.d/{name}.fish")))
                 .unwrap_or_else(|e| panic!("fish {name}: {e}"));
         assert!(fish.contains(&format!("complete -c {name}")), "fish {name}");
+        if name == "fs.ext4" {
+            for (shell, completion) in [("zsh", &zsh), ("bash", &bash), ("fish", &fish)] {
+                for option in ["recursive", "max-depth", "limit"] {
+                    assert!(
+                        completion.contains(option),
+                        "{shell} {name} omits ls --{option}"
+                    );
+                }
+            }
+        }
     }
 }
 

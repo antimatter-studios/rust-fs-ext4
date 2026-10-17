@@ -7,13 +7,14 @@
 //! implemented` with exit status 3, so a script moved between filesystems
 //! fails loudly instead of meaning something else.
 
+use std::collections::HashSet;
 use std::ffi::OsString;
 use std::io::Write;
 
 use clap::{value_parser, Arg, ArgAction, ArgMatches, Command as Cmd};
 
-use fs_core::cli::{CliError, Json, Outcome, Tool};
-use fs_ext4::dir::DirEntryType;
+use fs_core::cli::{CliError, Format, Json, Outcome, Tool};
+use fs_ext4::dir::{DirEntry, DirEntryType};
 use fs_ext4::features::{Compat, Incompat, RoCompat};
 use fs_ext4::inode::{Inode, InodeFlags};
 use fs_ext4::Filesystem;
@@ -74,6 +75,29 @@ fn command() -> Cmd {
             Cmd::new("ls")
                 .about("List a directory: name, type, size, mode, mtime (and a symlink's target)")
                 .arg(
+                    Arg::new("recursive")
+                        .long("recursive")
+                        .short('R')
+                        .action(ArgAction::SetTrue)
+                        .help("Walk the tree depth first, names sorted as bytes; never follow a symlink"),
+                )
+                .arg(
+                    Arg::new("max-depth")
+                        .long("max-depth")
+                        .value_name("N")
+                        .value_parser(value_parser!(u64))
+                        .requires("recursive")
+                        .help("How deep --recursive may go (default: 64); a directory's entries are depth 1"),
+                )
+                .arg(
+                    Arg::new("limit")
+                        .long("limit")
+                        .value_name("N")
+                        .value_parser(value_parser!(u64))
+                        .requires("recursive")
+                        .help("How many entries --recursive may list (default: 100000)"),
+                )
+                .arg(
                     Arg::new("path")
                         .value_name("PATH")
                         .default_value("/")
@@ -82,7 +106,16 @@ fn command() -> Cmd {
                 .after_help(
                     "Examples:\n  fs.ext4 disk.img ls /etc\n  \
                      fs.ext4 disk.img ls / | jq -r '.[].name'\n  \
-                     fs.ext4 disk.img ls --text /",
+                     fs.ext4 disk.img ls --text /\n  \
+                     fs.ext4 disk.img ls -R --max-depth 8 --limit 1000 /etc\n\n\
+                     With --recursive each entry adds its path from the root of the volume and \
+                     its depth: PATH's own entries are depth 1, and PATH itself is not listed \
+                     unless it is not a directory, when it is the one entry, at depth 0. A \
+                     directory whose inode was already visited is listed again with \
+                     revisited: true and not entered. If one more entry would pass either \
+                     bound, or a directory cannot be read, the entries so far stay on stdout \
+                     and the error names the bound or the path (exit 1). A tree that exactly \
+                     fits succeeds; --limit 0 allows no entry, --max-depth 0 none below PATH.",
                 ),
         )
         .subcommand(
@@ -226,6 +259,10 @@ fn run(matches: &ArgMatches) -> Result<Outcome, CliError> {
         .copied()
         .unwrap_or(0);
     match verb {
+        "ls" if sub.get_flag("recursive") => {
+            let format = Format::of(matches, &std::env::args_os().collect::<Vec<_>>());
+            ls_recursive(&open(target, offset)?, path_arg(sub), sub, format)
+        }
         "ls" => ls(&open(target, offset)?, path_arg(sub)),
         "stat" => stat(&open(target, offset)?, path_arg(sub)),
         "read" => read(&open(target, offset)?, path_arg(sub), sub.get_one("output")),
@@ -347,10 +384,15 @@ fn entry_text(e: &Json) -> String {
         type_char(kind),
         field("mode"),
         field("size"),
-        field("name")
+        e.get("path")
+            .map(Json::to_text)
+            .unwrap_or_else(|| field("name"))
     );
     if let Some(target) = e.get("target") {
         line.push_str(&format!(" -> {}", target.to_text()));
+    }
+    if e.get("revisited") == Some(&Json::Bool(true)) {
+        line.push_str(" [revisited]");
     }
     line
 }
@@ -392,6 +434,175 @@ fn ls(fs: &Filesystem, path: &[u8]) -> Result<Outcome, CliError> {
         .collect::<Vec<_>>()
         .join("\n");
     Ok(Outcome::report(Json::Arr(entries)).with_text(text))
+}
+
+/// How deep `ls --recursive` goes, and how many entries it lists, when the
+/// command line does not say.
+const MAX_DEPTH: u64 = 64;
+const LIMIT: u64 = 100_000;
+
+/// One `ls --recursive` entry: the `ls` entry, then its path from the root
+/// of the volume (with its exact bytes in `path_hex` when it is not UTF-8),
+/// its depth, and `revisited` for a directory already listed.
+fn recursive_entry(
+    fs: &Filesystem,
+    path: &[u8],
+    depth: u64,
+    ino: u32,
+    inode: &Inode,
+    revisited: bool,
+) -> Json {
+    let name = path.rsplit(|b| *b == b'/').next().unwrap_or(path);
+    let Json::Obj(mut fields) = entry(fs, name, ino, inode) else {
+        unreachable!("an ls entry is an object")
+    };
+    fields.push(("path".into(), Json::from(show(path))));
+    if std::str::from_utf8(path).is_err() {
+        fields.push((
+            "path_hex".into(),
+            Json::from(path.iter().map(|b| format!("{b:02x}")).collect::<String>()),
+        ));
+    }
+    fields.push(("depth".into(), Json::from(depth)));
+    if revisited {
+        fields.push(("revisited".into(), Json::from(true)));
+    }
+    Json::Obj(fields)
+}
+
+/// A directory's entries but `.` and `..`, sorted as bytes, so two walks
+/// of one volume list the same thing in the same order.
+fn sorted_children(
+    fs: &Filesystem,
+    ino: u32,
+    path: &[u8],
+) -> Result<std::vec::IntoIter<DirEntry>, CliError> {
+    let mut children: Vec<DirEntry> = fs
+        .read_dir_ino(ino)
+        .map_err(|e| driver_error(path, e))?
+        .into_iter()
+        .filter(|d| d.name != b"." && d.name != b"..")
+        .collect();
+    children.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(children.into_iter())
+}
+
+/// Walk the tree under the inode `ino`, found at `start`, into `entries`.
+/// The stack holds one directory's remaining entries per level rather
+/// than a call frame, so no depth bound, however large, can overflow the
+/// process's stack. A symlink is listed and never followed; a directory
+/// whose inode number was already visited is listed as revisited and not
+/// entered, so a damaged volume whose directories form a cycle still ends.
+fn walk(
+    fs: &Filesystem,
+    ino: u32,
+    inode: &Inode,
+    start: Vec<u8>,
+    (max_depth, limit): (u64, u64),
+    entries: &mut Vec<Json>,
+) -> Result<(), CliError> {
+    let reached = |bound: &str, value: u64, at: &[u8]| {
+        CliError::failed(format!("{bound} {value} reached at {}", show(at)))
+    };
+    if !inode.is_dir() {
+        if limit == 0 {
+            return Err(reached("--limit", limit, &start));
+        }
+        entries.push(recursive_entry(fs, &start, 0, ino, inode, false));
+        return Ok(());
+    }
+    let mut visited = HashSet::from([ino]);
+    let first = sorted_children(fs, ino, &start)?;
+    let mut stack = vec![(start, 0u64, first)];
+    while let Some((parent, parent_depth, children)) = stack.last_mut() {
+        let Some(child) = children.next() else {
+            stack.pop();
+            continue;
+        };
+        let mut path = parent.clone();
+        if !path.ends_with(b"/") {
+            path.push(b'/');
+        }
+        path.extend_from_slice(&child.name);
+        let depth = *parent_depth + 1;
+        if entries.len() as u64 >= limit {
+            return Err(reached("--limit", limit, &path));
+        }
+        if depth > max_depth {
+            return Err(reached("--max-depth", max_depth, &path));
+        }
+        let inode = fs
+            .stat_ino(child.inode)
+            .map_err(|e| driver_error(&path, e))?;
+        let revisited = inode.is_dir() && !visited.insert(child.inode);
+        entries.push(recursive_entry(
+            fs,
+            &path,
+            depth,
+            child.inode,
+            &inode,
+            revisited,
+        ));
+        if inode.is_dir() && !revisited {
+            let next = sorted_children(fs, child.inode, &path)?;
+            stack.push((path, depth, next));
+        }
+    }
+    Ok(())
+}
+
+/// `ls --recursive PATH`: the tree under PATH, within `--max-depth` and
+/// `--limit`. A bound reached or a directory that cannot be read is a
+/// failure, but not a silent one: the entries collected so far are printed
+/// in the format asked for before the error is returned, so stdout keeps
+/// a whole report of what was walked and stderr says where it stopped.
+/// Nothing is printed when PATH itself cannot be found.
+fn ls_recursive(
+    fs: &Filesystem,
+    path: &[u8],
+    sub: &ArgMatches,
+    format: Format,
+) -> Result<Outcome, CliError> {
+    let ino = fs
+        .lookup_path_bytes(path)
+        .map_err(|e| driver_error(path, e))?;
+    let inode = fs.stat_ino(ino).map_err(|e| driver_error(path, e))?;
+    let bounds = (
+        sub.get_one::<u64>("max-depth")
+            .copied()
+            .unwrap_or(MAX_DEPTH),
+        sub.get_one::<u64>("limit").copied().unwrap_or(LIMIT),
+    );
+    let mut start = Vec::new();
+    for component in path.split(|b| *b == b'/').filter(|c| !c.is_empty()) {
+        start.push(b'/');
+        start.extend_from_slice(component);
+    }
+    if start.is_empty() {
+        start.push(b'/');
+    }
+    let mut entries = Vec::new();
+    let walked = walk(fs, ino, &inode, start, bounds, &mut entries);
+    let text = entries
+        .iter()
+        .map(entry_text)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let report = Outcome::report(Json::Arr(entries)).with_text(text);
+    match walked {
+        Ok(()) => Ok(report),
+        Err(error) => {
+            // An outcome is a report or an error, never both: the partial
+            // report goes out through the shared renderer here, and the
+            // caller renders the error.
+            let partial = fs_core::cli::output::render(TOOL.name, format, Ok(report));
+            let mut out = std::io::stdout().lock();
+            out.write_all(partial.stdout.as_bytes())
+                .and_then(|()| out.flush())
+                .map_err(|e| CliError::failed(format!("write: {e}")))?;
+            Err(error)
+        }
+    }
 }
 
 /// How many bytes past the 128-byte base inode `i_extra_isize` says are
