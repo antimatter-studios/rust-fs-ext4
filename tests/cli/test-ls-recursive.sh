@@ -23,7 +23,8 @@ cp "$img" "$SANDBOX/before.img"
 
 order='["/a","/a/b","/a/b/c","/a/b/c/deep","/a/f","/lost+found","/z"]'
 fs.ext4 "$img" ls --recursive / >"$SANDBOX/tree.json" 2>"$SANDBOX/tree.err"
-check "ls --recursive / exits 0 ($(cat "$SANDBOX/tree.err"))" test $? -eq 0
+rc=$?
+check "ls --recursive / exits 0 ($(cat "$SANDBOX/tree.err"))" test "$rc" -eq 0
 check "a walk that fits prints no error" test ! -s "$SANDBOX/tree.err"
 jq_check "the walk is depth first, names sorted as bytes" "[.[].path] == $order" "$SANDBOX/tree.json"
 jq_check "depth counts the steps down from the directory asked for" \

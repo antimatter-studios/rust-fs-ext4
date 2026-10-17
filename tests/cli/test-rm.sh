@@ -84,7 +84,8 @@ check "rm without a path prints nothing on stdout" test ! -s "$SANDBOX/u.out"
 off="$SANDBOX/offset.img"
 { head -c 1048576 /dev/zero; cat "$img"; } >"$off"
 fs.ext4 --offset 1048576 "$off" rm /f >"$SANDBOX/o.json" 2>"$SANDBOX/o.err"
-check "rm with --offset exits 0 ($(cat "$SANDBOX/o.err"))" test $? -eq 0
+rc=$?
+check "rm with --offset exits 0 ($(cat "$SANDBOX/o.err"))" test "$rc" -eq 0
 fs.ext4 --offset 1048576 "$off" ls / >"$SANDBOX/ls.json" 2>/dev/null
 jq_check "rm with --offset removed the name" 'all(.[]; .name != "f")' "$SANDBOX/ls.json"
 check "the MiB before --offset is still zeros" cmp -s <(head -c 1048576 "$off") <(head -c 1048576 /dev/zero)
