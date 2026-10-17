@@ -2,7 +2,7 @@
 //! without mounting it.
 //!
 //! The verbs are the shared set: `ls`, `stat`, `read`, `write`, `mkdir`,
-//! `rm`, `rmdir`, `get`/`info`, `set`, `resize`. Metadata is JSON (or `--text`); file content is raw bytes.
+//! `rm`, `rmdir`, `mv`, `get`/`info`, `set`, `resize`. Metadata is JSON (or `--text`); file content is raw bytes.
 //! A verb the library cannot do yet still exists and answers `not
 //! implemented` with exit status 3, so a script moved between filesystems
 //! fails loudly instead of meaning something else.
@@ -223,6 +223,40 @@ fn command() -> Cmd {
                      image is opened for writing.",
                 ),
         )
+        .subcommand(
+            Cmd::new("mv")
+                .about("Give a name a new name, in its own directory or another")
+                .arg(
+                    Arg::new("source")
+                        .value_name("SOURCE")
+                        .required(true)
+                        .value_parser(value_parser!(OsString)),
+                )
+                .arg(
+                    Arg::new("path")
+                        .value_name("PATH")
+                        .required(true)
+                        .value_parser(value_parser!(OsString)),
+                )
+                .arg(
+                    Arg::new("replace")
+                        .long("replace")
+                        .action(ArgAction::SetTrue)
+                        .help("Replace a name already at PATH, as rename(2) does"),
+                )
+                .after_help(
+                    "Examples:\n  fs.ext4 disk.img mv /notes.txt /archive/notes.txt\n  \
+                     fs.ext4 disk.img mv /draft /final\n  \
+                     fs.ext4 disk.img mv --replace /hosts.new /etc/hosts\n\n\
+                     PATH is the new name itself, not a directory to move into. A name \
+                     already at PATH is refused unless --replace is given, and then it is \
+                     replaced as rename(2) does: a file by a file, an empty directory by a \
+                     directory. A missing SOURCE or parent, a directory moved into itself, \
+                     a directory with entries in the way, . and .. and the root are refused \
+                     before the image is opened for writing. A symlink is moved, never \
+                     followed.",
+                ),
+        )
         .subcommand(key_command(
             "get",
             "Report the filesystem's properties, or one of them",
@@ -304,6 +338,13 @@ fn run(matches: &ArgMatches) -> Result<Outcome, CliError> {
         "mkdir" => mkdir(target, offset, path_arg(sub)),
         "rm" => remove(target, offset, path_arg(sub), Removal::Name),
         "rmdir" => remove(target, offset, path_arg(sub), Removal::Directory),
+        "mv" => rename(
+            target,
+            offset,
+            os_bytes(sub.get_one::<OsString>("source").expect("clap requires it")),
+            path_arg(sub),
+            sub.get_flag("replace"),
+        ),
         "get" | "info" => get(
             &open(target, offset)?,
             sub.get_one::<String>("key").map(String::as_str),
@@ -1073,14 +1114,7 @@ fn removable<'p>(
 ) -> Result<(u32, &'p [u8]), CliError> {
     use fs_ext4::Error;
     let refuse = |e: Error| driver_error(path, e);
-    let end = path.iter().rposition(|&b| b != b'/').map_or(0, |i| i + 1);
-    let trailing_slash = end < path.len();
-    let trimmed = &path[..end];
-    let start = trimmed
-        .iter()
-        .rposition(|&b| b == b'/')
-        .map_or(0, |i| i + 1);
-    let (dir, name) = trimmed.split_at(start);
+    let (dir, name, trailing_slash) = last_name(path);
     if name.is_empty() {
         return Err(match removal {
             Removal::Name => refuse(Error::IsADirectory),
@@ -1105,11 +1139,205 @@ fn removable<'p>(
         Removal::Name => {}
         Removal::Directory if !inode.is_dir() => return Err(refuse(Error::NotADirectory)),
         Removal::Directory => {
-            let entries = fs.read_dir_ino(ino).map_err(refuse)?;
-            if entries.iter().any(|e| e.name != b"." && e.name != b"..") {
+            if !is_empty_dir(fs, ino).map_err(refuse)? {
                 return Err(refuse(Error::DirectoryNotEmpty));
             }
         }
     }
     Ok((parent, name))
+}
+
+/// `path` split for an operation on its last name: the directory part, the
+/// last name with any trailing `/` taken off (empty for the root), and
+/// whether there was a trailing `/`.
+fn last_name(path: &[u8]) -> (&[u8], &[u8], bool) {
+    let end = path.iter().rposition(|&b| b != b'/').map_or(0, |i| i + 1);
+    let trimmed = &path[..end];
+    let start = trimmed
+        .iter()
+        .rposition(|&b| b == b'/')
+        .map_or(0, |i| i + 1);
+    let (dir, name) = trimmed.split_at(start);
+    (dir, name, end < path.len())
+}
+
+/// Whether directory `ino` has no entries other than `.` and `..`.
+fn is_empty_dir(fs: &Filesystem, ino: u32) -> fs_ext4::Result<bool> {
+    let entries = fs.read_dir_ino(ino)?;
+    Ok(entries.iter().all(|e| e.name == b"." || e.name == b".."))
+}
+
+/// Give `source` the name `path`, through the library's `apply_rename_at`,
+/// replacing a name already there only when `replace` is set. Every refusal
+/// is decided first, on a read-only mount, so a refused command never opens
+/// the image for writing and leaves it byte-identical; a rename that would
+/// change nothing (a name onto itself, or onto another name of the same
+/// file, with `replace`) succeeds without opening it for writing either, as
+/// rename(2) succeeds and does nothing. The names are handed over as bytes,
+/// so one that is not UTF-8 can be moved too.
+fn rename(
+    target: &OsString,
+    offset: u64,
+    source: &[u8],
+    path: &[u8],
+    replace: bool,
+) -> Result<Outcome, CliError> {
+    if let Some(the_move) = movable(&open(target, offset)?, source, path, replace)? {
+        edit(target, offset, source, |fs| {
+            fs.apply_rename_at(
+                the_move.from_dir,
+                the_move.from_name,
+                the_move.to_dir,
+                the_move.to_name,
+                replace,
+            )
+        })?;
+    }
+    let mut fields = vec![("path", Json::from(show(path)))];
+    if std::str::from_utf8(path).is_err() {
+        fields.push((
+            "path_hex",
+            Json::from(path.iter().map(|b| format!("{b:02x}")).collect::<String>()),
+        ));
+    }
+    fields.push(("moved", Json::from(true)));
+    let text = format!("moved {} to {}", show(source), show(path));
+    Ok(Outcome::report(Json::object(fields)).with_text(text))
+}
+
+/// A rename every refusal has been ruled out for: the entry `from_name` in
+/// directory `from_dir`, to be filed as `to_name` in `to_dir`.
+struct Move<'p> {
+    from_dir: u32,
+    from_name: &'p [u8],
+    to_dir: u32,
+    to_name: &'p [u8],
+}
+
+/// The rename of `source` to `path`, or `None` when it would change
+/// nothing, once each refusal the kernel gives `renameat2` has been ruled
+/// out, for the same reason it gives and, where two apply, the one it
+/// gives first (`tests/cli_mv_kernel.rs` holds the two to the same answers;
+/// without `replace` the call compared is `RENAME_NOREPLACE`, with it plain
+/// rename(2)). In that order:
+///
+/// - a directory part of either path that does not resolve, or is not a
+///   directory: `source`'s first, then `path`'s;
+/// - `.`, `..` or the root as `source`: busy;
+/// - `.`, `..` or the root as `path`: it exists, and with `replace` it is
+///   busy;
+/// - a `source` that does not exist; then a new name too long;
+/// - a name already at `path`, without `replace`;
+/// - a `source` that is not a directory, named with a trailing `/` on
+///   either path;
+/// - a directory moved to within itself;
+/// - a name at `path` that `source` cannot replace: a directory for a
+///   file, a file for a directory, or a directory with entries.
+///
+/// No path component is followed as a symlink, so a symlink is moved as
+/// itself, and replaced as a file is.
+fn movable<'p>(
+    fs: &Filesystem,
+    source: &'p [u8],
+    path: &'p [u8],
+    replace: bool,
+) -> Result<Option<Move<'p>>, CliError> {
+    use fs_ext4::Error;
+    let at_source = |e: Error| driver_error(source, e);
+    let at_path = |e: Error| driver_error(path, e);
+    let busy = |what: &[u8]| {
+        CliError::failed(format!(
+            "{}: resource busy: ., .. and the root cannot be moved or replaced",
+            show(what)
+        ))
+    };
+    let directory = |dir: &[u8]| -> fs_ext4::Result<u32> {
+        let ino = fs.lookup_path_bytes(dir)?;
+        if fs.stat_ino(ino)?.is_dir() {
+            Ok(ino)
+        } else {
+            Err(Error::NotADirectory)
+        }
+    };
+    let not_a_name = |name: &[u8]| name.is_empty() || name == b"." || name == b"..";
+
+    let (from_dir, from_name, from_slash) = last_name(source);
+    let (to_dir, to_name, to_slash) = last_name(path);
+    let from_dir = directory(from_dir).map_err(at_source)?;
+    let to_dir = directory(to_dir).map_err(at_path)?;
+    if not_a_name(from_name) {
+        return Err(busy(source));
+    }
+    if not_a_name(to_name) {
+        return Err(if replace {
+            busy(path)
+        } else {
+            at_path(Error::AlreadyExists)
+        });
+    }
+    let from = fs.lookup_at(from_dir, from_name).map_err(at_source)?;
+    if to_name.len() > 255 {
+        return Err(at_path(Error::NameTooLong));
+    }
+    let existing = match fs.lookup_at(to_dir, to_name) {
+        Ok(ino) => Some(ino),
+        Err(Error::NotFound) => None,
+        Err(e) => return Err(at_path(e)),
+    };
+    if existing.is_some() && !replace {
+        return Err(at_path(Error::AlreadyExists));
+    }
+    let from_is_dir = fs.stat_ino(from).map_err(at_source)?.is_dir();
+    if !from_is_dir && from_slash {
+        return Err(at_source(Error::NotADirectory));
+    }
+    if !from_is_dir && to_slash {
+        return Err(at_path(Error::NotADirectory));
+    }
+    if from_is_dir && within(fs, to_dir, from).map_err(at_path)? {
+        return Err(at_path(Error::InvalidArgument(
+            "a directory cannot be moved into itself",
+        )));
+    }
+    if let Some(old) = existing {
+        if old == from {
+            return Ok(None);
+        }
+        let old_is_dir = fs.stat_ino(old).map_err(at_path)?.is_dir();
+        if old_is_dir && !from_is_dir {
+            return Err(at_path(Error::IsADirectory));
+        }
+        if from_is_dir && !old_is_dir {
+            return Err(at_path(Error::NotADirectory));
+        }
+        if old_is_dir && !is_empty_dir(fs, old).map_err(at_path)? {
+            return Err(at_path(Error::DirectoryNotEmpty));
+        }
+    }
+    Ok(Some(Move {
+        from_dir,
+        from_name,
+        to_dir,
+        to_name,
+    }))
+}
+
+/// Whether directory `dir` is directory `top` or lies beneath it, by the
+/// `..` entries from `dir` up to the root, whose `..` is itself.
+fn within(fs: &Filesystem, dir: u32, top: u32) -> fs_ext4::Result<bool> {
+    let mut at = dir;
+    // A chain longer than the inode table is a loop, not a tree.
+    for _ in 0..=fs.sb.inodes_count {
+        if at == top {
+            return Ok(true);
+        }
+        let parent = fs.lookup_at(at, b"..")?;
+        if parent == at {
+            return Ok(false);
+        }
+        at = parent;
+    }
+    Err(fs_ext4::Error::Corrupt(
+        "a directory's .. chain does not reach the root",
+    ))
 }

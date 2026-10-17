@@ -68,6 +68,7 @@ fs.ext4 disk.img write /notes.txt < notes.txt
 fs.ext4 disk.img mkdir /backup
 fs.ext4 disk.img rm /notes.txt
 fs.ext4 disk.img rmdir /backup
+fs.ext4 disk.img mv /draft.txt /archive/final.txt
 fs.ext4 disk.img get label --text
 fs.ext4 disk.img set label ARCHIVE
 fs.ext4 --offset 1048576 whole-disk.img info
@@ -100,6 +101,16 @@ rust-fs-ext4 doctor                        # is every tool on PATH ours?
   to `rmdir`, a directory with entries, `.`, `..` and the root are refused
   for the reason Linux gives, before the image is opened for writing, so a
   refused command leaves it byte-identical. Nothing is removed recursively.
+- **`mv SOURCE PATH`** gives SOURCE the name PATH, in its own directory or
+  another; PATH is the new name itself, not a directory to move into. A
+  directory moved takes its tree with it, and its `..` and both parents'
+  link counts follow. A name already at PATH is refused unless `--replace`
+  is given, and then it is replaced as rename(2) does: a file by a file, an
+  empty directory by a directory. It reports `{"path": ..., "moved":
+  true}`. A missing source or parent, a directory moved into itself, a
+  directory with entries in the way, a file over a directory and the
+  reverse, `.`, `..` and the root are refused for the reason Linux gives,
+  before the image is opened for writing.
 - **`get`/`info`** report `fs`, `label`, `total_bytes`, `free_bytes`,
   `block_size` and `dirty`, with ext4's own fields under `ext4`.
 - **`set label <value>`** rewrites the label, at most 16 bytes, in the
