@@ -1,7 +1,7 @@
 //! `fs.ext4 <target> <verb>`: an errand inside an ext4 image or device,
 //! without mounting it.
 //!
-//! The verbs are the shared set: `ls`, `stat`, `read`, `xattr`, `write`, `mkdir`,
+//! The verbs are the shared set: `ls`, `stat`, `read`, `export`, `xattr`, `write`, `mkdir`,
 //! `rm`, `rmdir`, `mv`, `ln`, `truncate`, `get`/`info`, `set`, `resize`. Metadata is JSON (or `--text`); file content is raw bytes.
 //! A verb the library cannot do yet still exists and answers `not
 //! implemented` with exit status 3, so a script moved between filesystems
@@ -13,11 +13,11 @@ use std::io::Write;
 
 use clap::{value_parser, Arg, ArgAction, ArgMatches, Command as Cmd};
 
-use fs_core::cli::{CliError, Format, Json, Outcome, Tool};
+use fs_core::cli::{transfer, CliError, Format, Json, Outcome, Tool};
 use fs_ext4::dir::{DirEntry, DirEntryType};
 use fs_ext4::features::{Compat, Incompat, RoCompat};
 use fs_ext4::inode::{Inode, InodeFlags};
-use fs_ext4::Filesystem;
+use fs_ext4::{Filesystem, InodeRef};
 
 pub const TOOL: Tool = Tool {
     name: "fs.ext4",
@@ -157,6 +157,20 @@ fn command() -> Cmd {
                     "Examples:\n  fs.ext4 disk.img read /etc/hostname\n  \
                      fs.ext4 disk.img read /var/log/syslog | grep -i error\n  \
                      fs.ext4 disk.img read /backup.tar -o backup.tar",
+                ),
+        )
+        .subcommand(
+            Cmd::new("export")
+                .about("Copy a regular file out through the shared bounded transfer")
+                .args(transfer::export_args())
+                .after_help(
+                    "Examples:\n  fs.ext4 disk.img export /backup.tar backup.tar\n  \
+                     fs.ext4 disk.img export --replace /etc/hostname hostname\n  \
+                     fs.ext4 disk.img export /backup.tar - | tar tf -\n\n\
+                     Files are copied in fixed chunks. A local destination is published only \
+                     when complete; an existing name is refused unless --replace is given. \
+                     The report includes the byte count and SHA-256; DEST - writes only raw \
+                     bytes to stdout. Directories and symlinks are refused.",
                 ),
         )
         .subcommand(
@@ -468,6 +482,10 @@ fn run(matches: &ArgMatches) -> Result<Outcome, CliError> {
         "ls" => ls(&open(target, offset)?, path_arg(sub)),
         "stat" => stat(&open(target, offset)?, path_arg(sub)),
         "read" => read(&open(target, offset)?, path_arg(sub), sub.get_one("output")),
+        "export" => {
+            let request = transfer::ExportRequest::from_matches(sub)?;
+            export(&open(target, offset)?, &request)
+        }
         "xattr" => xattr(
             &open(target, offset)?,
             path_arg(sub),
@@ -995,6 +1013,61 @@ fn read(fs: &Filesystem, path: &[u8], output: Option<&OsString>) -> Result<Outco
     };
     deliver(output, copy)?;
     Ok(Outcome::done())
+}
+
+/// The driver's positioned reader, with the length captured before the
+/// shared transfer starts. A generation-checked handle refuses inode reuse.
+struct ExportSource<'a> {
+    fs: &'a Filesystem,
+    inode: InodeRef,
+    size: u64,
+    path: &'a [u8],
+}
+
+impl transfer::FileSource for ExportSource<'_> {
+    fn size(&self) -> u64 {
+        self.size
+    }
+
+    fn read_at(&mut self, offset: u64, buf: &mut [u8]) -> Result<usize, CliError> {
+        self.fs
+            .read_ino(self.inode, offset, buf)
+            .map_err(|e| driver_error(self.path, e))
+    }
+}
+
+/// Resolve and validate the source through ext4, then leave copying,
+/// digesting and complete-file publication to core's shared transfer.
+fn export(fs: &Filesystem, request: &transfer::ExportRequest) -> Result<Outcome, CliError> {
+    let path = os_bytes(&request.path);
+    let ino = fs
+        .lookup_path_bytes(path)
+        .map_err(|e| driver_error(path, e))?;
+    let inode = fs.stat_ino(ino).map_err(|e| driver_error(path, e))?;
+    if inode.is_dir() {
+        return Err(driver_error(path, fs_ext4::Error::IsADirectory));
+    }
+    if inode.is_symlink() {
+        return Err(CliError::failed(format!(
+            "{}: a symlink is not followed: name the file it points at",
+            show(path)
+        )));
+    }
+    if !inode.is_file() {
+        return Err(CliError::failed(format!(
+            "{}: not a regular file",
+            show(path)
+        )));
+    }
+    transfer::export(
+        request,
+        &mut ExportSource {
+            fs,
+            inode: InodeRef::new(ino, inode.generation),
+            size: inode.size,
+            path,
+        },
+    )
 }
 
 /// Hand `copy` stdout, or with `-o FILE` a new `FILE.partial` that is

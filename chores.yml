@@ -266,7 +266,8 @@ vars:
   # release, run as `../rust-fs-core/scripts/ci-gate.sh`. It is v0.2.23 because the
   # release tarball is core's from that release: release.yml calls its
   # release-cli workflow, which runs `../rust-fs-core/scripts/package-cli.sh` (#481).
-  FS_CORE_REF: v0.3.13
+  # v0.3.14 provides the shared bounded single-file export.
+  FS_CORE_REF: v0.3.14
   LINUX_HARNESS_URL: https://github.com/antimatter-studios/fs-linux-test-harness.git
   # v0.3.0 is the release with `vm.sh session`, which the test runner runs
   # cargo through so a run gives the VM and the machine-wide slot back
@@ -541,14 +542,16 @@ tasks:
     # gives about 30% headroom over the measured log, replacing 510 / 36300.
     # cli_xattr_kernel.rs adds one test making two oracle calls, estimated
     # at 17 lines and about 1.1 KB, within this measured budget.
+    # cli_export_kernel.rs adds a two-test binary and six oracle calls;
+    # its earlier estimate was 40 lines and 3 KB, within this budget.
     cmds:
       - '../rust-fs-core/scripts/tier.sh test:kernel kernel 680 49000 -- scripts/test.sh --locked --release $(scripts/test-targets.sh kernel) -- --show-output'
       # 27 executed in the merge queue on 2026-10-17 (run 38991557768);
       # cli_ls_recursive_kernel.rs adds one, cli_rm_kernel.rs two,
       # cli_mv_kernel.rs two, cli_ln_kernel.rs two, cli_mkdir_kernel.rs
       # two, cli_truncate_kernel.rs three, cli_pwrite_kernel.rs four and
-      # cli_xattr_kernel.rs one.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh kernel 44'
+      # cli_xattr_kernel.rs one and cli_export_kernel.rs two.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh kernel 46'
 
   test:lwext4:
     desc: 'CROSS-VALIDATION: lwext4 — a third implementation, built in the guest — reads what we wrote, and we read what it wrote'
@@ -643,7 +646,8 @@ tasks:
         # shellcheck disable=SC2086  # the words are the point
         bash ../rust-fs-core/scripts/tier.sh test:vm vm 3900 193000 -- \
           ../fs-linux-test-harness/scripts/vm.sh guest-test $guest_args
-        bash ../rust-fs-core/scripts/test-floor.sh vm 1060
+        # cli_export_kernel.rs adds two cases to the whole-suite floor.
+        bash ../rust-fs-core/scripts/test-floor.sh vm 1062
 
   test:
     desc: 'Everything, exactly as CI runs it — natively on Linux, inside the VM anywhere else'
@@ -684,7 +688,8 @@ tasks:
       - task: test:kernel
       - task: test:lwext4
       - '../rust-fs-core/scripts/tier.sh "test:native (whole suite, release)" suite 3700 183000 -- scripts/test.sh --locked --release'
-      - 'bash ../rust-fs-core/scripts/test-floor.sh suite 1060'
+      # cli_export_kernel.rs adds two cases to the whole-suite floor.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh suite 1062'
       - task: test:scripts
       # The command-line tools, built and staged from this checkout, then
       # tested as installed. A separate invocation because test:cli reads
