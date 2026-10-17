@@ -61,6 +61,7 @@ for name in $(rust-fs-ext4 generate names); do ln -s rust-fs-ext4 "$name"; done
 mkfs.ext4 --size 64M --label BACKUP disk.img
 fsck.ext4 disk.img                         # -y to repair
 fs.ext4 disk.img ls /
+fs.ext4 disk.img stat /etc/fstab
 fs.ext4 disk.img read /etc/fstab > fstab
 fs.ext4 disk.img write /notes.txt < notes.txt
 fs.ext4 disk.img mkdir /backup
