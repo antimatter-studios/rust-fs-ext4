@@ -64,6 +64,8 @@ fs.ext4 disk.img ls /
 fs.ext4 disk.img ls -R --max-depth 8 --limit 1000 /etc
 fs.ext4 disk.img stat /etc/fstab
 fs.ext4 disk.img read /etc/fstab > fstab
+fs.ext4 disk.img xattr /usr/bin/ping
+fs.ext4 disk.img xattr /usr/bin/ping security.capability > caps.bin
 fs.ext4 disk.img write /notes.txt < notes.txt
 printf 'v2' | fs.ext4 disk.img write --at 4096 /data.bin
 fs.ext4 disk.img mkdir /backup
@@ -82,7 +84,7 @@ rust-fs-ext4 doctor                        # is every tool on PATH ours?
 ```
 
 - **Output.** Metadata is JSON on stdout by default (`--text` for people);
-  `read` and `write` carry raw bytes. A failure is
+  `read`, `write` and `xattr PATH NAME` carry raw bytes. A failure is
   `{"error": "...", "code": N}` on stderr, and `N` is the exit status: 1
   failed, 2 wrong command line, 3 not implemented. `fsck.ext4` keeps
   fsck(8)'s statuses instead: 0 clean, 1 corrected, 4 uncorrected, 8
@@ -99,6 +101,16 @@ rust-fs-ext4 doctor                        # is every tool on PATH ours?
   tree that exactly fits succeeds, while one more entry past either bound,
   or a directory that cannot be read, exits 1 with the entries collected
   so far still on stdout and the bound or the path named on stderr.
+- **`xattr PATH`** lists the extended attributes PATH's own inode holds
+  as `[{"name": "user.comment", "size": 12}, ...]`, each name with its
+  namespace prefix and sorted by its bytes; `--text` prints size, a tab and
+  name. **`xattr PATH NAME`** writes that value's raw bytes to stdout, or
+  through `FILE.partial` to `-o FILE` as `read` does; a missing attribute
+  exits 1. Attributes kept in the inode, in an external block and in an EA
+  inode are all read, a symlink's own and never its target's. Values are
+  the bytes stored: an ACL is ext4's compact form, and the tail of an
+  inline file or directory is listed as `system.data`, which a mounted
+  Linux does not show. Setting and removing attributes are not offered.
 - **`write --at BYTES PATH`** writes stdin into the regular file PATH
   names, starting that many bytes in, and truncates nothing: only the
   bytes written change, and a write past the end grows the file, the gap

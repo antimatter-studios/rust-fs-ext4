@@ -1,7 +1,7 @@
 //! `fs.ext4 <target> <verb>`: an errand inside an ext4 image or device,
 //! without mounting it.
 //!
-//! The verbs are the shared set: `ls`, `stat`, `read`, `write`, `mkdir`,
+//! The verbs are the shared set: `ls`, `stat`, `read`, `xattr`, `write`, `mkdir`,
 //! `rm`, `rmdir`, `mv`, `ln`, `truncate`, `get`/`info`, `set`, `resize`. Metadata is JSON (or `--text`); file content is raw bytes.
 //! A verb the library cannot do yet still exists and answers `not
 //! implemented` with exit status 3, so a script moved between filesystems
@@ -48,8 +48,8 @@ fn command() -> Cmd {
             "Work inside an ext4 image or device directly: no mount, no kernel driver.\n\n\
              An escape hatch for an errand (get a file out, read the label, check whether \
              it is dirty), not a place to do real filesystem work: for that, mount it.\n\n\
-             Metadata is JSON on stdout (--text for people); `read` writes the file's raw \
-             bytes. A failure is {\"error\": \"...\", \"code\": N} on stderr, N being the \
+             Metadata is JSON on stdout (--text for people); `read` and `xattr PATH NAME` \
+             write raw bytes. A failure is {\"error\": \"...\", \"code\": N} on stderr, N being the \
              exit status: 1 failed, 2 wrong command line, 3 not implemented.",
         )
         .arg(
@@ -157,6 +157,44 @@ fn command() -> Cmd {
                     "Examples:\n  fs.ext4 disk.img read /etc/hostname\n  \
                      fs.ext4 disk.img read /var/log/syslog | grep -i error\n  \
                      fs.ext4 disk.img read /backup.tar -o backup.tar",
+                ),
+        )
+        .subcommand(
+            Cmd::new("xattr")
+                .about("List a path's extended attributes, or write one value's raw bytes")
+                .arg(
+                    Arg::new("path")
+                        .value_name("PATH")
+                        .required(true)
+                        .value_parser(value_parser!(OsString)),
+                )
+                .arg(
+                    Arg::new("name")
+                        .value_name("NAME")
+                        .help("The attribute to read, namespace prefix included (user.comment)")
+                        .value_parser(value_parser!(OsString)),
+                )
+                .arg(
+                    Arg::new("output")
+                        .short('o')
+                        .long("output")
+                        .value_name("FILE")
+                        .value_parser(value_parser!(OsString))
+                        .requires("name")
+                        .help("Write the named attribute's value here instead of stdout"),
+                )
+                .after_help(
+                    "Examples:\n  fs.ext4 disk.img xattr /usr/bin/ping\n  \
+                     fs.ext4 disk.img xattr --text /home/me/notes.txt\n  \
+                     fs.ext4 disk.img xattr /usr/bin/ping security.capability -o caps.bin\n\n\
+                     Without NAME, list each attribute's name, namespace prefix included, and \
+                     the size of its value, sorted by name bytes; --text lists size, a tab and \
+                     name. With NAME, write the value's raw bytes, even with --text; an empty \
+                     value succeeds and a missing attribute fails (exit 1). Values are the \
+                     bytes the inode stores, so an ACL is ext4's compact form, and the tail of \
+                     an inline file or directory is listed as system.data. A symlink's own \
+                     attributes are read, never its target's. -o writes FILE.partial and \
+                     renames it, as read does. Attributes cannot be set or removed here.",
                 ),
         )
         .subcommand(
@@ -430,6 +468,12 @@ fn run(matches: &ArgMatches) -> Result<Outcome, CliError> {
         "ls" => ls(&open(target, offset)?, path_arg(sub)),
         "stat" => stat(&open(target, offset)?, path_arg(sub)),
         "read" => read(&open(target, offset)?, path_arg(sub), sub.get_one("output")),
+        "xattr" => xattr(
+            &open(target, offset)?,
+            path_arg(sub),
+            sub.get_one::<OsString>("name").map(os_bytes),
+            sub.get_one("output"),
+        ),
         "write" => match sub.get_one::<u64>("at") {
             Some(&at) => write_at(target, offset, path_arg(sub), at),
             None => write(target, offset, path_arg(sub)),
@@ -928,7 +972,7 @@ fn read(fs: &Filesystem, path: &[u8], output: Option<&OsString>) -> Result<Outco
     }
     const CHUNK: usize = 1 << 20;
     let mut buf = vec![0u8; CHUNK];
-    let mut copy = |sink: &mut dyn Write| -> Result<(), CliError> {
+    let copy = |sink: &mut dyn Write| -> Result<(), CliError> {
         let mut offset = 0u64;
         while offset < inode.size {
             let want = CHUNK.min((inode.size - offset) as usize);
@@ -949,25 +993,88 @@ fn read(fs: &Filesystem, path: &[u8], output: Option<&OsString>) -> Result<Outco
         sink.flush()
             .map_err(|e| CliError::failed(format!("write: {e}")))
     };
-    match output {
-        None => copy(&mut std::io::stdout().lock())?,
-        Some(file) => {
-            let dest = std::path::Path::new(file);
-            let mut partial = dest.as_os_str().to_owned();
-            partial.push(".partial");
-            let partial = std::path::PathBuf::from(partial);
-            let mut f = std::fs::File::create(&partial)
-                .map_err(|e| CliError::failed(format!("create {}: {e}", partial.display())))?;
-            if let Err(e) = copy(&mut f) {
-                drop(f);
-                let _ = std::fs::remove_file(&partial);
-                return Err(e);
-            }
-            std::fs::rename(&partial, dest)
-                .map_err(|e| CliError::failed(format!("rename to {}: {e}", dest.display())))?;
-        }
-    }
+    deliver(output, copy)?;
     Ok(Outcome::done())
+}
+
+/// Hand `copy` stdout, or with `-o FILE` a new `FILE.partial` that is
+/// renamed to FILE once `copy` succeeds and removed if it fails, so FILE
+/// is never left half written.
+fn deliver(
+    output: Option<&OsString>,
+    mut copy: impl FnMut(&mut dyn Write) -> Result<(), CliError>,
+) -> Result<(), CliError> {
+    let Some(file) = output else {
+        return copy(&mut std::io::stdout().lock());
+    };
+    let dest = std::path::Path::new(file);
+    let mut partial = dest.as_os_str().to_owned();
+    partial.push(".partial");
+    let partial = std::path::PathBuf::from(partial);
+    let mut f = std::fs::File::create(&partial)
+        .map_err(|e| CliError::failed(format!("create {}: {e}", partial.display())))?;
+    if let Err(e) = copy(&mut f) {
+        drop(f);
+        let _ = std::fs::remove_file(&partial);
+        return Err(e);
+    }
+    std::fs::rename(&partial, dest)
+        .map_err(|e| CliError::failed(format!("rename to {}: {e}", dest.display())))
+}
+
+/// `xattr PATH [NAME]`: the extended attributes PATH's own inode holds --
+/// a symlink's, never its target's -- as the library reads them, values
+/// in an EA inode followed. Without NAME, each name, namespace prefix
+/// included, and the size of its value, sorted by name bytes; with NAME,
+/// that value's raw bytes, written the way `read` writes a file's.
+/// Everything is the inode's stored bytes: an ACL in ext4's compact form,
+/// and the tail of an inline file or directory as `system.data`, which a
+/// mounted kernel does not list.
+fn xattr(
+    fs: &Filesystem,
+    path: &[u8],
+    name: Option<&[u8]>,
+    output: Option<&OsString>,
+) -> Result<Outcome, CliError> {
+    let ino = fs
+        .lookup_path_bytes(path)
+        .map_err(|e| driver_error(path, e))?;
+    let (inode, raw) = fs
+        .read_inode_verified(ino)
+        .map_err(|e| driver_error(path, e))?;
+    if let Some(name) = name {
+        // The library's names are UTF-8, so a NAME that is not names
+        // nothing on this volume.
+        let value = match std::str::from_utf8(name) {
+            Ok(name) => fs_ext4::xattr::get_resolved(fs, &inode, &raw, name)
+                .map_err(|e| driver_error(path, e))?,
+            Err(_) => None,
+        }
+        .ok_or_else(|| CliError::failed(format!("{}: no attribute {}", show(path), show(name))))?;
+        deliver(output, |sink| {
+            sink.write_all(&value)
+                .and_then(|()| sink.flush())
+                .map_err(|e| CliError::failed(format!("write: {e}")))
+        })?;
+        return Ok(Outcome::done());
+    }
+    let mut attrs =
+        fs_ext4::xattr::read_all_resolved(fs, &inode, &raw).map_err(|e| driver_error(path, e))?;
+    attrs.sort_by(|a, b| a.name.cmp(&b.name));
+    let text: Vec<String> = attrs
+        .iter()
+        .map(|a| format!("{}\t{}", a.value.len(), a.name))
+        .collect();
+    let entries = attrs
+        .into_iter()
+        .map(|a| {
+            Json::object([
+                ("name", Json::from(a.name)),
+                ("size", Json::from(a.value.len() as u64)),
+            ])
+        })
+        .collect();
+    Ok(Outcome::report(Json::Arr(entries)).with_text(text.join("\n")))
 }
 
 /// The UUID in its standard 8-4-4-4-12 form.
