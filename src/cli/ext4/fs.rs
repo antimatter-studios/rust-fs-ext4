@@ -2,7 +2,7 @@
 //! without mounting it.
 //!
 //! The verbs are the shared set: `ls`, `stat`, `read`, `write`, `mkdir`,
-//! `rm`, `rmdir`, `mv`, `ln`, `get`/`info`, `set`, `resize`. Metadata is JSON (or `--text`); file content is raw bytes.
+//! `rm`, `rmdir`, `mv`, `ln`, `truncate`, `get`/`info`, `set`, `resize`. Metadata is JSON (or `--text`); file content is raw bytes.
 //! A verb the library cannot do yet still exists and answers `not
 //! implemented` with exit status 3, so a script moved between filesystems
 //! fails loudly instead of meaning something else.
@@ -307,6 +307,35 @@ fn command() -> Cmd {
                      before the image is opened for writing.",
                 ),
         )
+        .subcommand(
+            Cmd::new("truncate")
+                .about("Set a regular file's length, releasing what lies past a shorter one")
+                .arg(
+                    Arg::new("path")
+                        .value_name("PATH")
+                        .required(true)
+                        .value_parser(value_parser!(OsString)),
+                )
+                .arg(
+                    Arg::new("size")
+                        .value_name("SIZE")
+                        .required(true)
+                        .value_parser(value_parser!(u64))
+                        .help("The new length, a count of bytes"),
+                )
+                .after_help(
+                    "Examples:\n  fs.ext4 disk.img truncate /var/log/syslog 0\n  \
+                     fs.ext4 disk.img truncate /sparse.img 1073741824\n  \
+                     fs.ext4 disk.img truncate --text /notes.txt 4096\n\n\
+                     A shrink releases the blocks past the new end; a grow reads back as \
+                     zeros and allocates nothing. Only a regular file that is there is \
+                     truncated: nothing is created, and a symlink is never followed. A \
+                     directory, a missing path, a symlink and an immutable or append-only \
+                     file are refused before the image is opened for writing, and so are \
+                     the shrink of a block-mapped (ext2/ext3-style) file and any truncate of \
+                     an encrypted one, which this driver cannot do (exit 3).",
+                ),
+        )
         .subcommand(key_command(
             "get",
             "Report the filesystem's properties, or one of them",
@@ -402,6 +431,12 @@ fn run(matches: &ArgMatches) -> Result<Outcome, CliError> {
             os_bytes(sub.get_one::<OsString>("source").expect("clap requires it")),
             path_arg(sub),
             sub.get_flag("symbolic"),
+        ),
+        "truncate" => truncate(
+            target,
+            offset,
+            path_arg(sub),
+            *sub.get_one::<u64>("size").expect("clap requires it"),
         ),
         "get" | "info" => get(
             &open(target, offset)?,
@@ -1713,4 +1748,96 @@ fn linkable<'p>(
             })
         }
     }
+}
+
+/// Set the length of the regular file `path` names to `size` bytes,
+/// through the library's `apply_truncate_ino`: a shrink releases the
+/// blocks past the new end, and a grow reads back as zeros and allocates
+/// nothing. Every refusal is decided first, on a read-only mount, so a
+/// refused command never opens the image for writing and leaves it
+/// byte-identical. The names are looked up as bytes, so none of them need
+/// be UTF-8.
+fn truncate(target: &OsString, offset: u64, path: &[u8], size: u64) -> Result<Outcome, CliError> {
+    let ino = truncatable(&open(target, offset)?, path, size)?;
+    edit(target, offset, path, |fs| fs.apply_truncate_ino(ino, size))?;
+    let mut fields = path_fields(path);
+    fields.push(("size", Json::from(size)));
+    let text = format!("{} is {size} bytes", show(path));
+    Ok(Outcome::report(Json::object(fields)).with_text(text))
+}
+
+/// The inode of the regular file `path` names, once each refusal the
+/// guest's `truncate` gives on the kernel's mount has been ruled out, for
+/// the same reason and, where two apply, at the first name on the way that
+/// fails (`tests/cli_truncate_kernel.rs` holds the two to the same
+/// answers):
+///
+/// - an empty path: not found;
+/// - on the way, a name after one that is not a directory: not a
+///   directory; then a name over 255 bytes: a name too long; then a name
+///   that is not there: not found;
+/// - a directory, the root included: is a directory; then a trailing `/`
+///   after anything else: not a directory;
+/// - an immutable or append-only file: not permitted.
+///
+/// No symlink is followed, so one on the way is not a directory and one at
+/// `path` is refused, where `truncate` would set the length of what it
+/// names. A missing file is not created, as `truncate` would create it.
+/// After those, what this driver cannot do is refused with exit 3: any
+/// truncate of an encrypted file, whose blocks it holds no key for, and
+/// the shrink of a block-mapped file, which the library cannot plan.
+fn truncatable(fs: &Filesystem, path: &[u8], size: u64) -> Result<u32, CliError> {
+    use fs_ext4::Error;
+    let refuse = |e: Error| driver_error(path, e);
+    if path.is_empty() {
+        return Err(CliError::failed("an empty path: not found"));
+    }
+    let mut ino = fs_ext4::path::EXT4_ROOT_INODE;
+    let mut inode = fs.stat_ino(ino).map_err(refuse)?;
+    for name in path.split(|&b| b == b'/').filter(|name| !name.is_empty()) {
+        if !inode.is_dir() {
+            return Err(refuse(Error::NotADirectory));
+        }
+        if name.len() > 255 {
+            return Err(refuse(Error::NameTooLong));
+        }
+        ino = fs.lookup_at(ino, name).map_err(refuse)?;
+        inode = fs.stat_ino(ino).map_err(refuse)?;
+    }
+    if inode.is_dir() {
+        return Err(refuse(Error::IsADirectory));
+    }
+    if path.ends_with(b"/") {
+        return Err(refuse(Error::NotADirectory));
+    }
+    if inode.is_symlink() {
+        return Err(CliError::failed(format!(
+            "{}: a symlink is not followed: name the file it points at",
+            show(path)
+        )));
+    }
+    if !inode.is_file() {
+        return Err(refuse(Error::InvalidArgument(
+            "only a regular file has a length to set",
+        )));
+    }
+    if inode.flags & (InodeFlags::IMMUTABLE.bits() | InodeFlags::APPEND.bits()) != 0 {
+        return Err(CliError::failed(format!(
+            "{}: operation not permitted: the file is immutable or append-only",
+            show(path)
+        )));
+    }
+    if inode.flags & InodeFlags::ENCRYPT.bits() != 0 {
+        return Err(CliError::not_implemented(format!(
+            "{}: the file is encrypted and this driver holds no key",
+            show(path)
+        )));
+    }
+    if size < inode.size && !inode.has_extents() && !inode.has_inline_data() {
+        return Err(CliError::not_implemented(format!(
+            "{}: this driver cannot shrink a block-mapped (ext2/ext3-style) file, only grow it",
+            show(path)
+        )));
+    }
+    Ok(ino)
 }

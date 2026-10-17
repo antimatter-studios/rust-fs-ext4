@@ -72,6 +72,7 @@ fs.ext4 disk.img rmdir /backup
 fs.ext4 disk.img mv /draft.txt /archive/final.txt
 fs.ext4 disk.img ln /archive/final.txt /latest.txt
 fs.ext4 disk.img ln -s archive/final.txt /current
+fs.ext4 disk.img truncate /var/log/syslog 0
 fs.ext4 disk.img get label --text
 fs.ext4 disk.img set label ARCHIVE
 fs.ext4 --offset 1048576 whole-disk.img info
@@ -131,6 +132,16 @@ rust-fs-ext4 doctor                        # is every tool on PATH ours?
   hard link to a directory, a file at 65000 links, an empty target and one
   too long are refused for the reason Linux gives, before the image is
   opened for writing.
+- **`truncate PATH SIZE`** sets a regular file's length to SIZE bytes: a
+  shrink releases the blocks past the new end, and a grow reads back as
+  zeros and allocates nothing. It reports `{"path": ..., "size": N}`. A
+  SIZE that is not a byte count is a usage error. A directory, a missing
+  path, a name too long, a file on the way, and an immutable or
+  append-only file are refused for the reason Linux gives, before the
+  image is opened for writing; a missing file is not created, and a
+  symlink is never followed, so one at PATH is refused too. The shrink of
+  a block-mapped (ext2/ext3-style) file and any truncate of an encrypted
+  one are refused with exit 3, the same way: this driver cannot do them.
 - **`get`/`info`** report `fs`, `label`, `total_bytes`, `free_bytes`,
   `block_size` and `dirty`, with ext4's own fields under `ext4`.
 - **`set label <value>`** rewrites the label, at most 16 bytes, in the
