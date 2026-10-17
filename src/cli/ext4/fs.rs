@@ -161,7 +161,14 @@ fn command() -> Cmd {
         )
         .subcommand(
             Cmd::new("write")
-                .about("Create or replace a file with the bytes on stdin")
+                .about("Create or replace a file with the bytes on stdin, or write them into one at a position")
+                .arg(
+                    Arg::new("at")
+                        .long("at")
+                        .value_name("BYTES")
+                        .value_parser(value_parser!(u64))
+                        .help("Write into the existing file starting this many bytes in, truncating nothing"),
+                )
                 .arg(
                     Arg::new("path")
                         .value_name("PATH")
@@ -171,8 +178,18 @@ fn command() -> Cmd {
                 .after_help(
                     "Examples:\n  fs.ext4 disk.img write /etc/hostname < hostname\n  \
                      tar cf - ./dir | fs.ext4 disk.img write /backup.tar\n  \
-                     fs.ext4 src.img read /f | fs.ext4 dst.img write /f\n\n\
-                     The parent directory must exist. An existing file is replaced.",
+                     fs.ext4 src.img read /f | fs.ext4 dst.img write /f\n  \
+                     printf 'v2' | fs.ext4 disk.img write --at 4096 /data.bin\n\n\
+                     The parent directory must exist. An existing file is replaced.\n\n\
+                     With --at the bytes go into a regular file that is there, starting that \
+                     many bytes in (a position inside the file; --offset stays where the \
+                     filesystem starts in TARGET). Nothing else in the file changes, and a \
+                     write past the end grows it, the gap reading back as zeros. Nothing is \
+                     created and a symlink is never followed. A directory, a missing path, a \
+                     symlink, an immutable or append-only file and a position past the largest \
+                     file are refused before the image is opened for writing, and so is a \
+                     block-mapped (ext2/ext3-style) or encrypted file, which this driver cannot \
+                     write into (exit 3).",
                 ),
         )
         .subcommand(
@@ -413,7 +430,10 @@ fn run(matches: &ArgMatches) -> Result<Outcome, CliError> {
         "ls" => ls(&open(target, offset)?, path_arg(sub)),
         "stat" => stat(&open(target, offset)?, path_arg(sub)),
         "read" => read(&open(target, offset)?, path_arg(sub), sub.get_one("output")),
-        "write" => write(target, offset, path_arg(sub)),
+        "write" => match sub.get_one::<u64>("at") {
+            Some(&at) => write_at(target, offset, path_arg(sub), at),
+            None => write(target, offset, path_arg(sub)),
+        },
         "mkdir" if sub.get_flag("parents") => mkdir_parents(target, offset, path_arg(sub)),
         "mkdir" => mkdir(target, offset, path_arg(sub)),
         "rm" => remove(target, offset, path_arg(sub), Removal::Name),
@@ -1766,11 +1786,26 @@ fn truncate(target: &OsString, offset: u64, path: &[u8], size: u64) -> Result<Ou
     Ok(Outcome::report(Json::object(fields)).with_text(text))
 }
 
-/// The inode of the regular file `path` names, once each refusal the
-/// guest's `truncate` gives on the kernel's mount has been ruled out, for
-/// the same reason and, where two apply, at the first name on the way that
-/// fails (`tests/cli_truncate_kernel.rs` holds the two to the same
-/// answers):
+/// The inode of the regular file `path` names, once each refusal of
+/// [`existing_file`] has been ruled out and then the shrink of a
+/// block-mapped file, which the library cannot plan, with exit 3.
+fn truncatable(fs: &Filesystem, path: &[u8], size: u64) -> Result<u32, CliError> {
+    let (ino, inode) = existing_file(fs, path)?;
+    if size < inode.size && !inode.has_extents() && !inode.has_inline_data() {
+        return Err(CliError::not_implemented(format!(
+            "{}: this driver cannot shrink a block-mapped (ext2/ext3-style) file, only grow it",
+            show(path)
+        )));
+    }
+    Ok(ino)
+}
+
+/// The inode of the regular file `path` names and its attributes, once
+/// each refusal the kernel gives opening it for writing has been ruled
+/// out, for the same reason and, where two apply, at the first name on the
+/// way that fails (`tests/cli_truncate_kernel.rs` holds this to the
+/// guest's `truncate`, `tests/cli_pwrite_kernel.rs` to its `dd
+/// conv=notrunc`):
 ///
 /// - an empty path: not found;
 /// - on the way, a name after one that is not a directory: not a
@@ -1781,12 +1816,11 @@ fn truncate(target: &OsString, offset: u64, path: &[u8], size: u64) -> Result<Ou
 /// - an immutable or append-only file: not permitted.
 ///
 /// No symlink is followed, so one on the way is not a directory and one at
-/// `path` is refused, where `truncate` would set the length of what it
-/// names. A missing file is not created, as `truncate` would create it.
-/// After those, what this driver cannot do is refused with exit 3: any
-/// truncate of an encrypted file, whose blocks it holds no key for, and
-/// the shrink of a block-mapped file, which the library cannot plan.
-fn truncatable(fs: &Filesystem, path: &[u8], size: u64) -> Result<u32, CliError> {
+/// `path` is refused, where the guest's tools would write to what it
+/// names. A missing file is not created, as they would create it. After
+/// those, an encrypted file is refused with exit 3: this driver holds no
+/// key for its blocks.
+fn existing_file(fs: &Filesystem, path: &[u8]) -> Result<(u32, Inode), CliError> {
     use fs_ext4::Error;
     let refuse = |e: Error| driver_error(path, e);
     if path.is_empty() {
@@ -1817,9 +1851,7 @@ fn truncatable(fs: &Filesystem, path: &[u8], size: u64) -> Result<u32, CliError>
         )));
     }
     if !inode.is_file() {
-        return Err(refuse(Error::InvalidArgument(
-            "only a regular file has a length to set",
-        )));
+        return Err(refuse(Error::InvalidArgument("not a regular file")));
     }
     if inode.flags & (InodeFlags::IMMUTABLE.bits() | InodeFlags::APPEND.bits()) != 0 {
         return Err(CliError::failed(format!(
@@ -1833,11 +1865,61 @@ fn truncatable(fs: &Filesystem, path: &[u8], size: u64) -> Result<u32, CliError>
             show(path)
         )));
     }
-    if size < inode.size && !inode.has_extents() && !inode.has_inline_data() {
-        return Err(CliError::not_implemented(format!(
-            "{}: this driver cannot shrink a block-mapped (ext2/ext3-style) file, only grow it",
+    Ok((ino, inode))
+}
+
+/// Write everything on stdin into the regular file `path` names, starting
+/// `at` bytes in, through the library's `apply_pwrite_ino`: the bytes
+/// there are overwritten and no others, and a write past the end grows the
+/// file, the gap reading back as zeros and allocating nothing. The whole
+/// input is read before the image is opened, and every refusal is decided
+/// on a read-only mount, so a refused command never opens the image for
+/// writing and leaves it byte-identical; nothing on stdin writes nothing
+/// and does not open it for writing either. The names are looked up as
+/// bytes, so none of them need be UTF-8.
+fn write_at(target: &OsString, offset: u64, path: &[u8], at: u64) -> Result<Outcome, CliError> {
+    let mut data = Vec::new();
+    std::io::Read::read_to_end(&mut std::io::stdin().lock(), &mut data)
+        .map_err(|e| CliError::failed(format!("read stdin: {e}")))?;
+    let (ino, inode) = writable_at(&open(target, offset)?, path, at, data.len() as u64)?;
+    let size = if data.is_empty() {
+        inode.size
+    } else {
+        edit(target, offset, path, |fs| {
+            fs.apply_pwrite_ino(ino, at, &data)
+        })?
+    };
+    let mut fields = path_fields(path);
+    fields.push(("at", Json::from(at)));
+    fields.push(("bytes", Json::from(data.len() as u64)));
+    fields.push(("size", Json::from(size)));
+    let text = format!(
+        "wrote {} bytes at {at} into {} ({size} bytes)",
+        data.len(),
+        show(path)
+    );
+    Ok(Outcome::report(Json::object(fields)).with_text(text))
+}
+
+/// The inode of the regular file `path` names and its attributes, once
+/// each refusal of [`existing_file`] has been ruled out, then a write of
+/// `len` bytes at `at` ending past the last block an extent can address
+/// (`ee_block` is 32 bits): a file too large. After those, a block-mapped
+/// file, which the library cannot write into, is refused with exit 3.
+fn writable_at(fs: &Filesystem, path: &[u8], at: u64, len: u64) -> Result<(u32, Inode), CliError> {
+    let (ino, inode) = existing_file(fs, path)?;
+    let largest = (u64::from(u32::MAX) + 1) * u64::from(fs.sb.block_size());
+    if at.checked_add(len).is_none_or(|end| end > largest) {
+        return Err(CliError::failed(format!(
+            "{}: file too large: a write at {at} ends past the {largest} bytes a file can hold",
             show(path)
         )));
     }
-    Ok(ino)
+    if !inode.has_extents() && !inode.has_inline_data() {
+        return Err(CliError::not_implemented(format!(
+            "{}: this driver cannot write into a block-mapped (ext2/ext3-style) file",
+            show(path)
+        )));
+    }
+    Ok((ino, inode))
 }
