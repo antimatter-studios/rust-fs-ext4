@@ -2,7 +2,7 @@
 //! without mounting it.
 //!
 //! The verbs are the shared set: `ls`, `stat`, `read`, `write`, `mkdir`,
-//! `rm`, `rmdir`, `mv`, `get`/`info`, `set`, `resize`. Metadata is JSON (or `--text`); file content is raw bytes.
+//! `rm`, `rmdir`, `mv`, `ln`, `get`/`info`, `set`, `resize`. Metadata is JSON (or `--text`); file content is raw bytes.
 //! A verb the library cannot do yet still exists and answers `not
 //! implemented` with exit status 3, so a script moved between filesystems
 //! fails loudly instead of meaning something else.
@@ -257,6 +257,42 @@ fn command() -> Cmd {
                      followed.",
                 ),
         )
+        .subcommand(
+            Cmd::new("ln")
+                .about("Add a name for a file (a hard link), or with -s make a symbolic link")
+                .arg(
+                    Arg::new("symbolic")
+                        .short('s')
+                        .long("symbolic")
+                        .action(ArgAction::SetTrue)
+                        .help("Make a symbolic link whose target is TARGET, as given"),
+                )
+                .arg(
+                    Arg::new("source")
+                        .value_name("TARGET")
+                        .required(true)
+                        .value_parser(value_parser!(OsString)),
+                )
+                .arg(
+                    Arg::new("path")
+                        .value_name("PATH")
+                        .required(true)
+                        .value_parser(value_parser!(OsString)),
+                )
+                .after_help(
+                    "Examples:\n  fs.ext4 disk.img ln /data/a /data/also-a\n  \
+                     fs.ext4 disk.img ln -s ../etc/hosts /hosts\n  \
+                     fs.ext4 disk.img ln --text -s /var/log /logs\n\n\
+                     PATH is the new name itself, not a directory to link into. A hard link \
+                     gives the file TARGET names one more name and one more link; a symlink \
+                     named as TARGET is linked itself, never followed. With -s, TARGET is \
+                     the symlink's text as given, never resolved: relative, absolute or \
+                     naming nothing. A name already at PATH, a missing TARGET or parent, a \
+                     hard link to a directory, a file at 65000 links, an empty target and a \
+                     target that does not fit in one block (4095 bytes at most) are refused \
+                     before the image is opened for writing.",
+                ),
+        )
         .subcommand(key_command(
             "get",
             "Report the filesystem's properties, or one of them",
@@ -344,6 +380,13 @@ fn run(matches: &ArgMatches) -> Result<Outcome, CliError> {
             os_bytes(sub.get_one::<OsString>("source").expect("clap requires it")),
             path_arg(sub),
             sub.get_flag("replace"),
+        ),
+        "ln" => link(
+            target,
+            offset,
+            os_bytes(sub.get_one::<OsString>("source").expect("clap requires it")),
+            path_arg(sub),
+            sub.get_flag("symbolic"),
         ),
         "get" | "info" => get(
             &open(target, offset)?,
@@ -1086,13 +1129,7 @@ fn remove(
         Removal::Name => fs.apply_unlink_at(parent, name),
         Removal::Directory => fs.apply_rmdir_at(parent, name),
     })?;
-    let mut fields = vec![("path", Json::from(show(path)))];
-    if std::str::from_utf8(path).is_err() {
-        fields.push((
-            "path_hex",
-            Json::from(path.iter().map(|b| format!("{b:02x}")).collect::<String>()),
-        ));
-    }
+    let mut fields = path_fields(path);
     fields.push(("removed", Json::from(true)));
     Ok(Outcome::report(Json::object(fields)).with_text(format!("removed {}", show(path))))
 }
@@ -1147,6 +1184,19 @@ fn removable<'p>(
     Ok((parent, name))
 }
 
+/// A report's `path`, with its exact bytes in `path_hex` when it is not
+/// UTF-8.
+fn path_fields(path: &[u8]) -> Vec<(&'static str, Json)> {
+    let mut fields = vec![("path", Json::from(show(path)))];
+    if std::str::from_utf8(path).is_err() {
+        fields.push((
+            "path_hex",
+            Json::from(path.iter().map(|b| format!("{b:02x}")).collect::<String>()),
+        ));
+    }
+    fields
+}
+
 /// `path` split for an operation on its last name: the directory part, the
 /// last name with any trailing `/` taken off (empty for the root), and
 /// whether there was a trailing `/`.
@@ -1159,6 +1209,18 @@ fn last_name(path: &[u8]) -> (&[u8], &[u8], bool) {
         .map_or(0, |i| i + 1);
     let (dir, name) = trimmed.split_at(start);
     (dir, name, end < path.len())
+}
+
+/// The directory `dir` names: not found when it does not resolve, and not
+/// a directory when it, or a name on the way to it, is something else. The
+/// root when `dir` is empty.
+fn directory(fs: &Filesystem, dir: &[u8]) -> fs_ext4::Result<u32> {
+    let ino = fs.lookup_path_bytes(dir)?;
+    if fs.stat_ino(ino)?.is_dir() {
+        Ok(ino)
+    } else {
+        Err(fs_ext4::Error::NotADirectory)
+    }
 }
 
 /// Whether directory `ino` has no entries other than `.` and `..`.
@@ -1193,13 +1255,7 @@ fn rename(
             )
         })?;
     }
-    let mut fields = vec![("path", Json::from(show(path)))];
-    if std::str::from_utf8(path).is_err() {
-        fields.push((
-            "path_hex",
-            Json::from(path.iter().map(|b| format!("{b:02x}")).collect::<String>()),
-        ));
-    }
+    let mut fields = path_fields(path);
     fields.push(("moved", Json::from(true)));
     let text = format!("moved {} to {}", show(source), show(path));
     Ok(Outcome::report(Json::object(fields)).with_text(text))
@@ -1251,20 +1307,12 @@ fn movable<'p>(
             show(what)
         ))
     };
-    let directory = |dir: &[u8]| -> fs_ext4::Result<u32> {
-        let ino = fs.lookup_path_bytes(dir)?;
-        if fs.stat_ino(ino)?.is_dir() {
-            Ok(ino)
-        } else {
-            Err(Error::NotADirectory)
-        }
-    };
     let not_a_name = |name: &[u8]| name.is_empty() || name == b"." || name == b"..";
 
     let (from_dir, from_name, from_slash) = last_name(source);
     let (to_dir, to_name, to_slash) = last_name(path);
-    let from_dir = directory(from_dir).map_err(at_source)?;
-    let to_dir = directory(to_dir).map_err(at_path)?;
+    let from_dir = directory(fs, from_dir).map_err(at_source)?;
+    let to_dir = directory(fs, to_dir).map_err(at_path)?;
     if not_a_name(from_name) {
         return Err(busy(source));
     }
@@ -1340,4 +1388,166 @@ fn within(fs: &Filesystem, dir: u32, top: u32) -> fs_ext4::Result<bool> {
     Err(fs_ext4::Error::Corrupt(
         "a directory's .. chain does not reach the root",
     ))
+}
+
+/// The most links a file can have. The kernel refuses one more as too many
+/// links, as `tests/cli_ln_kernel.rs` shows on a file brought to it.
+const MAX_LINKS: u16 = 65000;
+
+/// The longest symlink target the kernel takes: one of 4096 bytes or more
+/// it refuses as a name too long before it looks at the volume at all.
+const MAX_TARGET: usize = 4095;
+
+/// Give `path` to the file `source` names (a hard link), or with `symbolic`
+/// make `path` a symlink whose target is `source` as given, through the
+/// library's `apply_link_at` or `apply_symlink_at`. Every refusal is
+/// decided first, on a read-only mount, so a refused command never opens
+/// the image for writing and leaves it byte-identical. The names and the
+/// target are handed over as bytes, so none of them need be UTF-8.
+fn link(
+    target: &OsString,
+    offset: u64,
+    source: &[u8],
+    path: &[u8],
+    symbolic: bool,
+) -> Result<Outcome, CliError> {
+    let the_link = linkable(&open(target, offset)?, source, path, symbolic)?;
+    let ino = edit(target, offset, path, |fs| match the_link.inode {
+        Some(ino) => fs
+            .apply_link_at(ino, the_link.dir, the_link.name)
+            .map(|()| ino),
+        None => fs.apply_symlink_at(the_link.dir, the_link.name, source),
+    })?;
+    let mut fields = path_fields(path);
+    fields.push(("linked", Json::from(true)));
+    fields.push(("inode", Json::from(ino)));
+    let text = if symbolic {
+        format!("linked {} -> {}", show(path), show(source))
+    } else {
+        format!("linked {} to {}", show(path), show(source))
+    };
+    Ok(Outcome::report(Json::object(fields)).with_text(text))
+}
+
+/// A link every refusal has been ruled out for: the entry `name` to be
+/// added to directory `dir`, naming the inode `inode` (a hard link), or a
+/// new symlink when that is `None`.
+struct Link<'p> {
+    inode: Option<u32>,
+    dir: u32,
+    name: &'p [u8],
+}
+
+/// The link of `path` to `source`, once each refusal the kernel gives
+/// `linkat` (without flags) or `symlinkat` has been ruled out, for the same
+/// reason it gives and, where two apply, the one it gives first
+/// (`tests/cli_ln_kernel.rs` holds the two to the same answers). In that
+/// order:
+///
+/// - for a symlink, an empty target (not found), or one of 4096 bytes or
+///   more (a name too long);
+/// - for a hard link, a `source` that does not exist, a name on the way to
+///   it that is not a directory, or a trailing `/` on one that is not;
+/// - a directory part of `path` that does not resolve, or is not a
+///   directory;
+/// - a new name over 255 bytes;
+/// - a name already at `path`, `.`, `..` and the root included; then a
+///   new name with a trailing `/` (not found);
+/// - for a hard link, a directory as `source` (not permitted), then a file
+///   at the most links it can have;
+/// - for a symlink, a target as long as one block or longer.
+///
+/// No path component is followed as a symlink, so a hard link to a symlink
+/// names the symlink. The kernel does follow one named with a trailing
+/// `/`, which this refuses as not a directory whatever it names. Both
+/// names are in the one volume, whose root's `..` is the root, so a link
+/// across volumes cannot be asked for.
+fn linkable<'p>(
+    fs: &Filesystem,
+    source: &[u8],
+    path: &'p [u8],
+    symbolic: bool,
+) -> Result<Link<'p>, CliError> {
+    use fs_ext4::Error;
+    let at_source = |e: Error| driver_error(source, e);
+    let at_path = |e: Error| driver_error(path, e);
+    let too_long = |most: usize| {
+        CliError::failed(format!(
+            "{}: name too long: a symlink target here is at most {most} bytes",
+            show(path)
+        ))
+    };
+
+    let inode = if symbolic {
+        if source.is_empty() {
+            return Err(CliError::failed(format!(
+                "{}: not found: a symlink target cannot be empty",
+                show(path)
+            )));
+        }
+        if source.len() > MAX_TARGET {
+            return Err(too_long(MAX_TARGET));
+        }
+        None
+    } else {
+        let (dir, name, slash) = last_name(source);
+        let dir = directory(fs, dir).map_err(at_source)?;
+        let ino = if name.is_empty() {
+            dir
+        } else {
+            fs.lookup_at(dir, name).map_err(at_source)?
+        };
+        let inode = fs.stat_ino(ino).map_err(at_source)?;
+        if slash && !inode.is_dir() {
+            return Err(at_source(Error::NotADirectory));
+        }
+        Some((ino, inode))
+    };
+
+    let (dir, name, slash) = last_name(path);
+    let dir = directory(fs, dir).map_err(at_path)?;
+    if name.len() > 255 {
+        return Err(at_path(Error::NameTooLong));
+    }
+    if name.is_empty() || name == b"." || name == b".." {
+        return Err(at_path(Error::AlreadyExists));
+    }
+    match fs.lookup_at(dir, name) {
+        Ok(_) => return Err(at_path(Error::AlreadyExists)),
+        Err(Error::NotFound) if slash => return Err(at_path(Error::NotFound)),
+        Err(Error::NotFound) => {}
+        Err(e) => return Err(at_path(e)),
+    }
+
+    match inode {
+        Some((ino, inode)) => {
+            if inode.is_dir() {
+                return Err(CliError::failed(format!(
+                    "{}: operation not permitted: a directory cannot have a hard link",
+                    show(source)
+                )));
+            }
+            if inode.links_count >= MAX_LINKS {
+                return Err(at_source(Error::TooManyLinks));
+            }
+            Ok(Link {
+                inode: Some(ino),
+                dir,
+                name,
+            })
+        }
+        None => {
+            // The kernel refuses a target as long as a block (1023 bytes
+            // fit a 1 KiB block, 1024 do not), after every reason above.
+            let most = fs.sb.block_size() as usize - 1;
+            if source.len() > most {
+                return Err(too_long(most));
+            }
+            Ok(Link {
+                inode: None,
+                dir,
+                name,
+            })
+        }
+    }
 }
