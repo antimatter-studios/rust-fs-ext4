@@ -244,13 +244,31 @@ a fragment until it ships and a line of `CHANGELOG.md` after, never both.
 
 ## Keep the features page current
 
-`docs/features.md` lists every feature with its state, the release it shipped
-in, its tracking issue and the test that checks it. **A pull request that
-adds, fixes, refuses or removes behaviour updates its row in the same pull
-request**, with the PR number under **Since** (`Unreleased (#N)` until a
-release, then the version). A finding that leaves something unsupported gets
-a row too, naming its issue. Releases turn every `Unreleased` into the
-version they ship as.
+`docs/features.md` lists every feature with its state, the release it
+shipped in, its tracking issue and the test that checks it. **A pull
+request that adds, fixes, refuses or removes behaviour records its row in
+the same pull request** -- as a fragment, never as an edit to the page. A
+finding that leaves something unsupported gets a row too, naming its
+issue.
+
+A pull request adds one file under `features.d/`, named for its branch
+like its changelog fragment (`fix/run-end-bound` writes
+`features.d/fix-run-end-bound.md`), holding one or more `## Section`
+headings of the page, each over rows in that section's columns, with the
+PR number under **Since** (`Unreleased (#N)`). A row whose first cell, the
+Feature, matches an existing row replaces it in place; a new one is
+appended to the section. `remove: KEY` deletes a row and `rename: KEY`
+followed by a row replaces it under a new key, both by the exact Feature
+text. One fragment writes a row: to change a row another unreleased
+fragment writes, edit that fragment. Pull requests open at the same time
+then never conflict over neighbouring rows of one table.
+
+A release applies them: `../rust-fs-core/scripts/features-gather.sh
+VERSION` writes every fragment into the page, turns every `Unreleased`
+into the version, and deletes the fragments, in the release commit.
+`chore lint` runs `features-check.sh`: every fragment applies to the page,
+and the page holds no `Unreleased` row of its own. The convention is
+rust-fs-core's `docs/features-fragments.md`.
 
 ## Clean room
 
