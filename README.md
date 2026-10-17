@@ -69,6 +69,8 @@ fs.ext4 disk.img mkdir /backup
 fs.ext4 disk.img rm /notes.txt
 fs.ext4 disk.img rmdir /backup
 fs.ext4 disk.img mv /draft.txt /archive/final.txt
+fs.ext4 disk.img ln /archive/final.txt /latest.txt
+fs.ext4 disk.img ln -s archive/final.txt /current
 fs.ext4 disk.img get label --text
 fs.ext4 disk.img set label ARCHIVE
 fs.ext4 --offset 1048576 whole-disk.img info
@@ -111,6 +113,16 @@ rust-fs-ext4 doctor                        # is every tool on PATH ours?
   directory with entries in the way, a file over a directory and the
   reverse, `.`, `..` and the root are refused for the reason Linux gives,
   before the image is opened for writing.
+- **`ln TARGET PATH`** gives the file TARGET names the new name PATH, one
+  more link to the same inode; a symlink named as TARGET is linked itself,
+  never followed. **`ln -s TARGET PATH`** makes PATH a symbolic link whose
+  target is the text TARGET as given, never resolved: held in the inode
+  under 60 bytes, in a block of its own from 60, and at most one byte less
+  than a block (4095 bytes in 4 KiB). Both report `{"path": ..., "linked":
+  true, "inode": N}`. A name already at PATH, a missing TARGET or parent, a
+  hard link to a directory, a file at 65000 links, an empty target and one
+  too long are refused for the reason Linux gives, before the image is
+  opened for writing.
 - **`get`/`info`** report `fs`, `label`, `total_bytes`, `free_bytes`,
   `block_size` and `dirty`, with ext4's own fields under `ext4`.
 - **`set label <value>`** rewrites the label, at most 16 bytes, in the

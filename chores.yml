@@ -532,9 +532,9 @@ tasks:
     cmds:
       - '../rust-fs-core/scripts/tier.sh test:kernel kernel 510 36300 -- scripts/test.sh --locked --release $(scripts/test-targets.sh kernel) -- --show-output'
       # 27 executed in the merge queue on 2026-10-17 (run 38991557768);
-      # cli_ls_recursive_kernel.rs adds one, cli_rm_kernel.rs two and
-      # cli_mv_kernel.rs two.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh kernel 32'
+      # cli_ls_recursive_kernel.rs adds one, cli_rm_kernel.rs two,
+      # cli_mv_kernel.rs two and cli_ln_kernel.rs two.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh kernel 34'
 
   test:lwext4:
     desc: 'CROSS-VALIDATION: lwext4 — a third implementation, built in the guest — reads what we wrote, and we read what it wrote'
@@ -701,8 +701,8 @@ tasks:
     # 93 with fsck.ext4, 130 with the write verbs, 158 with the man pages
     # and completions; the floor is about 95% of that. 159 executed in the
     # merge queue on 2026-10-17 (run 38991557768); test-ls-recursive.sh
-    # adds 67, test-rm.sh 72 and test-mv.sh 116, which the floor carries in
-    # full.
+    # adds 67, test-rm.sh 72, test-mv.sh 116 and test-ln.sh 154, which the
+    # floor carries in full.
     #
     # BUDGET: six files printed 29 lines and 1097 bytes (cli.log of run
     # 38995796787), and a passing file adds three lines and about 80 bytes.
@@ -710,7 +710,7 @@ tasks:
     # this row allowed, so it allows 46 and 1640.
     cmds:
       - '../rust-fs-core/scripts/tier.sh test:cli cli 46 1640 -- scripts/test-cli.sh'
-      - 'bash ../rust-fs-core/scripts/test-floor.sh cli 405'
+      - 'bash ../rust-fs-core/scripts/test-floor.sh cli 559'
 
   test:scripts:
     desc: The shell tests (tests/scripts/*.sh), every one by glob
