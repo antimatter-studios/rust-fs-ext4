@@ -66,6 +66,7 @@ fs.ext4 disk.img stat /etc/fstab
 fs.ext4 disk.img read /etc/fstab > fstab
 fs.ext4 disk.img write /notes.txt < notes.txt
 fs.ext4 disk.img mkdir /backup
+fs.ext4 disk.img mkdir -p /backup/2026/10
 fs.ext4 disk.img rm /notes.txt
 fs.ext4 disk.img rmdir /backup
 fs.ext4 disk.img mv /draft.txt /archive/final.txt
@@ -96,6 +97,13 @@ rust-fs-ext4 doctor                        # is every tool on PATH ours?
   tree that exactly fits succeeds, while one more entry past either bound,
   or a directory that cannot be read, exits 1 with the entries collected
   so far still on stdout and the bound or the path named on stderr.
+- **`mkdir --parents`** (`-p`) makes every missing directory on the way to
+  PATH, mode 0755, and reports `{"path": ..., "created": [...]}` listing
+  those it made: none, with nothing written, when the chain is already
+  there. A file, a symlink or a name too long anywhere on the way is
+  refused for the reason Linux gives, before the image is opened for
+  writing, so a refused command makes no part of the chain. A symlink is
+  never followed, even one naming a directory.
 - **`rm`** removes a name that is not a directory, a symlink rather than
   what it points at, and the file with its last name; **`rmdir`** removes
   an empty directory. Each reports `{"path": ..., "removed": true}`. A

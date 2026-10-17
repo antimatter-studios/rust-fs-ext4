@@ -149,7 +149,16 @@ chore_min_version: 0.6.0
 #                                                    36404048578), which failed
 #                                                    the tier with exit 65 and
 #                                                    nothing red inside it
-#     kernel      352 /  27,924      460 /  36,300   ~31% / ~30%. Two binaries
+#     kernel      519 /  37,587      680 /  49,000   ~31% / ~30%. PR #537's
+#                                                    x86_64 merge-queue run
+#                                                    39075070772: 38 passing
+#                                                    tests, including two in
+#                                                    cli_mkdir_kernel.rs. Last
+#                                                    green main run 39066796244
+#                                                    printed 494 / 36,159 for
+#                                                    36 tests; mkdir adds 25
+#                                                    lines and six oracle calls.
+#                                                    Was 352 / 27,924 with two
 #                                                    more: group_layout_oracle.rs
 #                                                    (nine tests, two of them
 #                                                    kernel resizes) and
@@ -524,17 +533,19 @@ tasks:
     # written — plus the reverse direction, and a deliberate corruption
     # that must fail.
     #
-    # BUDGET: 372 lines and 29089 bytes in run 38995796787 (kernel.log).
-    # With --show-output a binary prints 15 lines plus one per oracle call
-    # for one test, and 19 plus its calls for two, so the four CLI kernel
-    # binaries of fs.ext4 stat, ls --recursive, rm and mv add about 92
-    # lines and 6 KB: about 464 lines, over the 460 this row allowed.
+    # BUDGET: 519 lines and 37587 bytes in x86_64 merge-queue run
+    # 39075070772 (kernel.log), with all 38 tests passing. Last green main
+    # run 39066796244 printed 494 lines and 36159 bytes for 36 tests.
+    # cli_mkdir_kernel.rs adds two tests, 25 lines and six oracle calls
+    # (1428 more bytes overall). Keep that oracle evidence; 680 / 49000
+    # gives about 30% headroom over the measured log, replacing 510 / 36300.
     cmds:
-      - '../rust-fs-core/scripts/tier.sh test:kernel kernel 510 36300 -- scripts/test.sh --locked --release $(scripts/test-targets.sh kernel) -- --show-output'
+      - '../rust-fs-core/scripts/tier.sh test:kernel kernel 680 49000 -- scripts/test.sh --locked --release $(scripts/test-targets.sh kernel) -- --show-output'
       # 27 executed in the merge queue on 2026-10-17 (run 38991557768);
       # cli_ls_recursive_kernel.rs adds one, cli_rm_kernel.rs two,
-      # cli_mv_kernel.rs two and cli_ln_kernel.rs two.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh kernel 34'
+      # cli_mv_kernel.rs two, cli_ln_kernel.rs two and cli_mkdir_kernel.rs
+      # two.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh kernel 36'
 
   test:lwext4:
     desc: 'CROSS-VALIDATION: lwext4 — a third implementation, built in the guest — reads what we wrote, and we read what it wrote'
@@ -701,8 +712,9 @@ tasks:
     # 93 with fsck.ext4, 130 with the write verbs, 158 with the man pages
     # and completions; the floor is about 95% of that. 159 executed in the
     # merge queue on 2026-10-17 (run 38991557768); test-ls-recursive.sh
-    # adds 67, test-rm.sh 72, test-mv.sh 116 and test-ln.sh 154, which the
-    # floor carries in full.
+    # adds 67, test-rm.sh 72, test-mv.sh 116 and test-ln.sh 154, and
+    # mkdir --parents adds 72 to test-write.sh, which the floor carries in
+    # full.
     #
     # BUDGET: six files printed 29 lines and 1097 bytes (cli.log of run
     # 38995796787), and a passing file adds three lines and about 80 bytes.
@@ -710,7 +722,7 @@ tasks:
     # this row allowed, so it allows 46 and 1640.
     cmds:
       - '../rust-fs-core/scripts/tier.sh test:cli cli 46 1640 -- scripts/test-cli.sh'
-      - 'bash ../rust-fs-core/scripts/test-floor.sh cli 559'
+      - 'bash ../rust-fs-core/scripts/test-floor.sh cli 631'
 
   test:scripts:
     desc: The shell tests (tests/scripts/*.sh), every one by glob

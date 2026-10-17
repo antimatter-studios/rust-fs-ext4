@@ -177,7 +177,14 @@ fn command() -> Cmd {
         )
         .subcommand(
             Cmd::new("mkdir")
-                .about("Create a directory (its parent must exist)")
+                .about("Create a directory (its parent must exist, or with -p every one on the way)")
+                .arg(
+                    Arg::new("parents")
+                        .short('p')
+                        .long("parents")
+                        .action(ArgAction::SetTrue)
+                        .help("Make every missing directory on the way; one already there is success"),
+                )
                 .arg(
                     Arg::new("path")
                         .value_name("PATH")
@@ -186,7 +193,14 @@ fn command() -> Cmd {
                 )
                 .after_help(
                     "Examples:\n  fs.ext4 disk.img mkdir /backup\n  \
-                     fs.ext4 disk.img mkdir /backup/2026",
+                     fs.ext4 disk.img mkdir /backup/2026\n  \
+                     fs.ext4 disk.img mkdir -p /backup/2026/10/17\n\n\
+                     With --parents every missing directory on the way to PATH is made, mode \
+                     0755, and the report lists those it made: none, and nothing written, when \
+                     the whole chain is already there. A file, a symlink or a name too long \
+                     anywhere on the way is refused before the image is opened for writing, so \
+                     a refused command makes no part of the chain. A symlink is never \
+                     followed, even one naming a directory.",
                 ),
         )
         .subcommand(
@@ -371,6 +385,7 @@ fn run(matches: &ArgMatches) -> Result<Outcome, CliError> {
         "stat" => stat(&open(target, offset)?, path_arg(sub)),
         "read" => read(&open(target, offset)?, path_arg(sub), sub.get_one("output")),
         "write" => write(target, offset, path_arg(sub)),
+        "mkdir" if sub.get_flag("parents") => mkdir_parents(target, offset, path_arg(sub)),
         "mkdir" => mkdir(target, offset, path_arg(sub)),
         "rm" => remove(target, offset, path_arg(sub), Removal::Name),
         "rmdir" => remove(target, offset, path_arg(sub), Removal::Directory),
@@ -1102,6 +1117,154 @@ fn mkdir(target: &OsString, offset: u64, path: &[u8]) -> Result<Outcome, CliErro
     let ino = edit(target, offset, path, |fs| fs.apply_mkdir(name, 0o755))?;
     let report = Json::object([("path", Json::from(name)), ("inode", Json::from(ino))]);
     Ok(Outcome::report(report).with_text(format!("created {name}")))
+}
+
+/// Create every missing directory on the way to `path`, mode 0755, as
+/// `mkdir -p` does, through the library's `apply_mkdir_at`, all in one
+/// writable open. Every refusal is decided first, on a read-only mount, so
+/// a refused command never opens the image for writing and makes no part
+/// of the chain; a chain already there all the way is success without
+/// opening it for writing either. Should a directory fail to be made all
+/// the same (the volume is full), the ones made before it are removed
+/// again. The names are handed over as bytes, so none of them need be
+/// UTF-8.
+fn mkdir_parents(target: &OsString, offset: u64, path: &[u8]) -> Result<Outcome, CliError> {
+    let chain = chain(&open(target, offset)?, path)?;
+    if !chain.is_empty() {
+        edit(target, offset, path, |fs| {
+            let mut made: Vec<u32> = Vec::with_capacity(chain.len());
+            let parent = |step: &Step, made: &[u32]| match step.parent {
+                Dir::Existing(ino) => ino,
+                Dir::Made(i) => made[i],
+            };
+            for step in &chain {
+                match fs.apply_mkdir_at(parent(step, &made), step.name, 0o755) {
+                    Ok(ino) => made.push(ino),
+                    Err(e) => {
+                        // Last made, first removed, so each is empty when
+                        // its turn comes. The error reported is the one
+                        // that stopped the chain.
+                        for step in chain[..made.len()].iter().rev() {
+                            let _ = fs.apply_rmdir_at(parent(step, &made), step.name);
+                        }
+                        return Err(e);
+                    }
+                }
+            }
+            Ok(())
+        })?;
+    }
+    let text = if chain.is_empty() {
+        format!("{} exists; nothing created", show(path))
+    } else {
+        let lines: Vec<String> = chain
+            .iter()
+            .map(|step| format!("created {}", show(step.shown)))
+            .collect();
+        lines.join("\n")
+    };
+    let created: Vec<Json> = chain
+        .iter()
+        .map(|step| Json::from(show(step.shown)))
+        .collect();
+    let mut fields = path_fields(path);
+    fields.push(("created", Json::from(created)));
+    Ok(Outcome::report(Json::object(fields)).with_text(text))
+}
+
+/// The directory a directory of a chain is made in: one already on the
+/// volume, or the one the chain makes at that index.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Dir {
+    Existing(u32),
+    Made(usize),
+}
+
+/// One directory `mkdir --parents` makes: the entry `name` in `parent`,
+/// reported as `shown`, the path as given up to and including the name.
+struct Step<'p> {
+    parent: Dir,
+    name: &'p [u8],
+    shown: &'p [u8],
+}
+
+/// The directories `mkdir --parents` makes for `path`, in order, once each
+/// refusal the guest's `mkdir -p` gives on the kernel's mount has been
+/// ruled out, for the same reason and, where two apply, at the first name
+/// on the way that fails (`tests/cli_mkdir_kernel.rs` holds the two to the
+/// same answers):
+///
+/// - an empty path: not found;
+/// - a name over 255 bytes: a name too long;
+/// - a name already there that is not a directory: not a directory when
+///   more of the path follows it, and already there when it is the last.
+///
+/// `.` stays where the walk is and `..` goes up, through a directory the
+/// chain makes as well as one already there, so `a/../b` makes `a` and `b`
+/// as `mkdir -p` does. Nothing is made until every name has been decided:
+/// where `mkdir -p` makes the start of a chain before it stops, this makes
+/// none of it. No symlink is followed, so one on the way is not a
+/// directory and one at `path` is already there, even one naming a
+/// directory, which `mkdir -p` would follow.
+fn chain<'p>(fs: &Filesystem, path: &'p [u8]) -> Result<Vec<Step<'p>>, CliError> {
+    use fs_ext4::Error;
+    let refuse = |e: Error| driver_error(path, e);
+    if path.is_empty() {
+        return Err(CliError::failed("an empty path: not found"));
+    }
+    // Each name, with where it ends in `path`.
+    let mut names = Vec::new();
+    let mut at = 0;
+    for name in path.split(|&b| b == b'/') {
+        let end = at + name.len();
+        if !name.is_empty() {
+            names.push((name, end));
+        }
+        at = end + 1;
+    }
+    let mut steps: Vec<Step<'p>> = Vec::new();
+    let mut here = Dir::Existing(fs_ext4::path::EXT4_ROOT_INODE);
+    for (i, &(name, end)) in names.iter().enumerate() {
+        if name == b"." {
+            continue;
+        }
+        if name == b".." {
+            here = match here {
+                Dir::Existing(ino) => Dir::Existing(fs.lookup_at(ino, b"..").map_err(refuse)?),
+                Dir::Made(j) => steps[j].parent,
+            };
+            continue;
+        }
+        if name.len() > 255 {
+            return Err(refuse(Error::NameTooLong));
+        }
+        let planned = steps
+            .iter()
+            .position(|step| step.parent == here && step.name == name);
+        let existing = match (planned, here) {
+            (Some(_), _) | (None, Dir::Made(_)) => None,
+            (None, Dir::Existing(dir)) => match fs.lookup_at(dir, name) {
+                Ok(ino) => Some(ino),
+                Err(Error::NotFound) => None,
+                Err(e) => return Err(refuse(e)),
+            },
+        };
+        here = match (planned, existing) {
+            (Some(j), _) => Dir::Made(j),
+            (None, Some(ino)) if fs.stat_ino(ino).map_err(refuse)?.is_dir() => Dir::Existing(ino),
+            (None, Some(_)) if i + 1 == names.len() => return Err(refuse(Error::AlreadyExists)),
+            (None, Some(_)) => return Err(refuse(Error::NotADirectory)),
+            (None, None) => {
+                steps.push(Step {
+                    parent: here,
+                    name,
+                    shown: &path[..end],
+                });
+                Dir::Made(steps.len() - 1)
+            }
+        };
+    }
+    Ok(steps)
 }
 
 /// What a removal takes away: `rm` a name that is not a directory,
