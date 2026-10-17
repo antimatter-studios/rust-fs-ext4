@@ -66,6 +66,8 @@ fs.ext4 disk.img stat /etc/fstab
 fs.ext4 disk.img read /etc/fstab > fstab
 fs.ext4 disk.img write /notes.txt < notes.txt
 fs.ext4 disk.img mkdir /backup
+fs.ext4 disk.img rm /notes.txt
+fs.ext4 disk.img rmdir /backup
 fs.ext4 disk.img get label --text
 fs.ext4 disk.img set label ARCHIVE
 fs.ext4 --offset 1048576 whole-disk.img info
@@ -91,6 +93,13 @@ rust-fs-ext4 doctor                        # is every tool on PATH ours?
   tree that exactly fits succeeds, while one more entry past either bound,
   or a directory that cannot be read, exits 1 with the entries collected
   so far still on stdout and the bound or the path named on stderr.
+- **`rm`** removes a name that is not a directory, a symlink rather than
+  what it points at, and the file with its last name; **`rmdir`** removes
+  an empty directory. Each reports `{"path": ..., "removed": true}`. A
+  missing path, a directory given to `rm`, anything but a directory given
+  to `rmdir`, a directory with entries, `.`, `..` and the root are refused
+  for the reason Linux gives, before the image is opened for writing, so a
+  refused command leaves it byte-identical. Nothing is removed recursively.
 - **`get`/`info`** report `fs`, `label`, `total_bytes`, `free_bytes`,
   `block_size` and `dirty`, with ext4's own fields under `ext4`.
 - **`set label <value>`** rewrites the label, at most 16 bytes, in the

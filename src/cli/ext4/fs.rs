@@ -2,7 +2,7 @@
 //! without mounting it.
 //!
 //! The verbs are the shared set: `ls`, `stat`, `read`, `write`, `mkdir`,
-//! `get`/`info`, `set`, `resize`. Metadata is JSON (or `--text`); file content is raw bytes.
+//! `rm`, `rmdir`, `get`/`info`, `set`, `resize`. Metadata is JSON (or `--text`); file content is raw bytes.
 //! A verb the library cannot do yet still exists and answers `not
 //! implemented` with exit status 3, so a script moved between filesystems
 //! fails loudly instead of meaning something else.
@@ -189,6 +189,40 @@ fn command() -> Cmd {
                      fs.ext4 disk.img mkdir /backup/2026",
                 ),
         )
+        .subcommand(
+            Cmd::new("rm")
+                .about("Remove a name that is not a directory; the file goes with its last name")
+                .arg(
+                    Arg::new("path")
+                        .value_name("PATH")
+                        .required(true)
+                        .value_parser(value_parser!(OsString)),
+                )
+                .after_help(
+                    "Examples:\n  fs.ext4 disk.img rm /notes.txt\n  \
+                     fs.ext4 disk.img rm --text /backup/old.tar\n\n\
+                     A symlink is removed, never followed. A file with other names keeps \
+                     its content under them. A missing path or a directory is refused \
+                     before the image is opened for writing. Nothing is removed recursively.",
+                ),
+        )
+        .subcommand(
+            Cmd::new("rmdir")
+                .about("Remove an empty directory")
+                .arg(
+                    Arg::new("path")
+                        .value_name("PATH")
+                        .required(true)
+                        .value_parser(value_parser!(OsString)),
+                )
+                .after_help(
+                    "Examples:\n  fs.ext4 disk.img rmdir /backup\n  \
+                     fs.ext4 disk.img rmdir --text /backup/2026\n\n\
+                     A missing path, anything that is not a directory, a directory with \
+                     entries other than . and .., and the root are refused before the \
+                     image is opened for writing.",
+                ),
+        )
         .subcommand(key_command(
             "get",
             "Report the filesystem's properties, or one of them",
@@ -268,6 +302,8 @@ fn run(matches: &ArgMatches) -> Result<Outcome, CliError> {
         "read" => read(&open(target, offset)?, path_arg(sub), sub.get_one("output")),
         "write" => write(target, offset, path_arg(sub)),
         "mkdir" => mkdir(target, offset, path_arg(sub)),
+        "rm" => remove(target, offset, path_arg(sub), Removal::Name),
+        "rmdir" => remove(target, offset, path_arg(sub), Removal::Directory),
         "get" | "info" => get(
             &open(target, offset)?,
             sub.get_one::<String>("key").map(String::as_str),
@@ -982,4 +1018,98 @@ fn mkdir(target: &OsString, offset: u64, path: &[u8]) -> Result<Outcome, CliErro
     let ino = edit(target, offset, path, |fs| fs.apply_mkdir(name, 0o755))?;
     let report = Json::object([("path", Json::from(name)), ("inode", Json::from(ino))]);
     Ok(Outcome::report(report).with_text(format!("created {name}")))
+}
+
+/// What a removal takes away: `rm` a name that is not a directory,
+/// `rmdir` an empty directory.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Removal {
+    Name,
+    Directory,
+}
+
+/// Remove one name. Everything the removal could be refused for is
+/// decided first, on a read-only mount, so a refused command never opens
+/// the image for writing and leaves it byte-identical. The removal itself
+/// is the library's `apply_unlink_at` or `apply_rmdir_at`, which checks
+/// again; the name is handed over as bytes, so one that is not UTF-8 can
+/// be removed too.
+fn remove(
+    target: &OsString,
+    offset: u64,
+    path: &[u8],
+    removal: Removal,
+) -> Result<Outcome, CliError> {
+    let (parent, name) = removable(&open(target, offset)?, path, removal)?;
+    edit(target, offset, path, |fs| match removal {
+        Removal::Name => fs.apply_unlink_at(parent, name),
+        Removal::Directory => fs.apply_rmdir_at(parent, name),
+    })?;
+    let mut fields = vec![("path", Json::from(show(path)))];
+    if std::str::from_utf8(path).is_err() {
+        fields.push((
+            "path_hex",
+            Json::from(path.iter().map(|b| format!("{b:02x}")).collect::<String>()),
+        ));
+    }
+    fields.push(("removed", Json::from(true)));
+    Ok(Outcome::report(Json::object(fields)).with_text(format!("removed {}", show(path))))
+}
+
+/// The directory holding `path`'s last name, and that name, once each
+/// refusal the kernel gives `unlink(2)` and `rmdir(2)` has been ruled
+/// out, for the same reason it gives (`tests/cli_rm_kernel.rs` holds the
+/// two to the same answers): a path that does not resolve, a directory
+/// given to `rm` or a name ending in `/` that is not one, anything but a
+/// directory given to `rmdir`, a directory with entries other than `.`
+/// and `..`, `.` itself, `..`, and the root.
+///
+/// No path component is followed as a symlink, so a symlink is what `rm`
+/// removes and what `rmdir` refuses as not a directory.
+fn removable<'p>(
+    fs: &Filesystem,
+    path: &'p [u8],
+    removal: Removal,
+) -> Result<(u32, &'p [u8]), CliError> {
+    use fs_ext4::Error;
+    let refuse = |e: Error| driver_error(path, e);
+    let end = path.iter().rposition(|&b| b != b'/').map_or(0, |i| i + 1);
+    let trailing_slash = end < path.len();
+    let trimmed = &path[..end];
+    let start = trimmed
+        .iter()
+        .rposition(|&b| b == b'/')
+        .map_or(0, |i| i + 1);
+    let (dir, name) = trimmed.split_at(start);
+    if name.is_empty() {
+        return Err(match removal {
+            Removal::Name => refuse(Error::IsADirectory),
+            Removal::Directory => CliError::failed(format!(
+                "{}: the root directory cannot be removed",
+                show(path)
+            )),
+        });
+    }
+    if removal == Removal::Directory && name == b"." {
+        return Err(refuse(Error::InvalidArgument("rmdir: cannot remove .")));
+    }
+    if removal == Removal::Directory && name == b".." {
+        return Err(refuse(Error::DirectoryNotEmpty));
+    }
+    let parent = fs.lookup_path_bytes(dir).map_err(refuse)?;
+    let ino = fs.lookup_at(parent, name).map_err(refuse)?;
+    let inode = fs.stat_ino(ino).map_err(refuse)?;
+    match removal {
+        Removal::Name if inode.is_dir() => return Err(refuse(Error::IsADirectory)),
+        Removal::Name if trailing_slash => return Err(refuse(Error::NotADirectory)),
+        Removal::Name => {}
+        Removal::Directory if !inode.is_dir() => return Err(refuse(Error::NotADirectory)),
+        Removal::Directory => {
+            let entries = fs.read_dir_ino(ino).map_err(refuse)?;
+            if entries.iter().any(|e| e.name != b"." && e.name != b"..") {
+                return Err(refuse(Error::DirectoryNotEmpty));
+            }
+        }
+    }
+    Ok((parent, name))
 }
