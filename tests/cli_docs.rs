@@ -72,6 +72,9 @@ fn every_name_has_a_man_page_in_its_section_naming_its_subcommands() {
         let roff = format!("--{option}").replace('-', "\\-");
         assert!(ls.contains(&roff), "fs.ext4-ls.1 omits --{option}");
     }
+    // mkdir's page carries --parents.
+    let mkdir = std::fs::read_to_string(share.join("man/man1/fs.ext4-mkdir.1")).unwrap();
+    assert!(mkdir.contains("parents"), "fs.ext4-mkdir.1 omits --parents");
 }
 
 #[test]
@@ -103,6 +106,10 @@ fn every_name_has_a_zsh_bash_and_fish_completion() {
                         "{shell} {name} omits ls --{option}"
                     );
                 }
+                assert!(
+                    completion.contains("parents"),
+                    "{shell} {name} omits mkdir --parents"
+                );
             }
         }
     }
