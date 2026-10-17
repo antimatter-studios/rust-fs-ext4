@@ -63,10 +63,13 @@ fn every_name_has_a_man_page_in_its_section_naming_its_subcommands() {
             "no fs.ext4-{verb}.1"
         );
     }
-    // ls's page carries its recursive walk and both of its bounds.
+    // ls's page carries its recursive walk and both of its bounds. roff
+    // writes every hyphen as `\-`, so the options are matched as roff
+    // spells them: `--max-depth` is `\-\-max\-depth` on the page.
     let ls = std::fs::read_to_string(share.join("man/man1/fs.ext4-ls.1")).unwrap();
     for option in ["recursive", "max-depth", "limit"] {
-        assert!(ls.contains(option), "fs.ext4-ls.1 omits --{option}");
+        let roff = format!("--{option}").replace('-', "\\-");
+        assert!(ls.contains(&roff), "fs.ext4-ls.1 omits --{option}");
     }
 }
 
