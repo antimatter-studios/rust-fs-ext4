@@ -1805,9 +1805,10 @@ impl Filesystem {
     /// A symbolic link met before the final component is followed, as the
     /// Linux kernel follows it: its target is walked in its place, from the
     /// root when it starts with `/` and otherwise from the directory that
-    /// holds the link. The final component is never followed, so a verb
-    /// that operates on a link (`unlink`, `lstat`, `readlink`) gets the
-    /// link. More than [`MAX_SYMLINKS`] links in one lookup is
+    /// holds the link. A trailing slash requires a directory and follows
+    /// the final link too (#559). Without that slash, a verb that operates
+    /// on a link (`unlink`, `lstat`, `readlink`) gets the link itself.
+    /// More than [`MAX_SYMLINKS`] links in one lookup is
     /// [`Error::SymlinkLoop`], and a link with an empty target is
     /// [`Error::NotFound`], both as the kernel answers (#531).
     pub fn lookup_path_bytes(&self, path: &[u8]) -> Result<u32> {
@@ -1829,6 +1830,12 @@ impl Filesystem {
         // The components still to walk, the next one last.
         let mut pending: Vec<Vec<u8>> = Vec::new();
         let push = |pending: &mut Vec<Vec<u8>>, p: &[u8]| {
+            // Walking `.` after a trailing slash both follows the preceding
+            // link and checks that it names a directory. Keep this requirement
+            // for expanded targets too (cli_path_symlink_kernel.rs, #559).
+            if p.ends_with(b"/") {
+                pending.push(b".".to_vec());
+            }
             let parts = p.split(|&b| b == b'/').filter(|c| !c.is_empty());
             pending.extend(parts.rev().map(<[u8]>::to_vec));
         };
