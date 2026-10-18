@@ -1,8 +1,10 @@
-# fs.ext4 write and mkdir, as installed: round trips compared with cmp at
-# every block-size boundary, a file in a subdirectory, a replacement by a
-# shorter file, typed ls entries on the populated image, refusals, mkdir
-# --parents making a missing chain (and nothing, without writing, for a
-# chain already there), and a clean fsck.ext4 afterwards.
+# fs.ext4 write, mkdir and truncate, as installed: round trips compared
+# with cmp at every block-size boundary, a file in a subdirectory, a
+# replacement by a shorter file, typed ls entries on the populated image,
+# refusals, mkdir --parents making a missing chain (and nothing, without
+# writing, for a chain already there), truncate shrinking to zero and
+# across a block boundary and growing with zeros, and a clean fsck.ext4
+# afterwards.
 source "$(dirname "$0")/lib.sh"
 
 img="$SANDBOX/write.img"
@@ -130,6 +132,75 @@ refused "already exists" /dl
 refused "not a directory" /dl/x
 refused "not found" ""
 
+# truncate sets a regular file's length: a shrink keeps exactly the bytes
+# before the new end and gives back the blocks past it, and a grow reads
+# back as zeros, allocating nothing.
+free_before="$(fs.ext4 "$img" get free_bytes --text)"
+head -c 20000 /dev/urandom >"$SANDBOX/t.src"
+fs.ext4 "$img" write /t <"$SANDBOX/t.src" >/dev/null 2>&1
+truncated() {
+    local p="$1" size="$2" allocated="$3"
+    fs.ext4 "$img" truncate "$p" "$size" >"$SANDBOX/t.json" 2>"$SANDBOX/t.err"
+    local rc=$?
+    check "truncate $p $size exits 0 ($(cat "$SANDBOX/t.err"))" test "$rc" -eq 0
+    jq_check "truncate $p $size reports the path and the size" \
+        ".path == \"$p\" and .size == $size and (keys | length) == 2" "$SANDBOX/t.json"
+    fs.ext4 "$img" stat "$p" >"$SANDBOX/stat.json" 2>/dev/null
+    jq_check "$p is $size bytes, $allocated allocated" \
+        ".type == \"file\" and .size == $size and .allocated_bytes == $allocated" "$SANDBOX/stat.json"
+}
+truncated /t 5000 8192
+check "a shrink across a block boundary keeps the first 5000 bytes" \
+    cmp -s <(head -c 5000 "$SANDBOX/t.src") <(fs.ext4 "$img" read /t)
+truncated /t 12288 8192
+check "a grow reads back zeros past the old end, in its last block and beyond" \
+    cmp -s <(head -c 5000 "$SANDBOX/t.src"; head -c 7288 /dev/zero) <(fs.ext4 "$img" read /t)
+truncated /t 0 0
+check "a shrink to zero leaves nothing to read" test -z "$(fs.ext4 "$img" read /t | head -c 1)"
+check "a shrink to zero gave back every block the file had" \
+    test "$(fs.ext4 "$img" get free_bytes --text)" -eq "$free_before"
+truncated /f4095 8192 4096
+check "a grow of a file write made reads back zeros past its end" \
+    cmp -s <(cat "$SANDBOX/src.4095"; head -c 4097 /dev/zero) <(fs.ext4 "$img" read /f4095)
+truncated /f4096 4096 4096
+check "a truncate to the length the file has keeps its bytes" \
+    cmp -s "$SANDBOX/src.4096" <(fs.ext4 "$img" read /f4096)
+fs.ext4 "$img" truncate --text /f1 0 >"$SANDBOX/t.txt" 2>/dev/null
+check "truncate --text says the new length" test "$(cat "$SANDBOX/t.txt")" = "/f1 is 0 bytes"
+
+# Refusals are decided before the image is opened for writing, so each
+# leaves it byte-identical with nothing on stdout. A symlink is never
+# followed, whether it is the path or on the way. A SIZE that is not a
+# byte count is a usage error (exit 2) before the image is opened at all.
+fs.ext4 "$img" ln -s /f4096 /fl >/dev/null 2>&1
+cp "$img" "$SANDBOX/before-t.img"
+truncate_refused() {
+    local code="$1" why="$2" p="$3" size="$4"
+    fs.ext4 "$img" truncate "$p" "$size" >"$SANDBOX/x.out" 2>"$SANDBOX/x.err"
+    local rc=$?
+    check "truncate ${p:0:40} '$size' exits $code, not $rc" test "$rc" -eq "$code"
+    check "truncate ${p:0:40} '$size' prints nothing on stdout" test ! -s "$SANDBOX/x.out"
+    jq_check "truncate ${p:0:40} '$size' is refused: $why" \
+        ".code == $code and (.error | test(\"$why\"))" "$SANDBOX/x.err"
+    check "truncate ${p:0:40} '$size' left the image byte-identical" \
+        cmp -s "$img" "$SANDBOX/before-t.img"
+}
+truncate_refused 1 "is a directory" /d 0
+truncate_refused 1 "is a directory" /d/ 0
+truncate_refused 1 "is a directory" / 0
+truncate_refused 1 "is a directory" /f0/ 0
+truncate_refused 1 "not a directory" /f0/x 0
+truncate_refused 1 "not found" /missing 0
+truncate_refused 1 "not found" /missing/x 0
+truncate_refused 1 "name too long" "/$long" 0
+truncate_refused 1 "not found" "" 0
+truncate_refused 1 "symlink" /fl 0
+truncate_refused 1 "symlink" /dl 0
+truncate_refused 1 "not a directory" /dl/e 0
+for size in -1 12x 1K 18446744073709551616 ""; do
+    truncate_refused 2 "" /f4096 "$size"
+done
+
 # --offset is where the filesystem starts: a MiB of zeros before it is
 # never touched.
 off="$SANDBOX/offset.img"
@@ -139,6 +210,11 @@ rc=$?
 check "mkdir -p with --offset exits 0 ($(cat "$SANDBOX/o.err"))" test "$rc" -eq 0
 check "mkdir -p with --offset made the chain" \
     test "$(fs.ext4 --offset 1048576 "$off" stat /o1/o2 2>/dev/null | jq -r .type)" = dir
+fs.ext4 --offset 1048576 "$off" truncate /f4096 100 >/dev/null 2>"$SANDBOX/o.err"
+rc=$?
+check "truncate with --offset exits 0 ($(cat "$SANDBOX/o.err"))" test "$rc" -eq 0
+check "truncate with --offset kept the first 100 bytes" \
+    cmp -s <(head -c 100 "$SANDBOX/src.4096") <(fs.ext4 --offset 1048576 "$off" read /f4096)
 check "the MiB before --offset is still zeros" cmp -s <(head -c 1048576 "$off") <(head -c 1048576 /dev/zero)
 fsck.ext4 --offset 1048576 "$off" >/dev/null 2>&1
 check "fsck.ext4 at --offset after mkdir -p exits 0" test $? -eq 0
