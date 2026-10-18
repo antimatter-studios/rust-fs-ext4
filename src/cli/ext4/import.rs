@@ -87,7 +87,7 @@ impl Stage {
         }
         let target = target.to_os_string();
         let fs = super::device::mount(&target, offset, false)?;
-        let dir = fs.lookup_path_bytes(parent).map_err(error)?;
+        let dir = fs.lookup_dir_path_bytes(parent).map_err(error)?;
         let parent_inode = fs.stat_ino(dir).map_err(error)?;
         if !parent_inode.is_dir() {
             return Err(error("import parent is not a directory"));

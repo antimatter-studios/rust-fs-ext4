@@ -1558,7 +1558,7 @@ fn remove(
 /// directory given to `rmdir`, a directory with entries other than `.`
 /// and `..`, `.` itself, `..`, and the root.
 ///
-/// No path component is followed as a symlink, so a symlink is what `rm`
+/// The final name is never followed as a symlink, so a symlink is what `rm`
 /// removes and what `rmdir` refuses as not a directory.
 fn removable<'p>(
     fs: &Filesystem,
@@ -1583,7 +1583,7 @@ fn removable<'p>(
     if removal == Removal::Directory && name == b".." {
         return Err(refuse(Error::DirectoryNotEmpty));
     }
-    let parent = fs.lookup_path_bytes(dir).map_err(refuse)?;
+    let parent = fs.lookup_dir_path_bytes(dir).map_err(refuse)?;
     let ino = fs.lookup_at(parent, name).map_err(refuse)?;
     let inode = fs.stat_ino(ino).map_err(refuse)?;
     match removal {
@@ -1631,7 +1631,7 @@ fn last_name(path: &[u8]) -> (&[u8], &[u8], bool) {
 /// a directory when it, or a name on the way to it, is something else. The
 /// root when `dir` is empty.
 fn directory(fs: &Filesystem, dir: &[u8]) -> fs_ext4::Result<u32> {
-    let ino = fs.lookup_path_bytes(dir)?;
+    let ino = fs.lookup_dir_path_bytes(dir)?;
     if fs.stat_ino(ino)?.is_dir() {
         Ok(ino)
     } else {
@@ -1706,7 +1706,7 @@ struct Move<'p> {
 /// - a name at `path` that `source` cannot replace: a directory for a
 ///   file, a file for a directory, or a directory with entries.
 ///
-/// No path component is followed as a symlink, so a symlink is moved as
+/// The final name is never followed as a symlink, so a symlink is moved as
 /// itself, and replaced as a file is.
 fn movable<'p>(
     fs: &Filesystem,
@@ -1873,7 +1873,7 @@ struct Link<'p> {
 ///   at the most links it can have;
 /// - for a symlink, a target as long as one block or longer.
 ///
-/// No path component is followed as a symlink, so a hard link to a symlink
+/// The final name is never followed as a symlink, so a hard link to a symlink
 /// names the symlink. The kernel does follow one named with a trailing
 /// `/`, which this refuses as not a directory whatever it names. Both
 /// names are in the one volume, whose root's `..` is the root, so a link
