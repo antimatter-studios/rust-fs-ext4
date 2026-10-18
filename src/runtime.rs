@@ -42,16 +42,20 @@ impl Runtime for SystemRuntime {
         }
     }
     fn next_inode_generation(&self) -> u32 {
-        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-        let seed = {
-            // Randomize once for this WASM instance, then preserve the native
-            // monotonic wrapping counter semantics within the instance.
-            static SEED: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
-            *SEED.get_or_init(|| (js_sys::Math::random() * 4294967296.0) as u32)
-        };
-        #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-        let seed = std::process::id();
-        seed.wrapping_add(COUNTER.fetch_add(1, Ordering::Relaxed))
+        process_id().wrapping_add(COUNTER.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
+/// Native process ID, or a stable random identifier for this browser instance.
+pub fn process_id() -> u32 {
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    {
+        static SEED: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+        *SEED.get_or_init(|| (js_sys::Math::random() * 4294967296.0) as u32)
+    }
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    {
+        std::process::id()
     }
 }
 

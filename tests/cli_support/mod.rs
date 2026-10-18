@@ -27,14 +27,16 @@ pub fn bin() -> &'static str {
 
 /// The binary under its own (cargo's) name: the repository entry point.
 pub fn entry() -> Command {
-    Command::new(BIN.expect(NO_BIN))
+    let mut cmd = Command::new(BIN.expect(NO_BIN));
+    cmd.env("TMPDIR", fs_ext4_test_support::temp_dir());
+    cmd
 }
 
 /// The program as a user runs it under `name`: argv[0] is what an
 /// installed symlink hands it, and what it dispatches on.
 pub fn tool(name: &str) -> Command {
     use std::os::unix::process::CommandExt;
-    let mut cmd = Command::new(BIN.expect(NO_BIN));
+    let mut cmd = entry();
     cmd.arg0(name);
     cmd
 }

@@ -1,7 +1,7 @@
 //! `fs.ext4 <target> <verb>`: an errand inside an ext4 image or device,
 //! without mounting it.
 //!
-//! The verbs are the shared set: `ls`, `stat`, `read`, `export`, `xattr`, `write`, `mkdir`,
+//! The verbs are the shared set: `ls`, `stat`, `read`, `export`, `import`, `xattr`, `write`, `mkdir`,
 //! `rm`, `rmdir`, `mv`, `ln`, `truncate`, `get`/`info`, `set`, `resize`. Metadata is JSON (or `--text`); file content is raw bytes.
 //! A verb the library cannot do yet still exists and answers `not
 //! implemented` with exit status 3, so a script moved between filesystems
@@ -172,6 +172,15 @@ fn command() -> Cmd {
                      The report includes the byte count and SHA-256; DEST - writes only raw \
                      bytes to stdout. Directories and symlinks are refused.",
                 ),
+        )
+        .subcommand(
+            Cmd::new("import")
+                .about("Import one regular file or stdin through bounded staged writes")
+                .arg(Arg::new("source").value_name("SRC").required(true).value_parser(value_parser!(OsString)))
+                .arg(Arg::new("path").value_name("PATH").required(true).value_parser(value_parser!(OsString)))
+                .arg(Arg::new("replace").long("replace").action(ArgAction::SetTrue))
+                .arg(Arg::new("verify").long("verify").action(ArgAction::SetTrue))
+                .after_help("Examples:\n  fs.ext4 disk.img import --verify backup.tar /backup.tar\n  fs.ext4 disk.img import --replace hostname /etc/hostname\n  cat backup.tar | fs.ext4 disk.img import - /backup.tar\n\nFiles use fixed chunks and publish only when complete. SRC - is spooled to a private temporary host file first. --verify reopens the image and checks the staged SHA-256 before publication. Atomic publication requires a journal; otherwise exit 3. A kill may leave a .dj-import-*.partial file beside the destination, visible through ls. Trees and metadata preservation await the shared tree API."),
         )
         .subcommand(
             Cmd::new("xattr")
@@ -486,6 +495,15 @@ fn run(matches: &ArgMatches) -> Result<Outcome, CliError> {
             let request = transfer::ExportRequest::from_matches(sub)?;
             export(&open(target, offset)?, &request)
         }
+        "import" => super::import::run(
+            target,
+            offset,
+            path_arg(sub),
+            sub.get_one::<OsString>("source")
+                .expect("clap requires source"),
+            sub.get_flag("replace"),
+            sub.get_flag("verify"),
+        ),
         "xattr" => xattr(
             &open(target, offset)?,
             path_arg(sub),
