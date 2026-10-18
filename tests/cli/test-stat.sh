@@ -2,6 +2,7 @@
 # typed, ext4's own under `ext4`, the values `write` and `mkdir` produced,
 # --text, the refusals, and an image left exactly as it was. What the
 # values must be on a volume Linux wrote is tests/cli_stat_kernel.rs.
+# xattr, the other per-path inspection, is checked here the same way.
 source "$(dirname "$0")/lib.sh"
 
 img="$SANDBOX/stat.img"
@@ -57,6 +58,42 @@ fs.ext4 "$img" stat >"$SANDBOX/u.out" 2>"$SANDBOX/u.err"
 check "stat with no path is a usage error" test $? -eq 2
 check "stat with no path prints nothing on stdout" test ! -s "$SANDBOX/u.out"
 
-check "stat left the image as it was" cmp -s "$img" "$SANDBOX/before.img"
+# xattr: a path with no attributes lists `[]` and --text says nothing; a
+# missing attribute or path is a structured error with nothing on stdout.
+# What a populated listing and every value must be, on a volume Linux
+# wrote, is tests/cli_xattr_kernel.rs.
+for path in / /d /f; do
+    fs.ext4 "$img" xattr "$path" >"$SANDBOX/x.json" 2>"$SANDBOX/x.err"
+    rc=$?
+    check "xattr $path exits 0 ($(cat "$SANDBOX/x.err"))" test "$rc" -eq 0
+    jq_check "xattr $path lists no attributes" '. == []' "$SANDBOX/x.json"
+done
+fs.ext4 "$img" xattr --text /f >"$SANDBOX/x.txt" 2>"$SANDBOX/x.err"
+rc=$?
+check "xattr --text /f exits 0" test "$rc" -eq 0
+check "xattr --text /f prints nothing for no attributes" test ! -s "$SANDBOX/x.txt"
+for args in "/f user.missing" "/missing" "/missing user.missing"; do
+    # shellcheck disable=SC2086 # each case is a fixed list of operands
+    fs.ext4 "$img" xattr $args >"$SANDBOX/x.out" 2>"$SANDBOX/x.err"
+    rc=$?
+    check "xattr $args exits 1" test "$rc" -eq 1
+    check "xattr $args prints nothing on stdout" test ! -s "$SANDBOX/x.out"
+    jq_check "xattr $args is a structured error" '.code == 1 and (.error | type) == "string"' "$SANDBOX/x.err"
+done
+fs.ext4 "$img" xattr /f user.missing -o "$SANDBOX/value" >"$SANDBOX/x.out" 2>"$SANDBOX/x.err"
+rc=$?
+check "xattr -o of a missing attribute exits 1" test "$rc" -eq 1
+check "the error names the missing attribute" grep -q 'user\.missing' "$SANDBOX/x.err"
+check "a missing attribute creates no output file" test ! -e "$SANDBOX/value"
+check "a missing attribute leaves no partial file" test ! -e "$SANDBOX/value.partial"
+for args in "" "/f -o value" "/f user.a extra"; do
+    # shellcheck disable=SC2086 # each case is a fixed list of operands
+    fs.ext4 "$img" xattr $args >"$SANDBOX/x.out" 2>"$SANDBOX/x.err"
+    rc=$?
+    check "xattr $args is a usage error" test "$rc" -eq 2
+    check "xattr $args as a usage error prints nothing on stdout" test ! -s "$SANDBOX/x.out"
+done
+
+check "stat and xattr left the image as they found it" cmp -s "$img" "$SANDBOX/before.img"
 
 finish
