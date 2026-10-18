@@ -161,16 +161,20 @@ fn command() -> Cmd {
         )
         .subcommand(
             Cmd::new("export")
-                .about("Copy a regular file out through the shared bounded transfer")
-                .args(transfer::export_args())
+                .about("Copy a regular file, or with --recursive a tree, out through the shared bounded transfer")
+                .args(transfer::export_args_with_tree())
                 .after_help(
                     "Examples:\n  fs.ext4 disk.img export /backup.tar backup.tar\n  \
                      fs.ext4 disk.img export --replace /etc/hostname hostname\n  \
-                     fs.ext4 disk.img export /backup.tar - | tar tf -\n\n\
+                     fs.ext4 disk.img export /backup.tar - | tar tf -\n  \
+                     fs.ext4 disk.img export --recursive /home/alice alice\n\n\
                      Files are copied in fixed chunks. A local destination is published only \
                      when complete; an existing name is refused unless --replace is given. \
                      The report includes the byte count and SHA-256; DEST - writes only raw \
-                     bytes to stdout. Directories and symlinks are refused.",
+                     bytes to stdout. Directories and symlinks are refused.\n\n\
+                     With --recursive a directory is copied through the shared tree transfer: \
+                     every item is reported, existing files are refused unless --replace is \
+                     given, and symlinks and special files are skipped, never followed.",
                 ),
         )
         .subcommand(
@@ -493,7 +497,13 @@ fn run(matches: &ArgMatches) -> Result<Outcome, CliError> {
         "read" => read(&open(target, offset)?, path_arg(sub), sub.get_one("output")),
         "export" => {
             let request = transfer::ExportRequest::from_matches(sub)?;
-            export(&open(target, offset)?, &request)
+            let tree = transfer::TreeOptions::from_matches(sub)?;
+            let fs = open(target, offset)?;
+            if tree.recursive {
+                transfer::export_tree(&request, &mut TreeExport { fs: &fs }, tree)
+            } else {
+                export(&fs, &request, transfer::ExportOptions::from_matches(sub)?)
+            }
         }
         "import" => super::import::run(
             target,
@@ -1056,7 +1066,11 @@ impl transfer::FileSource for ExportSource<'_> {
 
 /// Resolve and validate the source through ext4, then leave copying,
 /// digesting and complete-file publication to core's shared transfer.
-fn export(fs: &Filesystem, request: &transfer::ExportRequest) -> Result<Outcome, CliError> {
+fn export(
+    fs: &Filesystem,
+    request: &transfer::ExportRequest,
+    options: transfer::ExportOptions,
+) -> Result<Outcome, CliError> {
     let path = os_bytes(&request.path);
     let ino = fs
         .lookup_path_bytes(path)
@@ -1077,7 +1091,7 @@ fn export(fs: &Filesystem, request: &transfer::ExportRequest) -> Result<Outcome,
             show(path)
         )));
     }
-    transfer::export(
+    transfer::export_with_options(
         request,
         &mut ExportSource {
             fs,
@@ -1085,7 +1099,116 @@ fn export(fs: &Filesystem, request: &transfer::ExportRequest) -> Result<Outcome,
             size: inode.size,
             path,
         },
+        options,
     )
+}
+
+/// ext4 lookup, listing, stat and positioned reads behind core's shared
+/// tree transfer, which owns traversal, naming, publication and reports.
+/// Symlinks and special files are `Other` and never followed.
+struct TreeExport<'a> {
+    fs: &'a Filesystem,
+}
+
+impl TreeExport<'_> {
+    fn resolve(&self, path: &std::path::Path) -> Result<(Vec<u8>, u32, Inode), CliError> {
+        let bytes = os_bytes(&path.as_os_str().to_owned()).to_vec();
+        let ino = self
+            .fs
+            .lookup_path_bytes(&bytes)
+            .map_err(|e| driver_error(&bytes, e))?;
+        let inode = self.fs.stat_ino(ino).map_err(|e| driver_error(&bytes, e))?;
+        Ok((bytes, ino, inode))
+    }
+}
+
+/// `inode`'s kind, length, identity and times as the shared transfer
+/// reads them. The inode number is unique within one filesystem and
+/// shared by hard links.
+fn tree_metadata(ino: u32, inode: &Inode) -> transfer::TreeMetadata {
+    let kind = if inode.is_file() {
+        transfer::TreeKind::File
+    } else if inode.is_dir() {
+        transfer::TreeKind::Directory
+    } else {
+        transfer::TreeKind::Other
+    };
+    transfer::TreeMetadata {
+        kind,
+        size: inode.size,
+        inode: u64::from(ino),
+        accessed: system_time(inode.atime, inode.atime_nsec),
+        modified: system_time(inode.mtime, inode.mtime_nsec),
+    }
+}
+
+/// Seconds and nanoseconds since the epoch, either side of it.
+fn system_time(secs: i64, nsec: u32) -> Option<std::time::SystemTime> {
+    use std::time::{Duration, UNIX_EPOCH};
+    let whole = Duration::from_secs(secs.unsigned_abs());
+    let at = if secs >= 0 {
+        UNIX_EPOCH.checked_add(whole)?
+    } else {
+        UNIX_EPOCH.checked_sub(whole)?
+    };
+    at.checked_add(Duration::from_nanos(u64::from(nsec)))
+}
+
+#[cfg(unix)]
+fn os_name(name: &[u8]) -> OsString {
+    use std::os::unix::ffi::OsStringExt;
+    OsString::from_vec(name.to_vec())
+}
+
+#[cfg(not(unix))]
+fn os_name(name: &[u8]) -> OsString {
+    OsString::from(String::from_utf8_lossy(name).into_owned())
+}
+
+impl transfer::TreeSource for TreeExport<'_> {
+    fn metadata(&mut self, path: &std::path::Path) -> Result<transfer::TreeMetadata, CliError> {
+        let (_, ino, inode) = self.resolve(path)?;
+        Ok(tree_metadata(ino, &inode))
+    }
+
+    fn read_dir(&mut self, path: &std::path::Path) -> Result<Vec<transfer::TreeEntry>, CliError> {
+        let (bytes, ino, _) = self.resolve(path)?;
+        let mut children = Vec::new();
+        for d in self
+            .fs
+            .read_dir_ino(ino)
+            .map_err(|e| driver_error(&bytes, e))?
+        {
+            if d.name == b"." || d.name == b".." {
+                continue;
+            }
+            let child = self.fs.stat_ino(d.inode).map_err(|e| {
+                let mut full = bytes.clone();
+                if !full.ends_with(b"/") {
+                    full.push(b'/');
+                }
+                full.extend_from_slice(&d.name);
+                driver_error(&full, e)
+            })?;
+            children.push(transfer::TreeEntry {
+                name: os_name(&d.name),
+                metadata: tree_metadata(d.inode, &child),
+            });
+        }
+        Ok(children)
+    }
+
+    fn read_file_at(
+        &mut self,
+        path: &std::path::Path,
+        offset: u64,
+        buf: &mut [u8],
+    ) -> Result<usize, CliError> {
+        let (bytes, ino, inode) = self.resolve(path)?;
+        self.fs
+            .read_ino(InodeRef::new(ino, inode.generation), offset, buf)
+            .map_err(|e| driver_error(&bytes, e))
+    }
 }
 
 /// Hand `copy` stdout, or with `-o FILE` a new `FILE.partial` that is
