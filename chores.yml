@@ -286,8 +286,9 @@ vars:
   # release, run as `../rust-fs-core/scripts/ci-gate.sh`. It is v0.2.23 because the
   # release tarball is core's from that release: release.yml calls its
   # release-cli workflow, which runs `../rust-fs-core/scripts/package-cli.sh` (#481).
-  # v0.3.14 provides the shared bounded single-file export.
-  FS_CORE_REF: v0.3.14
+  # v0.3.14 provides the shared bounded single-file export, and v0.3.15 the
+  # shared tree source recursive export adapts (#570).
+  FS_CORE_REF: v0.3.15
   LINUX_HARNESS_URL: https://github.com/antimatter-studios/fs-linux-test-harness.git
   # v0.3.0 is the release with `vm.sh session`, which the test runner runs
   # cargo through so a run gives the VM and the machine-wide slot back
