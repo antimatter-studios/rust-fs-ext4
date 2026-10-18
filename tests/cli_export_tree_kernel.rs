@@ -124,3 +124,182 @@ fn recursive_export_matches_every_kernel_digest_and_reports_each_item() {
     );
     std::fs::remove_dir_all(&dest).unwrap();
 }
+
+/// Access and modification seconds the guest's `touch -d` set, then read
+/// back with `stat -c '%X %Y'`, beside the nanoseconds in `%x`/`%y`.
+type GuestTimes = (i64, u32, i64, u32);
+
+struct LinkTree {
+    img: String,
+    /// Path below `/tree`, guest inode number and guest link count.
+    inodes: Vec<(String, u64, u64)>,
+    /// Symbolic link name below `/tree` and the guest's `readlink`.
+    targets: Vec<(String, String)>,
+    /// Path below `/tree` and the times the guest recorded for it.
+    times: Vec<(String, GuestTimes)>,
+}
+
+fn kernel_link_tree(tag: &str) -> LinkTree {
+    let img = sized_image(tag, 64 << 20);
+    let made = oracle("mkfs.ext4")
+        .args(["-q", "-F", "-b", "4096", "-I", "256", &img])
+        .output();
+    assert!(made.status.success(), "mkfs.ext4: {}", stderr(&made));
+    let out = guest_kernel_write(
+        &img,
+        "cd \"$MNT\"\n\
+         mkdir -p tree/sub tree/timed-dir\n\
+         cd tree\n\
+         head -c 70001 /dev/urandom > file\n\
+         ln file hard\n\
+         ln file sub/hard2\n\
+         ln -s file fast\n\
+         ln -s \"$(printf 'long/%.0s' $(seq 1 40))end\" slow\n\
+         head -c 5000 /dev/urandom > timed-dir/timed\n\
+         touch -a -d @981173106.123456789 timed-dir/timed\n\
+         touch -m -d @1234567890.987654321 timed-dir/timed\n\
+         touch -a -d @1000000000.5 timed-dir\n\
+         touch -m -d @1100000000.25 timed-dir\n\
+         sync\n\
+         for f in file hard sub/hard2; do echo \"I $f $(stat -c '%i %h' $f)\"; done\n\
+         for f in fast slow; do echo \"L $f $(readlink $f)\"; done\n\
+         for f in timed-dir/timed timed-dir; do\n\
+           echo \"T $f $(stat -c '%X %Y' $f) $(stat -c '%x' $f | cut -d. -f2 | cut -d' ' -f1) $(stat -c '%y' $f | cut -d. -f2 | cut -d' ' -f1)\"\n\
+         done\n",
+    );
+    assert!(out.status.success(), "{}{}", stdout(&out), stderr(&out));
+    assert_e2fsck_clean(&img, "the kernel-written link tree");
+    let text = stdout(&out);
+    let rows = |tag: &str| -> Vec<Vec<String>> {
+        text.lines()
+            .filter_map(|l| l.strip_prefix(tag))
+            .map(|l| l.split(' ').map(str::to_string).collect())
+            .collect()
+    };
+    let inodes: Vec<_> = rows("I ")
+        .into_iter()
+        .map(|r| (r[0].clone(), r[1].parse().unwrap(), r[2].parse().unwrap()))
+        .collect();
+    let targets: Vec<_> = rows("L ")
+        .into_iter()
+        .map(|r| (r[0].clone(), r[1].clone()))
+        .collect();
+    let nanos = |s: &str| s.parse::<u32>().unwrap();
+    let times: Vec<_> = rows("T ")
+        .into_iter()
+        .map(|r| {
+            (
+                r[0].clone(),
+                (
+                    r[1].parse().unwrap(),
+                    nanos(&r[3]),
+                    r[2].parse().unwrap(),
+                    nanos(&r[4]),
+                ),
+            )
+        })
+        .collect();
+    assert_eq!(inodes.len(), 3, "{text}");
+    assert_eq!(targets.len(), 2, "{text}");
+    assert_eq!(times.len(), 2, "{text}");
+    assert!(
+        targets[0].1.len() < 60,
+        "the fast symlink fits in the inode"
+    );
+    assert!(targets[1].1.len() > 60, "the slow symlink needs a block");
+    LinkTree {
+        img,
+        inodes,
+        targets,
+        times,
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn recursive_export_preserves_kernel_links_and_times() {
+    use std::os::unix::fs::MetadataExt;
+    let tree = kernel_link_tree("export-tree-links-kernel");
+    let before = std::fs::read(&tree.img).unwrap();
+
+    // Without --preserve each symlink is its own refused item, nothing is
+    // created for it, and the hard links land as separate files.
+    let plain = image_path("export-tree-links-plain");
+    let _ = std::fs::remove_dir_all(&plain);
+    let out = tool("fs.ext4")
+        .args([&tree.img, "export", "--recursive", "/tree", &plain])
+        .output()
+        .unwrap();
+    let report = stdout(&out);
+    assert_eq!(out.status.code(), Some(1), "{report}{}", stderr(&out));
+    for (name, _) in &tree.targets {
+        let entry = item(&report, &format!("/tree/{name}"));
+        assert!(entry.contains("--preserve=links"), "{name}: {entry}");
+        assert!(std::fs::symlink_metadata(Path::new(&plain).join(name)).is_err());
+    }
+    let ino = |root: &str, p: &str| std::fs::metadata(Path::new(root).join(p)).unwrap().ino();
+    assert_ne!(ino(&plain, "file"), ino(&plain, "hard"));
+    std::fs::remove_dir_all(&plain).unwrap();
+
+    let dest = image_path("export-tree-links");
+    let _ = std::fs::remove_dir_all(&dest);
+    let out = tool("fs.ext4")
+        .args([
+            &tree.img,
+            "export",
+            "--recursive",
+            "--preserve=links,times",
+            "/tree",
+            &dest,
+        ])
+        .output()
+        .unwrap();
+    let report = stdout(&out);
+    assert_eq!(out.status.code(), Some(0), "{report}{}", stderr(&out));
+
+    // Paths the guest gave one inode share one host inode, with the
+    // guest's link count.
+    let (first, guest_ino, nlink) = &tree.inodes[0];
+    for (path, other_ino, other_nlink) in &tree.inodes {
+        assert_eq!(other_ino, guest_ino, "the guest linked {path}");
+        assert_eq!(other_nlink, nlink);
+        let host = std::fs::metadata(Path::new(&dest).join(path)).unwrap();
+        assert_eq!(host.ino(), ino(&dest, first), "{path} is not linked");
+        assert_eq!(host.nlink(), *nlink, "{path}");
+    }
+
+    // Each symlink holds the guest's target, unfollowed.
+    for (name, want) in &tree.targets {
+        let local = Path::new(&dest).join(name);
+        assert!(std::fs::symlink_metadata(&local)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            std::fs::read_link(&local).unwrap(),
+            Path::new(want),
+            "{name}"
+        );
+    }
+
+    // The file's and directory's times equal the guest's stat.
+    for (path, (asec, ansec, msec, mnsec)) in &tree.times {
+        let host = std::fs::metadata(Path::new(&dest).join(path)).unwrap();
+        assert_eq!(
+            (host.atime(), host.atime_nsec()),
+            (*asec, i64::from(*ansec)),
+            "{path} access time"
+        );
+        assert_eq!(
+            (host.mtime(), host.mtime_nsec()),
+            (*msec, i64::from(*mnsec)),
+            "{path} modification time"
+        );
+    }
+    assert_eq!(
+        std::fs::read(&tree.img).unwrap(),
+        before,
+        "export wrote the source"
+    );
+    std::fs::remove_dir_all(&dest).unwrap();
+}

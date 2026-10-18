@@ -162,19 +162,23 @@ fn command() -> Cmd {
         .subcommand(
             Cmd::new("export")
                 .about("Copy a regular file, or with --recursive a tree, out through the shared bounded transfer")
-                .args(transfer::export_args_with_tree())
+                .args(transfer::export_args_with_times())
                 .after_help(
                     "Examples:\n  fs.ext4 disk.img export /backup.tar backup.tar\n  \
                      fs.ext4 disk.img export --replace /etc/hostname hostname\n  \
                      fs.ext4 disk.img export /backup.tar - | tar tf -\n  \
-                     fs.ext4 disk.img export --recursive /home/alice alice\n\n\
+                     fs.ext4 disk.img export --recursive /home/alice alice\n  \
+                     fs.ext4 disk.img export --recursive --preserve=links,times /home/alice alice\n\n\
                      Files are copied in fixed chunks. A local destination is published only \
                      when complete; an existing name is refused unless --replace is given. \
                      The report includes the byte count and SHA-256; DEST - writes only raw \
                      bytes to stdout. Directories and symlinks are refused.\n\n\
                      With --recursive a directory is copied through the shared tree transfer: \
                      every item is reported, existing files are refused unless --replace is \
-                     given, and symlinks and special files are skipped, never followed.",
+                     given, and symlinks and special files are skipped, never followed. \
+                     --preserve=links recreates hard links once per inode and symlinks with \
+                     their stored target; --preserve=times sets access and modification times \
+                     from the ext4 inode.",
                 ),
         )
         .subcommand(
@@ -500,7 +504,13 @@ fn run(matches: &ArgMatches) -> Result<Outcome, CliError> {
             let tree = transfer::TreeOptions::from_matches(sub)?;
             let fs = open(target, offset)?;
             if tree.recursive {
-                transfer::export_tree(&request, &mut TreeExport { fs: &fs }, tree)
+                transfer::export_tree_with_times(
+                    &request,
+                    &mut TreeExport { fs: &fs },
+                    tree,
+                    transfer::LinkOptions::from_matches(sub)?,
+                    transfer::TimeOptions::from_matches(sub)?,
+                )
             } else {
                 export(&fs, &request, transfer::ExportOptions::from_matches(sub)?)
             }
@@ -1103,9 +1113,9 @@ fn export(
     )
 }
 
-/// ext4 lookup, listing, stat and positioned reads behind core's shared
-/// tree transfer, which owns traversal, naming, publication and reports.
-/// Symlinks and special files are `Other` and never followed.
+/// ext4 lookup, listing, stat, symlink targets and positioned reads behind
+/// core's shared tree transfer, which owns traversal, naming, publication
+/// and reports. Symlinks and special files are `Other` and never followed.
 struct TreeExport<'a> {
     fs: &'a Filesystem,
 }
@@ -1166,6 +1176,27 @@ fn os_name(name: &[u8]) -> OsString {
 }
 
 impl transfer::TreeSource for TreeExport<'_> {
+    /// The stored target of a fast (in-inode) or slow (block) symlink,
+    /// read without resolving it. ext4 records no directory bit for a
+    /// link, so Windows gets a file link.
+    fn symbolic_link(
+        &mut self,
+        path: &std::path::Path,
+    ) -> Result<Option<transfer::SymbolicLink>, CliError> {
+        let (bytes, ino, inode) = self.resolve(path)?;
+        if !inode.is_symlink() {
+            return Ok(None);
+        }
+        let target = self
+            .fs
+            .read_link_ino(InodeRef::new(ino, inode.generation))
+            .map_err(|e| driver_error(&bytes, e))?;
+        Ok(Some(transfer::SymbolicLink {
+            target: os_name(&target).into(),
+            target_is_directory: false,
+        }))
+    }
+
     fn metadata(&mut self, path: &std::path::Path) -> Result<transfer::TreeMetadata, CliError> {
         let (_, ino, inode) = self.resolve(path)?;
         Ok(tree_metadata(ino, &inode))
