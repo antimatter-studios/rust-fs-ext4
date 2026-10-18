@@ -65,6 +65,7 @@ fs.ext4 disk.img ls -R --max-depth 8 --limit 1000 /etc
 fs.ext4 disk.img stat /etc/fstab
 fs.ext4 disk.img read /etc/fstab > fstab
 fs.ext4 disk.img write /notes.txt < notes.txt
+printf 'v2' | fs.ext4 disk.img write --at 4096 /data.bin
 fs.ext4 disk.img mkdir /backup
 fs.ext4 disk.img mkdir -p /backup/2026/10
 fs.ext4 disk.img rm /notes.txt
@@ -98,6 +99,17 @@ rust-fs-ext4 doctor                        # is every tool on PATH ours?
   tree that exactly fits succeeds, while one more entry past either bound,
   or a directory that cannot be read, exits 1 with the entries collected
   so far still on stdout and the bound or the path named on stderr.
+- **`write --at BYTES PATH`** writes stdin into the regular file PATH
+  names, starting that many bytes in, and truncates nothing: only the
+  bytes written change, and a write past the end grows the file, the gap
+  reading back as zeros. `--at` is a position inside the file; `--offset`
+  stays where the filesystem starts. It reports `{"path": ..., "at": N,
+  "bytes": N, "size": N}`. Nothing is created and a symlink is never
+  followed. A directory, a missing path, a name too long, a file on the
+  way, an immutable or append-only file and a position past the largest
+  file are refused for the reason Linux gives, before the image is opened
+  for writing; a block-mapped (ext2/ext3-style) or encrypted file is
+  refused with exit 3: this driver cannot write into one.
 - **`mkdir --parents`** (`-p`) makes every missing directory on the way to
   PATH, mode 0755, and reports `{"path": ..., "created": [...]}` listing
   those it made: none, with nothing written, when the chain is already

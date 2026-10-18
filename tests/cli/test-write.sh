@@ -3,8 +3,9 @@
 # replacement by a shorter file, typed ls entries on the populated image,
 # refusals, mkdir --parents making a missing chain (and nothing, without
 # writing, for a chain already there), truncate shrinking to zero and
-# across a block boundary and growing with zeros, and a clean fsck.ext4
-# afterwards.
+# across a block boundary and growing with zeros, write --at writing
+# into a file at a position (inside it, across its end and into a hole),
+# and a clean fsck.ext4 afterwards.
 source "$(dirname "$0")/lib.sh"
 
 img="$SANDBOX/write.img"
@@ -201,6 +202,85 @@ for size in -1 12x 1K 18446744073709551616 ""; do
     truncate_refused 2 "" /f4096 "$size"
 done
 
+# write --at writes stdin into a file at a byte position and truncates
+# nothing: inside one block, across a block boundary, across the end, at
+# it, past it (the gap reads back as zeros and allocates nothing) and into
+# that gap. What the file must then hold is what dd writes on the host.
+head -c 20000 /dev/urandom >"$SANDBOX/a.want"
+fs.ext4 "$img" write /a <"$SANDBOX/a.want" >/dev/null 2>&1
+fs.ext4 "$img" write /e </dev/null >/dev/null 2>&1
+: >"$SANDBOX/e.want"
+written_at() {
+    local p="$1" want="$2" at="$3" len="$4" size="$5" allocated="$6"
+    head -c "$len" /dev/urandom >"$SANDBOX/a.patch"
+    dd if="$SANDBOX/a.patch" of="$want" bs=1 seek="$at" conv=notrunc 2>/dev/null
+    fs.ext4 "$img" write --at "$at" "$p" <"$SANDBOX/a.patch" >"$SANDBOX/a.json" 2>"$SANDBOX/a.err"
+    local rc=$?
+    check "write --at $at $p exits 0 ($(cat "$SANDBOX/a.err"))" test "$rc" -eq 0
+    jq_check "write --at $at $p reports the path, the position, the bytes and the size" \
+        ".path == \"$p\" and .at == $at and .bytes == $len and .size == $size and (keys | length) == 4" \
+        "$SANDBOX/a.json"
+    check "$p reads back as dd wrote $len bytes at $at" cmp -s "$want" <(fs.ext4 "$img" read "$p")
+    fs.ext4 "$img" stat "$p" >"$SANDBOX/stat.json" 2>/dev/null
+    jq_check "$p is $size bytes, $allocated allocated, after the write at $at" \
+        ".size == $size and .allocated_bytes == $allocated" "$SANDBOX/stat.json"
+}
+written_at /a "$SANDBOX/a.want" 100 50 20000 20480
+written_at /a "$SANDBOX/a.want" 4000 200 20000 20480
+written_at /a "$SANDBOX/a.want" 19000 3000 22000 24576
+written_at /a "$SANDBOX/a.want" 22000 100 22100 24576
+written_at /a "$SANDBOX/a.want" 30000 10 30010 28672
+written_at /a "$SANDBOX/a.want" 25000 100 30010 32768
+written_at /e "$SANDBOX/e.want" 8192 4097 12289 8192
+printf xy >"$SANDBOX/xy"
+fs.ext4 "$img" write --text --at 0 /e <"$SANDBOX/xy" >"$SANDBOX/a.txt" 2>/dev/null
+check "write --at --text says what was written where" \
+    test "$(cat "$SANDBOX/a.txt")" = "wrote 2 bytes at 0 into /e (12289 bytes)"
+
+# Nothing on stdin is nothing to write, so the image is not opened for
+# writing at all.
+cp "$img" "$SANDBOX/before-a.img"
+fs.ext4 "$img" write --at 5 /a </dev/null >"$SANDBOX/a.json" 2>"$SANDBOX/a.err"
+rc=$?
+check "write --at with nothing on stdin exits 0 ($(cat "$SANDBOX/a.err"))" test "$rc" -eq 0
+jq_check "write --at with nothing on stdin reports no bytes and the size it found" \
+    '.bytes == 0 and .size == 30010' "$SANDBOX/a.json"
+check "write --at with nothing on stdin left the image byte-identical" \
+    cmp -s "$img" "$SANDBOX/before-a.img"
+
+# Refusals are decided before the image is opened for writing, so each
+# leaves it byte-identical with nothing on stdout. A missing file is not
+# created and a symlink is never followed. A position past the largest
+# file an extent can address is refused; one that is not a byte count is
+# a usage error (exit 2).
+write_at_refused() {
+    local code="$1" why="$2" p="$3" at="$4"
+    fs.ext4 "$img" write --at "$at" "$p" <"$SANDBOX/xy" >"$SANDBOX/x.out" 2>"$SANDBOX/x.err"
+    local rc=$?
+    check "write --at '$at' ${p:0:40} exits $code, not $rc" test "$rc" -eq "$code"
+    check "write --at '$at' ${p:0:40} prints nothing on stdout" test ! -s "$SANDBOX/x.out"
+    jq_check "write --at '$at' ${p:0:40} is refused: $why" \
+        ".code == $code and (.error | test(\"$why\"))" "$SANDBOX/x.err"
+    check "write --at '$at' ${p:0:40} left the image byte-identical" \
+        cmp -s "$img" "$SANDBOX/before-a.img"
+}
+write_at_refused 1 "is a directory" /d 0
+write_at_refused 1 "is a directory" / 0
+write_at_refused 1 "is a directory" /a/ 0
+write_at_refused 1 "not a directory" /a/x 0
+write_at_refused 1 "not found" /missing 0
+write_at_refused 1 "not found" /missing/x 0
+write_at_refused 1 "name too long" "/$long" 0
+write_at_refused 1 "not found" "" 0
+write_at_refused 1 "symlink" /fl 0
+write_at_refused 1 "symlink" /dl 0
+write_at_refused 1 "not a directory" /dl/e 0
+write_at_refused 1 "too large" /a 1125899906842624
+write_at_refused 1 "too large" /a 18446744073709551615
+for at in -1 12x 1K 18446744073709551616 ""; do
+    write_at_refused 2 "" /a "$at"
+done
+
 # --offset is where the filesystem starts: a MiB of zeros before it is
 # never touched.
 off="$SANDBOX/offset.img"
@@ -215,6 +295,12 @@ rc=$?
 check "truncate with --offset exits 0 ($(cat "$SANDBOX/o.err"))" test "$rc" -eq 0
 check "truncate with --offset kept the first 100 bytes" \
     cmp -s <(head -c 100 "$SANDBOX/src.4096") <(fs.ext4 --offset 1048576 "$off" read /f4096)
+fs.ext4 --offset 1048576 "$off" write --at 10 /f4096 <"$SANDBOX/xy" >/dev/null 2>"$SANDBOX/o.err"
+rc=$?
+check "write --at with --offset exits 0 ($(cat "$SANDBOX/o.err"))" test "$rc" -eq 0
+check "write --at with --offset wrote at 10 bytes into the file" \
+    cmp -s <(head -c 10 "$SANDBOX/src.4096"; printf xy; head -c 100 "$SANDBOX/src.4096" | tail -c 88) \
+    <(fs.ext4 --offset 1048576 "$off" read /f4096)
 check "the MiB before --offset is still zeros" cmp -s <(head -c 1048576 "$off") <(head -c 1048576 /dev/zero)
 fsck.ext4 --offset 1048576 "$off" >/dev/null 2>&1
 check "fsck.ext4 at --offset after mkdir -p exits 0" test $? -eq 0
