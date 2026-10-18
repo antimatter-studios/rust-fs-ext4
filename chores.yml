@@ -150,7 +150,22 @@ chore_min_version: 0.6.0
 #                                                    36404048578), which failed
 #                                                    the tier with exit 65 and
 #                                                    nothing red inside it
-#     kernel      519 /  37,587      680 /  49,000   ~31% / ~30%. PR #537's
+#     kernel      725 /  50,891      940 /  66,000   ~30% / ~30%. PR #561's
+#                                                    x86_64 merge-queue run
+#                                                    39172256275: 56 passing
+#                                                    tests, with #558's two in
+#                                                    cli_path_symlink_kernel.rs
+#                                                    and #561's two in
+#                                                    symlink_target_kernel.rs.
+#                                                    PR #558's own run
+#                                                    39172255026 printed
+#                                                    698 / 49,165 with only
+#                                                    cli_path_symlink_kernel.rs
+#                                                    added. Both passed every
+#                                                    test and failed the
+#                                                    680 / 49,000 cap with exit
+#                                                    65. Was 519 / 37,587 in
+#                                                    PR #537's
 #                                                    x86_64 merge-queue run
 #                                                    39075070772: 38 passing
 #                                                    tests, including two in
@@ -545,15 +560,21 @@ tasks:
     # at 17 lines and about 1.1 KB, within this measured budget.
     # cli_export_kernel.rs adds a two-test binary and six oracle calls;
     # its earlier estimate was 40 lines and 3 KB, within this budget.
+    # RE-MEASURED: 698 lines and 49165 bytes in x86_64 merge-queue run
+    # 39172255026 (kernel.log) for PR #558, and 725 lines and 50891 bytes
+    # in run 39172256275 for PR #561, all 56 tests passing; the 680 / 49000
+    # cap failed both with exit 65. 940 / 66000 keeps about 30% headroom
+    # over the larger log, replacing 680 / 49000.
     cmds:
-      - '../rust-fs-core/scripts/tier.sh test:kernel kernel 680 49000 -- scripts/test.sh --locked --release $(scripts/test-targets.sh kernel) -- --show-output'
+      - '../rust-fs-core/scripts/tier.sh test:kernel kernel 940 66000 -- scripts/test.sh --locked --release $(scripts/test-targets.sh kernel) -- --show-output'
       # 27 executed in the merge queue on 2026-10-17 (run 38991557768);
       # cli_ls_recursive_kernel.rs adds one, cli_rm_kernel.rs two,
       # cli_mv_kernel.rs two, cli_ln_kernel.rs two, cli_mkdir_kernel.rs
       # two, cli_truncate_kernel.rs three, cli_pwrite_kernel.rs four and
       # cli_xattr_kernel.rs one and cli_export_kernel.rs two.
-      # cli_import_kernel.rs adds three cases, including a subprocess crash cut.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh kernel 49'
+      # cli_import_kernel.rs adds three cases, including a subprocess crash cut,
+      # and cli_path_symlink_kernel.rs two.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh kernel 51'
 
   test:lwext4:
     desc: 'CROSS-VALIDATION: lwext4 — a third implementation, built in the guest — reads what we wrote, and we read what it wrote'

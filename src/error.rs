@@ -62,6 +62,11 @@ pub enum Error {
     /// with that many on a volume without `DIR_NLINK`.
     TooManyLinks,
 
+    /// Path resolution followed more symbolic links than the Linux kernel
+    /// follows in one lookup (40, its `MAXSYMLINKS`): a loop, or a chain
+    /// too long to be anything else (POSIX ELOOP).
+    SymlinkLoop,
+
     /// A structure this driver can read but cannot correctly modify.
     /// Distinct from [`Error::ReadOnly`], which is about the mount, and
     /// from the `Unsupported*` feature errors, which are about the volume:
@@ -122,6 +127,7 @@ impl std::fmt::Display for Error {
             }
             Error::Stale => write!(f, "stale inode handle"),
             Error::TooManyLinks => write!(f, "too many links"),
+            Error::SymlinkLoop => write!(f, "too many levels of symbolic links"),
         }
     }
 }
@@ -147,6 +153,7 @@ impl Error {
             Error::NameTooLong => ENAMETOOLONG,
             Error::NoSpaceLeftOnDevice => ENOSPC,
             Error::TooManyLinks => EMLINK,
+            Error::SymlinkLoop => ELOOP,
             Error::InvalidArgument(_) => EINVAL,
             Error::InvalidInode(_) | Error::InvalidBlock(_) | Error::OutOfBounds => EINVAL,
             Error::BadMagic { .. }
@@ -175,6 +182,7 @@ pub mod errno {
     pub const EMLINK: i32 = 31;
     pub const ERANGE: i32 = 34;
     pub const ENOSPC: i32 = 28;
+    pub const ELOOP: i32 = 62; // macOS POSIX value (Linux: 40)
     pub const ENAMETOOLONG: i32 = 63; // macOS POSIX value
     pub const ENOTSUP: i32 = 45;
     pub const ENOTEMPTY: i32 = 66; // macOS POSIX value

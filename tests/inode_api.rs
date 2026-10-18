@@ -105,11 +105,41 @@ fn mount(bytes: Vec<u8>) -> (Arc<MemDev>, Filesystem) {
 }
 
 /// Resolve `path` through `lookup_at` alone, one component at a time, the
-/// way a handle-based host walks.
+/// way a handle-based host walks: a symlink before the final component is
+/// read with `read_link` and its target walked in its place, as the
+/// kernel's own walk does (#531).
 fn walk(fs: &Filesystem, path: &str) -> Result<u32> {
-    let mut ino = ROOT;
-    for name in path.split('/').filter(|c| !c.is_empty()) {
-        ino = fs.lookup_at(ino, name.as_bytes())?;
+    walk_following(fs, path, false)
+}
+
+/// [`walk`], following a symlink as the final component too when
+/// `follow_last` is set, as the kernel walks a name's parent (#564).
+fn walk_following(fs: &Filesystem, path: &str, follow_last: bool) -> Result<u32> {
+    let push = |pending: &mut Vec<Vec<u8>>, p: &[u8]| {
+        let parts = p.split(|&b| b == b'/').filter(|c| !c.is_empty());
+        pending.extend(parts.rev().map(<[u8]>::to_vec));
+    };
+    let mut pending = Vec::new();
+    push(&mut pending, path.as_bytes());
+    let (mut ino, mut followed) = (ROOT, 0);
+    while let Some(name) = pending.pop() {
+        let child = fs.lookup_at(ino, &name)?;
+        if (pending.is_empty() && !follow_last) || !fs.stat_ino(child)?.is_symlink() {
+            ino = child;
+            continue;
+        }
+        followed += 1;
+        if followed > fs_ext4::fs::MAX_SYMLINKS {
+            return Err(Error::SymlinkLoop);
+        }
+        let target = fs.read_link(child)?;
+        if target.is_empty() {
+            return Err(Error::NotFound);
+        }
+        if target[0] == b'/' {
+            ino = ROOT;
+        }
+        push(&mut pending, &target);
     }
     Ok(ino)
 }
@@ -117,7 +147,10 @@ fn walk(fs: &Filesystem, path: &str) -> Result<u32> {
 /// `(parent inode, final name)` for `path`, resolved by inode.
 fn walk_parent<'a>(fs: &Filesystem, path: &'a str) -> Result<(u32, &'a [u8])> {
     let cut = path.rfind('/').unwrap();
-    Ok((walk(fs, &path[..cut])?, &path.as_bytes()[cut + 1..]))
+    Ok((
+        walk_following(fs, &path[..cut], true)?,
+        &path.as_bytes()[cut + 1..],
+    ))
 }
 
 #[derive(Clone, Debug)]
@@ -676,4 +709,44 @@ fn truncate_by_inode_refuses_what_truncate_by_path_refuses() {
     assert_eq!(fs.stat_ino(f).unwrap().size, 100);
     fs.apply_truncate_ino(f, 9000).unwrap();
     assert_eq!(fs.stat_ino(f).unwrap().size, 9000);
+}
+
+/// The directory a path-addressed operation edits is the one the kernel
+/// edits: a symlink naming the parent's last component is followed too,
+/// so `unlink dirlink/x` removes `full/x` and `mkdir chain/sub` files
+/// `sub` in `full`. Only the operation's own final name is not followed
+/// (#564).
+#[test]
+fn a_symlink_naming_the_parent_is_followed_by_every_path_operation() {
+    let (_dev, fs) = mount(formatted(FsFlavor::Ext4));
+    fs.apply_mkdir("/full", 0o755).unwrap();
+    fs.apply_create("/full/x", 0o644).unwrap();
+    fs.apply_create("/full/y", 0o644).unwrap();
+    fs.apply_symlink("full", "/dirlink").unwrap();
+    fs.apply_symlink("/dirlink", "/chain").unwrap();
+    fs.apply_symlink("y", "/full/ylink").unwrap();
+    fs.apply_symlink("self", "/self").unwrap();
+
+    fs.apply_unlink("/dirlink/x").unwrap();
+    assert_eq!(errno_of(walk(&fs, "/full/x")), Error::NotFound.to_errno());
+    fs.apply_mkdir("/chain/sub", 0o755).unwrap();
+    assert!(fs
+        .stat_ino(walk(&fs, "/full/sub").unwrap())
+        .unwrap()
+        .is_dir());
+    fs.apply_rmdir("/chain/sub").unwrap();
+    assert_eq!(errno_of(walk(&fs, "/full/sub")), Error::NotFound.to_errno());
+
+    // The final name is the link itself, removed rather than followed.
+    fs.apply_unlink("/chain/ylink").unwrap();
+    assert_eq!(
+        errno_of(walk(&fs, "/full/ylink")),
+        Error::NotFound.to_errno()
+    );
+    assert!(walk(&fs, "/full/y").is_ok());
+
+    assert_eq!(
+        errno_of(fs.apply_unlink("/self/x")),
+        Error::SymlinkLoop.to_errno()
+    );
 }

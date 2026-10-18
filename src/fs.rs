@@ -601,6 +601,10 @@ const PWRITE_CHUNK_MAX_BYTES: u64 = 32 * 1024 * 1024;
 /// 16 bytes of `s_volume_name`.
 pub const VOLUME_LABEL_MAX: usize = 16;
 
+/// The most symbolic links one path lookup follows: the Linux kernel's
+/// `MAXSYMLINKS`. The next one is [`Error::SymlinkLoop`].
+pub const MAX_SYMLINKS: u32 = 40;
+
 /// Clean blocks the buffer cache of a [`Filesystem::mount`] keeps: about
 /// 1 MiB at 4 KiB blocks. `docs/read-path-cost.md` records what it buys on a
 /// measured tree (#68).
@@ -1797,25 +1801,90 @@ impl Filesystem {
     /// file whose name it holds, and one naming nothing is
     /// [`Error::NotFound`]. Every path-addressed `apply_*` resolves through
     /// here; each `&str` form is its byte form with `str::as_bytes` (#418).
+    ///
+    /// A symbolic link met before the final component is followed, as the
+    /// Linux kernel follows it: its target is walked in its place, from the
+    /// root when it starts with `/` and otherwise from the directory that
+    /// holds the link. The final component is never followed, so a verb
+    /// that operates on a link (`unlink`, `lstat`, `readlink`) gets the
+    /// link. More than [`MAX_SYMLINKS`] links in one lookup is
+    /// [`Error::SymlinkLoop`], and a link with an empty target is
+    /// [`Error::NotFound`], both as the kernel answers (#531).
     pub fn lookup_path_bytes(&self, path: &[u8]) -> Result<u32> {
-        let mut reader = |ino: u32| self.read_inode_verified(ino).map(|(i, _)| i);
-        crate::path::lookup_bytes_with_csum(
-            self.dev.as_ref(),
-            &self.sb,
-            &mut reader,
-            path,
-            &self.csum,
-        )
+        self.walk_path(path, false)
+    }
+
+    /// Resolve `path` as the directory an operation on a name inside it
+    /// edits: as [`lookup_path_bytes`](Self::lookup_path_bytes), but a
+    /// symbolic link as the final component is followed too, as the kernel
+    /// follows every component of a name's parent, so `unlink dirlink/x`
+    /// edits the directory `dirlink` names (#564).
+    pub fn lookup_dir_path_bytes(&self, path: &[u8]) -> Result<u32> {
+        self.walk_path(path, true)
+    }
+
+    /// The walk behind both lookups; `follow_last` says whether a symlink
+    /// as the final component is followed.
+    fn walk_path(&self, path: &[u8], follow_last: bool) -> Result<u32> {
+        // The components still to walk, the next one last.
+        let mut pending: Vec<Vec<u8>> = Vec::new();
+        let push = |pending: &mut Vec<Vec<u8>>, p: &[u8]| {
+            let parts = p.split(|&b| b == b'/').filter(|c| !c.is_empty());
+            pending.extend(parts.rev().map(<[u8]>::to_vec));
+        };
+        push(&mut pending, path);
+
+        let mut current = crate::path::EXT4_ROOT_INODE;
+        let mut followed = 0;
+        while let Some(name) = pending.pop() {
+            let (dir, _) = self.read_inode_verified(current)?;
+            if !dir.is_dir() {
+                return Err(Error::NotADirectory);
+            }
+            let child = crate::path::find_entry(
+                self.dev.as_ref(),
+                &self.sb,
+                current,
+                &dir,
+                &name,
+                &self.csum,
+            )?;
+            if pending.is_empty() && !follow_last {
+                return Ok(child);
+            }
+            if !self.read_inode_verified(child)?.0.is_symlink() {
+                current = child;
+                continue;
+            }
+            followed += 1;
+            if followed > MAX_SYMLINKS {
+                return Err(Error::SymlinkLoop);
+            }
+            let target = self.read_link(child)?;
+            if target.is_empty() {
+                return Err(Error::NotFound);
+            }
+            if target[0] == b'/' {
+                current = crate::path::EXT4_ROOT_INODE;
+            }
+            push(&mut pending, &target);
+        }
+        Ok(current)
     }
 
     fn resolve(&self, path: &[u8]) -> Result<u32> {
         self.lookup_path_bytes(path)
     }
 
+    /// Resolve the directory `path` names, following a final symlink.
+    fn resolve_dir(&self, path: &[u8]) -> Result<u32> {
+        self.lookup_dir_path_bytes(path)
+    }
+
     /// Resolve the parent of `path`, for an operation on its final name.
     fn resolve_parent<'p>(&self, path: &'p [u8]) -> Result<(u32, &'p [u8])> {
         let (parent, base) = split_parent_and_base(path)?;
-        Ok((self.resolve(parent)?, base))
+        Ok((self.resolve_dir(parent)?, base))
     }
 
     /// [`resolve_parent`](Self::resolve_parent) for an operation that files
@@ -1826,7 +1895,7 @@ impl Filesystem {
         if base.len() > 255 {
             return Err(Error::NameTooLong);
         }
-        Ok((self.resolve(parent)?, base))
+        Ok((self.resolve_dir(parent)?, base))
     }
 
     /// Read the inode `r` names, refusing a handle that no longer names a
@@ -4758,7 +4827,7 @@ impl Filesystem {
         // so snapshot the flag first.
         let trailing_slash = path.len() > 1 && path.ends_with(b"/");
         let (parent_path, base_name) = split_parent_and_base(path)?;
-        let parent_ino = self.resolve(parent_path)?;
+        let parent_ino = self.resolve_dir(parent_path)?;
         if trailing_slash {
             // The call fails either way; only the errno depends on what the
             // name is: a directory is EISDIR, as unlink(2) says of any
@@ -6741,7 +6810,7 @@ impl Filesystem {
         if self.live_inode(src_ino.into())?.0.is_dir() {
             return Err(Error::IsADirectory);
         }
-        let dst_parent = self.resolve(dst_parent_path)?;
+        let dst_parent = self.resolve_dir(dst_parent_path)?;
         self.apply_link_at(src_ino, dst_parent, dst_name)
     }
 
@@ -6855,8 +6924,8 @@ impl Filesystem {
         if dst_name.len() > 255 {
             return Err(Error::NameTooLong);
         }
-        let src_parent = self.resolve(src_parent_path)?;
-        let dst_parent = self.resolve(dst_parent_path)?;
+        let src_parent = self.resolve_dir(src_parent_path)?;
+        let dst_parent = self.resolve_dir(dst_parent_path)?;
         self.apply_rename_at(
             src_parent,
             src_name,
