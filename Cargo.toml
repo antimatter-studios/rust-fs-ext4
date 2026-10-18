@@ -72,7 +72,7 @@ required-features = ["cli"]
 # dispatch, --version, doctor, the output contract, man pages and
 # completions -- is rust-fs-core's `cli` feature, turned on only here, so
 # the static library gains nothing. clap is MIT/Apache-2.0.
-cli = ["dep:clap", "rust-fs-core/cli"]
+cli = ["dep:clap", "dep:same-file", "dep:tempfile", "rust-fs-core/cli"]
 
 [dependencies]
 crc32c = "0.6"
@@ -90,6 +90,10 @@ rust-fs-core = { path = "../rust-fs-core", version = "0.3.14" }
 # the `rust-fs-ext4` target above). No derive: the builder API keeps each
 # tool's command a function the man pages and completions can be made from.
 clap = { version = "4.5", optional = true, default-features = false, features = ["std", "help", "usage", "error-context", "suggestions"] }
+# MIT/Unlicense; compares opened identities on Unix and Windows.
+same-file = { version = "1.0.6", optional = true }
+# MIT/Apache-2.0; anonymous stdin spools obey TMPDIR and close without residue.
+tempfile = { version = "3.27.0", optional = true, default-features = false }
 
 [dev-dependencies]
 hex = "0.4"

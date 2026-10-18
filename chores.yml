@@ -88,22 +88,23 @@ chore_min_version: 0.6.0
 #   flatters the row.
 #
 #     tier      measured          budget            headroom, and why
-#     unit        765 /  46,832    1,050 /  65,000   ~37% / ~39%: tests get
-#                                                    added, and this is the
-#                                                    tier every one of them
-#                                                    starts in. 530 / 31,331
-#                                                    for #257; 642 / 38,550 on
-#                                                    main at 05d683c (#422);
-#                                                    RE-MEASURED on the stack
-#                                                    of the #70 audit fixes:
-#                                                    CI printed 765 / 46,832
-#                                                    at #417, and the stack
-#                                                    top (#431, with the
-#                                                    inode API's tests) prints
-#                                                    819 / 49,891 on a host
-#                                                    run -- 109 bytes under
-#                                                    850 / 50,000, before CI's
-#                                                    longer paths are counted
+#     unit      1,066 /  62,085    1,400 /  81,000   ~31% / ~30%. RE-MEASURED
+#                                                    for #565 from #554's
+#                                                    tier-logs-unit artifact,
+#                                                    run 39129440115, job
+#                                                    117681395559, b0b33b1.
+#                                                    All 713 tests passed in
+#                                                    40 binaries; the log has
+#                                                    only test results, runner
+#                                                    spacing and build/setup
+#                                                    progress, no test chatter.
+#                                                    The 1,050-line cap failed
+#                                                    with exit 65. Was 765 /
+#                                                    46,832 at #417, with 819 /
+#                                                    49,891 on the #431 host;
+#                                                    earlier 530 / 31,331 for
+#                                                    #257 and 642 / 38,550 on
+#                                                    main at 05d683c (#422).
 #     images    1,081 /  47,123    1,400 /  60,000   ~29% / ~21%: not raised,
 #                                                    because a row raised
 #                                                    without a measurement
@@ -457,7 +458,7 @@ tasks:
     # rather than listed here. CI runs this job with no fixtures present,
     # which is what proves the split.
     cmds:
-      - 'EXPECT_OVERFLOW_CHECKS=1 ../rust-fs-core/scripts/tier.sh test:unit unit 1050 65000 -- scripts/test.sh --locked $(scripts/test-targets.sh unit)'
+      - 'EXPECT_OVERFLOW_CHECKS=1 ../rust-fs-core/scripts/tier.sh test:unit unit 1400 81000 -- scripts/test.sh --locked $(scripts/test-targets.sh unit)'
       - 'bash ../rust-fs-core/scripts/test-floor.sh unit 440'
 
   # EVERY TIER SAYS HOW FEW TESTS STILL COUNT AS HAVING RUN IT (#271).
@@ -551,7 +552,8 @@ tasks:
       # cli_mv_kernel.rs two, cli_ln_kernel.rs two, cli_mkdir_kernel.rs
       # two, cli_truncate_kernel.rs three, cli_pwrite_kernel.rs four and
       # cli_xattr_kernel.rs one and cli_export_kernel.rs two.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh kernel 46'
+      # cli_import_kernel.rs adds three cases, including a subprocess crash cut.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh kernel 49'
 
   test:lwext4:
     desc: 'CROSS-VALIDATION: lwext4 — a third implementation, built in the guest — reads what we wrote, and we read what it wrote'
@@ -647,7 +649,8 @@ tasks:
         bash ../rust-fs-core/scripts/tier.sh test:vm vm 3900 193000 -- \
           ../fs-linux-test-harness/scripts/vm.sh guest-test $guest_args
         # cli_export_kernel.rs adds two cases to the whole-suite floor.
-        bash ../rust-fs-core/scripts/test-floor.sh vm 1062
+        # cli_import_kernel.rs adds three more cases.
+        bash ../rust-fs-core/scripts/test-floor.sh vm 1065
 
   test:
     desc: 'Everything, exactly as CI runs it — natively on Linux, inside the VM anywhere else'
@@ -689,7 +692,8 @@ tasks:
       - task: test:lwext4
       - '../rust-fs-core/scripts/tier.sh "test:native (whole suite, release)" suite 3700 183000 -- scripts/test.sh --locked --release'
       # cli_export_kernel.rs adds two cases to the whole-suite floor.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh suite 1062'
+      # cli_import_kernel.rs adds three more cases.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh suite 1065'
       - task: test:scripts
       # The command-line tools, built and staged from this checkout, then
       # tested as installed. A separate invocation because test:cli reads
