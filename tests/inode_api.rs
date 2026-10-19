@@ -593,6 +593,54 @@ fn names_are_bytes_and_are_validated() {
 }
 
 #[test]
+fn symlink_targets_leave_room_for_the_terminating_byte() {
+    // The kernel comparison is in tests/symlink_target_kernel.rs (#536).
+    for block_size in [1024u32, 2048, 4096] {
+        let dev = MemDev::with(vec![0u8; SIZE as usize]);
+        format_filesystem_with_flavor(
+            dev.as_ref(),
+            None,
+            Some([0x36; 16]),
+            SIZE,
+            block_size,
+            FsFlavor::Ext4,
+        )
+        .unwrap();
+        let fs = Filesystem::mount(dev.clone()).unwrap();
+        let limit = block_size as usize - 1;
+        for len in [limit - 1, limit, limit + 1, limit + 2] {
+            let target = "x".repeat(len);
+            for by_inode in [false, true] {
+                let name = format!("link-{len}-{by_inode}");
+                let before = dev.snapshot();
+                let result = if by_inode {
+                    fs.apply_symlink_at(ROOT, name.as_bytes(), target.as_bytes())
+                } else {
+                    fs.apply_symlink(&target, &format!("/{name}"))
+                };
+                if len <= limit {
+                    let ino = result.unwrap();
+                    assert_eq!(fs.read_link(ino).unwrap(), target.as_bytes());
+                } else {
+                    assert!(
+                        matches!(result, Err(Error::NameTooLong)),
+                        "block size {block_size}, length {len}, by inode {by_inode}: {result:?}"
+                    );
+                    assert!(
+                        before == dev.snapshot(),
+                        "a refused target changed the image"
+                    );
+                    assert!(matches!(
+                        fs.lookup_at(ROOT, name.as_bytes()),
+                        Err(Error::NotFound)
+                    ));
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn dot_and_dotdot_are_refused_where_they_would_corrupt() {
     let (dev, fs) = mount(formatted(FsFlavor::Ext4));
     let d = fs.apply_mkdir_at(ROOT, b"d", 0o755).unwrap();

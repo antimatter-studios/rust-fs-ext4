@@ -5175,14 +5175,16 @@ impl Filesystem {
     /// at the link path.
     ///
     /// Two storage paths:
-    /// - **Fast symlink** (`target.len() <= 60`): target stored inline in
+    /// - **Fast symlink** (`target.len() < 60`): target stored inline in
     ///   the 60-byte `i_block` area; no data-block allocation.
-    /// - **Slow symlink** (`61..=255` bytes): one filesystem block is
+    /// - **Slow symlink** (60 bytes or more): one filesystem block is
     ///   allocated and the target is written there, with an EXTENTS
     ///   i_block pointing at it.
     ///
-    /// POSIX caps symlink targets at SYMLINK_MAX (255 bytes on Linux +
-    /// macOS). Longer returns `Error::NameTooLong` → ENAMETOOLONG.
+    /// The target and a terminating NUL must fit in one filesystem block
+    /// and within the 4096-byte path limit: at most 1023 bytes on a 1 KiB
+    /// volume, or 4095 on a 4 KiB volume. Longer returns
+    /// `Error::NameTooLong` → ENAMETOOLONG.
     pub fn apply_symlink(&self, target: &str, linkpath: &str) -> Result<u32> {
         self.apply_symlink_bytes(target.as_bytes(), linkpath.as_bytes())
     }
@@ -5205,10 +5207,10 @@ impl Filesystem {
                 "a symlink target cannot contain a NUL byte",
             ));
         }
-        // PATH_MAX cap (matches Linux). Slow path allocates exactly one fs
-        // block, so we additionally require target.len() <= block_size — the
-        // 4096 ceiling matches the typical ext4 block size and Linux PATH_MAX.
-        let max_target = 4096usize.min(self.sb.block_size() as usize);
+        // Both the path limit and our single data block must leave room for
+        // the terminating NUL, as symlinkat on the kernel's mount requires
+        // (tests/symlink_target_kernel.rs).
+        let max_target = 4096usize.min(self.sb.block_size() as usize) - 1;
         if target.len() > max_target {
             return Err(Error::NameTooLong);
         }

@@ -474,7 +474,8 @@ tasks:
     # which is what proves the split.
     cmds:
       - 'EXPECT_OVERFLOW_CHECKS=1 ../rust-fs-core/scripts/tier.sh test:unit unit 1400 81000 -- scripts/test.sh --locked $(scripts/test-targets.sh unit)'
-      - 'bash ../rust-fs-core/scripts/test-floor.sh unit 440'
+      # #536 adds one boundary regression in inode_api.rs.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh unit 441'
 
   # EVERY TIER SAYS HOW FEW TESTS STILL COUNT AS HAVING RUN IT (#271).
   #
@@ -573,8 +574,9 @@ tasks:
       # two, cli_truncate_kernel.rs three, cli_pwrite_kernel.rs four and
       # cli_xattr_kernel.rs one and cli_export_kernel.rs two.
       # cli_import_kernel.rs adds three cases, including a subprocess crash cut,
-      # and cli_path_symlink_kernel.rs two.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh kernel 51'
+      # and cli_path_symlink_kernel.rs two. symlink_target_kernel.rs adds
+      # two cases comparing the 1 KiB and 4 KiB target boundaries (#536).
+      - 'bash ../rust-fs-core/scripts/test-floor.sh kernel 53'
 
   test:lwext4:
     desc: 'CROSS-VALIDATION: lwext4 — a third implementation, built in the guest — reads what we wrote, and we read what it wrote'
@@ -671,7 +673,8 @@ tasks:
           ../fs-linux-test-harness/scripts/vm.sh guest-test $guest_args
         # cli_export_kernel.rs adds two cases to the whole-suite floor.
         # cli_import_kernel.rs adds three more cases.
-        bash ../rust-fs-core/scripts/test-floor.sh vm 1065
+        # #536 adds one unit case and two kernel cases.
+        bash ../rust-fs-core/scripts/test-floor.sh vm 1068
 
   test:
     desc: 'Everything, exactly as CI runs it — natively on Linux, inside the VM anywhere else'
@@ -714,7 +717,8 @@ tasks:
       - '../rust-fs-core/scripts/tier.sh "test:native (whole suite, release)" suite 3700 183000 -- scripts/test.sh --locked --release'
       # cli_export_kernel.rs adds two cases to the whole-suite floor.
       # cli_import_kernel.rs adds three more cases.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh suite 1065'
+      # #536 adds one unit case and two kernel cases.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh suite 1068'
       - task: test:scripts
       # The command-line tools, built and staged from this checkout, then
       # tested as installed. A separate invocation because test:cli reads
