@@ -88,18 +88,22 @@ chore_min_version: 0.6.0
 #   flatters the row.
 #
 #     tier      measured          budget            headroom, and why
-#     unit      1,066 /  62,085    1,400 /  81,000   ~31% / ~30%. RE-MEASURED
-#                                                    for #565 from #554's
-#                                                    tier-logs-unit artifact,
-#                                                    run 39129440115, job
-#                                                    117681395559, b0b33b1.
-#                                                    All 713 tests passed in
-#                                                    40 binaries; the log has
-#                                                    only test results, runner
-#                                                    spacing and build/setup
-#                                                    progress, no test chatter.
-#                                                    The 1,050-line cap failed
-#                                                    with exit 65. Was 765 /
+#     unit      1,068 /  62,225    1,390 /  81,000   ~30% / ~30%. RE-MEASURED
+#                                                    for #566 from the
+#                                                    tier-logs-unit artifact
+#                                                    of run 39139038148, job
+#                                                    117709441842, 7803d26:
+#                                                    the stack top holding
+#                                                    #554, #558 and #561, whose
+#                                                    code is e3ad142's (only
+#                                                    this file differs). All
+#                                                    715 tests passed in 40
+#                                                    binaries, no test chatter.
+#                                                    It failed the 1,050-line
+#                                                    cap with exit 65. #565
+#                                                    set 1,400 from #554 alone,
+#                                                    run 39129440115: 1,066 /
+#                                                    62,085. Was 765 /
 #                                                    46,832 at #417, with 819 /
 #                                                    49,891 on the #431 host;
 #                                                    earlier 530 / 31,331 for
@@ -473,7 +477,7 @@ tasks:
     # rather than listed here. CI runs this job with no fixtures present,
     # which is what proves the split.
     cmds:
-      - 'EXPECT_OVERFLOW_CHECKS=1 ../rust-fs-core/scripts/tier.sh test:unit unit 1400 81000 -- scripts/test.sh --locked $(scripts/test-targets.sh unit)'
+      - 'EXPECT_OVERFLOW_CHECKS=1 ../rust-fs-core/scripts/tier.sh test:unit unit 1390 81000 -- scripts/test.sh --locked $(scripts/test-targets.sh unit)'
       # #536 adds one boundary regression in inode_api.rs.
       - 'bash ../rust-fs-core/scripts/test-floor.sh unit 441'
 
