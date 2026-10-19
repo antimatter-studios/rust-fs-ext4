@@ -178,7 +178,8 @@ fn command() -> Cmd {
                      given, and symlinks and special files are skipped, never followed. \
                      --preserve=links recreates hard links once per inode and symlinks with \
                      their stored target; --preserve=times sets access and modification times \
-                     from the ext4 inode.",
+                     from the ext4 inode. --preserve requires --recursive: a single-file export \
+                     refuses it rather than publish a file without what was asked for.",
                 ),
         )
         .subcommand(
@@ -502,6 +503,14 @@ fn run(matches: &ArgMatches) -> Result<Outcome, CliError> {
         "export" => {
             let request = transfer::ExportRequest::from_matches(sub)?;
             let tree = transfer::TreeOptions::from_matches(sub)?;
+            // A single file has no links to keep, and the single-file
+            // transfer does not set times, so --preserve there would be
+            // ignored: refused before the image is opened.
+            if !tree.recursive && sub.get_many::<String>("preserve").is_some() {
+                return Err(CliError::usage(
+                    "--preserve requires --recursive: a single-file export keeps neither links nor times",
+                ));
+            }
             let fs = open(target, offset)?;
             if tree.recursive {
                 transfer::export_tree_with_times(
