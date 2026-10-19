@@ -93,9 +93,17 @@ on:
   # quick one.
   workflow_dispatch:
 
+# A newer push to a pull request cancels the run still going on the older one,
+# except while the pull request's title starts "red:". Such a pull request
+# holds only its failing test, and its run is the red evidence: it gets a group
+# of its own commit and is never cancelled, so the push that adds the fix, made
+# after the title loses "red:", cannot cancel it either. Keyed by the commit
+# because GitHub keeps one pending run per group even with cancelling off: a
+# second push sharing the group would replace the red run while it waits.
+# tests/scripts/test-red-runs-uncancelled.sh fails if that stops being so.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}${{ startsWith(github.event.pull_request.title, 'red:') && format('-red-{0}', github.event.pull_request.head.sha) || '' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && !startsWith(github.event.pull_request.title, 'red:') }}
 
 permissions:
   contents: read
