@@ -391,3 +391,61 @@ fn recursive_export_preserves_kernel_links_and_times() {
     );
     std::fs::remove_dir_all(&dest).unwrap();
 }
+
+#[test]
+fn single_file_export_refuses_preserve_without_recursive() {
+    let tree = kernel_link_tree("export-file-preserve-kernel");
+    let before = std::fs::read(&tree.img).unwrap();
+    let dest = image_path("export-file-preserve");
+    let _ = std::fs::remove_file(&dest);
+
+    // A single file cannot carry links, and its times would be the
+    // export's own, so every --preserve value is a usage error that names
+    // the option before anything is written.
+    for preserve in [
+        "--preserve=times",
+        "--preserve=links",
+        "--preserve=links,times",
+    ] {
+        let out = tool("fs.ext4")
+            .args([
+                &tree.img,
+                "export",
+                preserve,
+                "/tree/timed-dir/timed",
+                &dest,
+            ])
+            .output()
+            .unwrap();
+        let err = stderr(&out);
+        assert_eq!(out.status.code(), Some(2), "{preserve}: {err}");
+        assert!(err.contains("--preserve"), "{preserve}: {err}");
+        assert!(err.contains("--recursive"), "{preserve}: {err}");
+        assert!(!Path::new(&dest).exists(), "{preserve} wrote {dest}");
+    }
+
+    // Without --preserve the same file still exports.
+    let out = tool("fs.ext4")
+        .args([&tree.img, "export", "/tree/timed-dir/timed", &dest])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert_eq!(std::fs::metadata(&dest).unwrap().len(), 5000);
+    std::fs::remove_file(&dest).unwrap();
+
+    // --help says which combinations are accepted.
+    let help = tool("fs.ext4")
+        .args([&tree.img, "export", "--help"])
+        .output()
+        .unwrap();
+    assert!(
+        stdout(&help).contains("--preserve requires --recursive"),
+        "{}",
+        stdout(&help)
+    );
+    assert_eq!(
+        std::fs::read(&tree.img).unwrap(),
+        before,
+        "export wrote the source"
+    );
+}
