@@ -3638,7 +3638,7 @@ fn ci_cancels_only_a_pull_requests_superseded_run() {
     }
     assert_eq!(
         cancel.as_deref(),
-        Some("${{ github.event_name == 'pull_request' }}"),
+        Some("${{ github.event_name == 'pull_request' && !startsWith(github.event.pull_request.title, 'red:') }}"),
         "ci.yml cancels a run that is not a pull request's"
     );
     let group = group.expect("ci.yml declares a concurrency group");
