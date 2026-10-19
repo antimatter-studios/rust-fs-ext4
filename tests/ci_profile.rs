@@ -3489,6 +3489,36 @@ fn every_declaration_of_the_am_fs_core_pin_names_the_same_version() {
     );
 }
 
+/// The oldest `rust-fs-core` release that carries the shared tree
+/// source: `TreeSource`, recursive export reporting every item, name
+/// collision refusals, `--preserve=links`, `--preserve=times`, progress
+/// on stderr and cancellation before publication.
+const CORE_WITH_TREE_SOURCE: [u64; 3] = [0, 3, 15];
+
+/// The `rust-fs-core` this crate is pinned to carries the shared tree
+/// source that `export --recursive` (#546) adapts.
+///
+/// 0.3.14 carries only `FileSource` and single-file export, so
+/// recursive export cannot be wired against it without copying the
+/// shared engine into this driver (#570).
+#[test]
+fn the_rust_fs_core_pin_carries_the_shared_tree_source() {
+    let root = manifest_dir();
+    let (_, pinned) = am_fs_core_versions_declared(&read_or_panic(&root.join("Cargo.toml")))
+        .into_iter()
+        .next()
+        .expect("Cargo.toml declares the rust-fs-core pin");
+    let parts: Vec<u64> = pinned
+        .split('.')
+        .map(|p| p.parse().expect("the rust-fs-core pin is numeric"))
+        .collect();
+    assert!(
+        parts.as_slice() >= CORE_WITH_TREE_SOURCE.as_slice(),
+        "rust-fs-core is pinned at {pinned}, older than {CORE_WITH_TREE_SOURCE:?}, the \
+         first release carrying the shared tree source recursive export needs"
+    );
+}
+
 mod core_pin_parser {
     use super::{am_fs_core_versions_declared, as_version};
 

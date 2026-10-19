@@ -4,11 +4,12 @@ version = "0.8.0"
 edition = "2021"
 # The oldest toolchain the library and the binaries build on, so an older
 # one gets cargo's "requires rustc" message rather than a wall of E0658.
-# Measured, not guessed: 1.87 is where `is_multiple_of` on unsigned
-# integers stabilised, and 1.86 refuses seven uses of it. The dev-
+# Measured, not guessed: 1.89 is where `File::try_lock` and
+# `TryLockError` stabilised, which rust-fs-core 0.3.15's `cli` feature
+# uses, and 1.88 refuses them (E0658 `file_lock`). The dev-
 # dependencies need newer (ordered-float, via saphyr, wants 1.90); they
 # never reach a consumer. `chore check:msrv` builds at exactly this version.
-rust-version = "1.87"
+rust-version = "1.89"
 license = "MIT"
 description = "Pure-Rust ext4 filesystem driver. Exposes a C ABI (fs_ext4_*) suitable for FFI from C/C++/Go/etc."
 repository = "https://github.com/antimatter-studios/rust-fs-ext4"
@@ -85,7 +86,7 @@ caseless = "0.2"
 # Strictly additive — ext4's existing BlockDevice trait is unchanged; this
 # adds a bridge module so external `fs_core::BlockDevice` implementors
 # (a `Qcow2Reader`, a `SliceReader`, etc.) can be mounted by ext4.
-rust-fs-core = { path = "../rust-fs-core", version = "0.3.14" }
+rust-fs-core = { path = "../rust-fs-core", version = "0.3.15" }
 # The command-line tools' argument parser, behind the `cli` feature (see
 # the `rust-fs-ext4` target above). No derive: the builder API keeps each
 # tool's command a function the man pages and completions can be made from.
