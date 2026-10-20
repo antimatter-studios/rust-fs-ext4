@@ -195,3 +195,85 @@ fn a_symlink_loop_mid_path_is_refused_as_the_kernel_refuses_it() {
         "the guest answered every case:\n{kernel}"
     );
 }
+
+#[test]
+fn a_trailing_slash_follows_a_directory_symlink_as_the_kernel_does() {
+    let img = fresh_volume("path-symlink-trailing-slash-kernel");
+    let filled = guest_kernel_write(
+        &img,
+        r#"cd "$MNT"
+mkdir full
+printf x > full/x
+printf y > full/y
+ln -s full dirlink
+ln -s dirlink/ chain
+sync
+printf 'target|%s\n' "$(stat -c %i dirlink/)"
+printf 'link|%s\n' "$(stat -c %i dirlink)"
+find dirlink/ -mindepth 1 -maxdepth 1 -printf 'entry:%f|%i\n'
+"#,
+    );
+    let kernel = listing(&filled);
+    assert_eq!(
+        kernel.len(),
+        4,
+        "the kernel reported both inodes and both entries"
+    );
+    assert_ne!(kernel["target"], kernel["link"]);
+
+    for path in ["/dirlink/", "/dirlink//", "/chain/"] {
+        let report = stdout(&ok(tool("fs.ext4").args([&img, "stat", path])));
+        assert_eq!(json_field(&report, "type"), "dir", "{path}: {report}");
+        assert_eq!(
+            json_field(&report, "inode"),
+            kernel["target"],
+            "{path}: {report}"
+        );
+        let report = stdout(&ok(tool("fs.ext4").args([&img, "ls", path])));
+        let ours: BTreeMap<_, _> = report
+            .split("\n  {")
+            .skip(1)
+            .map(|row| {
+                assert_eq!(json_field(row, "type"), "file", "{report}");
+                (
+                    format!("entry:{}", json_field(row, "name")),
+                    json_field(row, "inode"),
+                )
+            })
+            .collect();
+        let expected: BTreeMap<_, _> = kernel
+            .iter()
+            .filter(|(name, _)| name.starts_with("entry:"))
+            .map(|(name, inode)| (name.clone(), inode.clone()))
+            .collect();
+        assert_eq!(ours, expected, "listing {path} differs from the kernel");
+    }
+    let report = stdout(&ok(tool("fs.ext4").args([&img, "stat", "/dirlink"])));
+    assert_eq!(json_field(&report, "type"), "symlink", "{report}");
+    assert_eq!(json_field(&report, "inode"), kernel["link"], "{report}");
+
+    let kernel_img = format!("{img}.kernel");
+    std::fs::copy(&img, &kernel_img).expect("copy the filled volume");
+    let kernel = listing(&guest_kernel_write(
+        &kernel_img,
+        &format!("cd \"$MNT\"\nunlink dirlink/x\nunlink dirlink\nsync\n{LISTING}"),
+    ));
+    for path in ["/dirlink/x", "/dirlink"] {
+        let report = stdout(&ok(tool("fs.ext4").args([&img, "rm", path])));
+        assert_eq!(json_field(&report, "removed"), "true", "{report}");
+    }
+    assert_e2fsck_clean(
+        &img,
+        "removing through a directory symlink and then removing the link",
+    );
+    let ours = listing(&guest_kernel_write(
+        &img,
+        &format!("cd \"$MNT\"\n{LISTING}"),
+    ));
+    assert!(kernel.contains_key("/full/y") && !kernel.contains_key("/full/x"));
+    assert!(!kernel.contains_key("/dirlink"));
+    assert_eq!(
+        ours, kernel,
+        "removal through the link differs from the kernel"
+    );
+}
