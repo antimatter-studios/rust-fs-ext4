@@ -581,7 +581,8 @@ tasks:
       # cli_import_kernel.rs adds three cases, including a subprocess crash cut,
       # and cli_path_symlink_kernel.rs two. symlink_target_kernel.rs adds
       # two cases comparing the 1 KiB and 4 KiB target boundaries (#536).
-      - 'bash ../rust-fs-core/scripts/test-floor.sh kernel 53'
+      # cli_export_tree_kernel.rs adds one recursive tree export case (#573).
+      - 'bash ../rust-fs-core/scripts/test-floor.sh kernel 54'
 
   test:lwext4:
     desc: 'CROSS-VALIDATION: lwext4 — a third implementation, built in the guest — reads what we wrote, and we read what it wrote'
@@ -679,7 +680,8 @@ tasks:
         # cli_export_kernel.rs adds two cases to the whole-suite floor.
         # cli_import_kernel.rs adds three more cases.
         # #536 adds one unit case and two kernel cases.
-        bash ../rust-fs-core/scripts/test-floor.sh vm 1068
+        # cli_export_tree_kernel.rs adds one kernel case (#573).
+        bash ../rust-fs-core/scripts/test-floor.sh vm 1069
 
   test:
     desc: 'Everything, exactly as CI runs it — natively on Linux, inside the VM anywhere else'
@@ -723,7 +725,8 @@ tasks:
       # cli_export_kernel.rs adds two cases to the whole-suite floor.
       # cli_import_kernel.rs adds three more cases.
       # #536 adds one unit case and two kernel cases.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh suite 1068'
+      # cli_export_tree_kernel.rs adds one kernel case (#573).
+      - 'bash ../rust-fs-core/scripts/test-floor.sh suite 1069'
       - task: test:scripts
       # The command-line tools, built and staged from this checkout, then
       # tested as installed. A separate invocation because test:cli reads
