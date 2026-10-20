@@ -5,18 +5,22 @@
 mod cli_support;
 
 use cli_support::*;
+use fs_ext4::block_io::FileDevice;
+use fs_ext4::Filesystem;
 use fs_ext4_test_support::{assert_e2fsck_clean, guest_kernel_write, oracle, sha256_hex};
 use std::path::Path;
+use std::sync::Arc;
 
 /// Directories in the kernel-written chain below `/tree`.
 const DEPTH: usize = 33;
 
-fn kernel_tree(tag: &str) -> (String, Vec<(String, String)>) {
+fn kernel_tree(tag: &str, with_fifo: bool) -> (String, Vec<(String, String)>) {
     let img = sized_image(tag, 64 << 20);
     let made = oracle("mkfs.ext4")
         .args(["-q", "-F", "-b", "4096", &img])
         .output();
     assert!(made.status.success(), "mkfs.ext4: {}", stderr(&made));
+    let fifo = if with_fifo { "mkfifo d1/pipe\n" } else { "" };
     let out = guest_kernel_write(
         &img,
         &format!(
@@ -31,7 +35,7 @@ fn kernel_tree(tag: &str) -> (String, Vec<(String, String)>) {
                mkdir \"$p\"\n\
                head -c $((i * 4099 + 1)) /dev/urandom > \"$p/f$i\"\n\
              done\n\
-             mkfifo d1/pipe\n\
+             {fifo}\
              sync\n\
              find . -type f -exec sha256sum {{}} +\n"
         ),
@@ -61,7 +65,7 @@ fn item<'a>(report: &'a str, path: &str) -> &'a str {
 
 #[test]
 fn recursive_export_matches_every_kernel_digest_and_reports_each_item() {
-    let (img, sums) = kernel_tree("export-tree-kernel");
+    let (img, sums) = kernel_tree("export-tree-kernel", true);
     let before = std::fs::read(&img).unwrap();
     let dest = image_path("export-tree");
     let _ = std::fs::remove_dir_all(&dest);
@@ -121,6 +125,90 @@ fn recursive_export_matches_every_kernel_digest_and_reports_each_item() {
         std::fs::read(&img).unwrap(),
         before,
         "export wrote the source"
+    );
+    std::fs::remove_dir_all(&dest).unwrap();
+}
+
+#[test]
+fn recursive_export_reports_a_damaged_file_and_keeps_exporting_the_tree() {
+    // No special files: this export is partial solely because one regular
+    // file cannot be read, not because a fifo or symlink was refused.
+    let (source, sums) = kernel_tree("export-tree-damaged-source", false);
+    let original = std::fs::read(&source).unwrap();
+    let damaged = image_path("export-tree-damaged-copy");
+    std::fs::copy(&source, &damaged).unwrap();
+    let bad_path = "/tree/big";
+    let ino = {
+        let fs = Filesystem::mount(Arc::new(FileDevice::open(&damaged).unwrap())).unwrap();
+        fs.lookup_path_bytes(bad_path.as_bytes()).unwrap()
+    };
+    // As in the single-file failed-read oracle, keep the inode readable
+    // but destroy its extent header, so only this file's data is unreadable.
+    destroy_extent_header(&damaged, ino);
+    let before = std::fs::read(&damaged).unwrap();
+    let dest = image_path("export-tree-damaged");
+
+    let out = tool("fs.ext4")
+        .args([&damaged, "export", "--recursive", "/tree", &dest])
+        .output()
+        .unwrap();
+    let report = stdout(&out);
+    assert_eq!(out.status.code(), Some(1), "{report}{}", stderr(&out));
+    assert_eq!(json_field(&report, "failed"), "1", "{report}");
+    assert_eq!(json_field(&report, "skipped"), "0", "{report}");
+    assert_eq!(json_field(&report, "refused"), "0", "{report}");
+    assert_eq!(
+        json_field(&report, "completed"),
+        (sums.len() - 1 + DEPTH + 1).to_string(),
+        "{report}"
+    );
+    let failed = item(&report, bad_path);
+    assert!(failed.contains("\"status\": \"failed\""), "{failed}");
+    assert!(failed.contains("bad extent header magic"), "{failed}");
+    assert!(!Path::new(&dest).join("big").exists());
+    // The guest created big before the deep subtree; require a completed
+    // file after the failure as well as matching every undamaged digest.
+    assert!(
+        report.find("\"path\": \"/tree/d1/f1\"").unwrap()
+            > report.find("\"path\": \"/tree/big\"").unwrap()
+    );
+    for (path, want) in &sums {
+        if path == bad_path {
+            continue;
+        }
+        let local = Path::new(&dest).join(path.strip_prefix("/tree/").unwrap());
+        assert_eq!(sha256_hex(&std::fs::read(&local).unwrap()), *want, "{path}");
+        let entry = item(&report, path);
+        assert!(
+            entry.contains("\"status\": \"completed\""),
+            "{path}: {entry}"
+        );
+        assert!(entry.contains(want.as_str()), "{path}: {entry}");
+    }
+    // All regular destinations are named by the guest; no unpublished
+    // staging file may remain beside a completed item at any depth.
+    let mut pending = vec![std::path::PathBuf::from(&dest)];
+    let mut files = 0;
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let entry = entry.unwrap();
+            if entry.file_type().unwrap().is_dir() {
+                pending.push(entry.path());
+            } else {
+                files += 1;
+            }
+        }
+    }
+    assert_eq!(files, sums.len() - 1, "a staging file remained");
+    assert_eq!(
+        std::fs::read(&damaged).unwrap(),
+        before,
+        "export wrote its source"
+    );
+    assert_eq!(
+        std::fs::read(&source).unwrap(),
+        original,
+        "the fixture was damaged"
     );
     std::fs::remove_dir_all(&dest).unwrap();
 }
