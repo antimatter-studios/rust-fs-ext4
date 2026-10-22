@@ -84,7 +84,7 @@ reading the result back in the guest.
 | `mknod` | Supported | 0.3.0 | | `capi_ino_api.rs`, `rename_file_type_oracle.rs` |
 | Positional write (`pwrite`), allocating | Supported | 0.2.0 | | `capi_pwrite.rs`, `pwrite_chunking_oracle.rs`, `pwrite_enospc_oracle.rs` |
 | Whole-file replace | Supported | 0.1.0 | | `capi_write_file.rs`, `capi_write_file_allocates_blocks.rs` |
-| Truncate, shrink and grow (sparse) | Supported | 0.1.0 | | `capi_truncate.rs`, `capi_truncate_grow.rs`, `sparse_grow.rs`, `journal_writer_truncate_shrink.rs` |
+| Truncate, shrink and grow (sparse), bounded by the inode's mapping format | Supported | 0.1.0 | | `capi_truncate.rs`, `capi_truncate_grow.rs`, `sparse_grow.rs`, `journal_writer_truncate_shrink.rs`, `cli_truncate_kernel.rs` |
 | Truncate of a file mapped by indirect blocks (ext2/ext3) | Refused | 0.6.0 | | |
 | Extent trees: promotion and inserts at any depth | Supported | 0.1.4 | | `extent_deep_insert.rs`, `extent_multi_level.rs`, `truncate_multilevel.rs` |
 | `fallocate`: `KEEP_SIZE`, `PUNCH_HOLE`, `ZERO_RANGE`, unaligned ranges | Supported | 0.1.4 | | `fallocate_keep_size.rs`, `fallocate_punch_zero.rs`, `punch_unaligned_oracle.rs`, `fallocate_crash_safety.rs` |

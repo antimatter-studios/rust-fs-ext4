@@ -2082,6 +2082,26 @@ impl Filesystem {
         }
     }
 
+    /// Largest byte length addressable by this inode's block mapping.
+    /// Inline files are converted to extent mapping when they grow beyond
+    /// their inline area, so their eventual limit is the extent limit.
+    pub fn max_file_size_ino(&self, ino: u32) -> Result<u64> {
+        let (inode, _) = self.live_inode(ino.into())?;
+        Ok(self.max_file_size(&inode))
+    }
+
+    fn max_file_size(&self, inode: &Inode) -> u64 {
+        let block_size = u64::from(self.sb.block_size());
+        let max_blocks = if inode.has_extents() || inode.has_inline_data() {
+            1u128 << 32
+        } else {
+            let pointers = u128::from(block_size / 4);
+            12 + pointers + pointers * pointers + pointers * pointers * pointers
+        }
+        .min(1u128 << 32);
+        (max_blocks * u128::from(block_size)).min(u128::from(u64::MAX)) as u64
+    }
+
     /// Map a logical block within `inode` to its physical block, choosing
     /// between the extent tree and the legacy direct/indirect scheme based
     /// on `EXT4_EXTENTS_FL`. Returns `None` for sparse holes and (for the
@@ -2673,6 +2693,9 @@ impl Filesystem {
             return Err(Error::InvalidArgument(
                 "apply_truncate_grow: new_size < old_size (use apply_truncate_shrink)",
             ));
+        }
+        if new_size > self.max_file_size(&inode) {
+            return Err(Error::FileTooLarge);
         }
         if inode.has_inline_data() {
             return self.truncate_inline_file(ino, &inode, raw, new_size);
