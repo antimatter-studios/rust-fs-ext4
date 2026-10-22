@@ -339,10 +339,15 @@ fn truncate_of_a_block_mapped_file_grows_and_will_not_shrink() {
 
 #[test]
 fn truncate_refuses_sizes_past_the_mapping_limit_the_kernel_enforces() {
-    // ext4's documented block-address limits: extent trees address 2^32
-    // blocks; indirect maps address 12 direct plus single, double and
-    // triple-indirect blocks, capped at 2^32. The huge_file feature changes
-    // i_blocks units, not the number of file data blocks.
+    // The largest length is measured, not assumed. Queue runs 39741203200
+    // and 39777565017 showed the kernel refusing 2^32 blocks of 1 KiB on an
+    // extent volume without huge_file, which the block-address arithmetic
+    // alone allows. So the guest kernel is asked for every length by
+    // bisection, and fs.ext4 must accept exactly the last length the kernel
+    // accepted and refuse the next byte. Every layout is measured before
+    // anything about the driver is asserted, so one run reports the table.
+    let mut table = Vec::new();
+    let mut wrong = Vec::new();
     for (block_size, extents, huge_file) in [
         (1024u32, true, false),
         (1024, true, true),
@@ -370,64 +375,86 @@ fn truncate_refuses_sizes_past_the_mapping_limit_the_kernel_enforces() {
         };
         let features = format!("{map_feature}{huge_feature}");
         let img = fresh_volume_with_block_size(&tag, block_size, &["-O", &features]);
-        let max_blocks = if extents {
-            1u64 << 32
-        } else {
-            match block_size {
-                1024 => 16_843_020,
-                4096 => 1_074_791_436,
-                other => panic!("unmeasured block-map boundary for {other}-byte blocks"),
-            }
-        };
-        let max_size = max_blocks * u64::from(block_size);
-        let too_large = max_size + 1;
 
-        // Ask the kernel to accept the exact final byte length and refuse
-        // the next byte, on the same tiny sparse volume.
+        // Bisect the kernel's largest length on the tiny sparse volume
+        // (2^50 bytes is past every layout here), then require the next
+        // byte to be refused as too large.
         let kernel = guest_kernel_write(
             &img,
-            &format!(
-                "cd \"$MNT\"\n\
-                 : > kernel-limit\n\
-                 : > ours\n\
-                 truncate -s {max_size} kernel-limit\n\
-                 test \"$(stat -c %s kernel-limit)\" = {max_size}\n\
-                 if message=$(LC_ALL=C truncate -s {too_large} kernel-limit 2>&1); then\n\
-                   echo 'kernel accepted an out-of-range file size' >&2; exit 1;\n\
-                 fi\n\
-                 case \"$message\" in *'File too large'*) ;; *) echo \"$message\" >&2; exit 1 ;; esac\n\
-                 test \"$(stat -c %s kernel-limit)\" = {max_size}\n"
-            ),
+            "cd \"$MNT\"\n\
+             : > kernel-limit\n\
+             : > ours\n\
+             lo=0; hi=$((1 << 50))\n\
+             while [ $((hi - lo)) -gt 1 ]; do\n\
+               mid=$((lo + (hi - lo) / 2))\n\
+               if truncate -s $mid kernel-limit 2>/dev/null; then lo=$mid; else hi=$mid; fi\n\
+             done\n\
+             truncate -s $lo kernel-limit\n\
+             if message=$(LC_ALL=C truncate -s $((lo + 1)) kernel-limit 2>&1); then\n\
+               echo 'kernel accepted a length it refused while bisecting' >&2; exit 1;\n\
+             fi\n\
+             case \"$message\" in *'File too large'*) ;; *) echo \"$message\" >&2; exit 1 ;; esac\n\
+             test \"$(stat -c %s kernel-limit)\" = $lo\n\
+             echo \"kernel-limit=$lo\"\n",
         );
         assert!(
             kernel.status.success(),
-            "kernel truncate boundary: {}{}",
+            "kernel truncate boundary for {tag}: {}{}",
             stdout(&kernel),
             stderr(&kernel)
         );
+        let max_size: u64 = stdout(&kernel)
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("kernel-limit="))
+            .and_then(|n| n.parse().ok())
+            .unwrap_or_else(|| panic!("no kernel-limit line for {tag}: {}", stdout(&kernel)));
         assert_e2fsck_clean(&img, "the kernel's truncate-size boundary image");
+        table.push(format!(
+            "{tag}: {max_size} bytes, {} blocks and {} bytes",
+            max_size / u64::from(block_size),
+            max_size % u64::from(block_size)
+        ));
 
         // The driver must accept the same exact boundary. Its refusal one
         // byte later is checked on the read-only mount, before opening the
         // image for writing, so the rejected request cannot change a byte.
-        truncate(&img, "/ours", max_size);
+        let max = max_size.to_string();
+        let accepted = tool("fs.ext4")
+            .args([img.as_str(), "truncate", "/ours", max.as_str()])
+            .output()
+            .expect("spawn fs.ext4 truncate");
+        if !accepted.status.success() {
+            wrong.push(format!(
+                "{tag}: fs.ext4 refused the kernel's largest length: {}",
+                stderr(&accepted).trim()
+            ));
+            continue;
+        }
         assert_e2fsck_clean(&img, "the volume fs.ext4 grew to the mapping limit");
         let image = std::fs::read(&img).expect("read the image before the refusal");
-        let too_large = too_large.to_string();
+        let too_large = (max_size + 1).to_string();
         let refused = tool("fs.ext4")
             .args([img.as_str(), "truncate", "/ours", too_large.as_str()])
             .output()
             .expect("spawn fs.ext4 truncate");
-        assert_eq!(refused.status.code(), Some(1), "{}", stderr(&refused));
+        if refused.status.code() != Some(1) || !stderr(&refused).contains("file too large") {
+            wrong.push(format!(
+                "{tag}: fs.ext4 did not refuse one byte past it as too large: {:?} {}",
+                refused.status.code(),
+                stderr(&refused).trim()
+            ));
+            continue;
+        }
         assert!(refused.stdout.is_empty(), "stdout: {}", stdout(&refused));
-        assert!(
-            stderr(&refused).contains("file too large"),
-            "{}",
-            stderr(&refused)
-        );
         assert!(
             std::fs::read(&img).expect("read the image after the refusal") == image,
             "truncate one byte past the mapping limit changed the image"
         );
     }
+    assert!(
+        wrong.is_empty(),
+        "the kernel's largest lengths:\n{}\nwhere fs.ext4 disagrees:\n{}",
+        table.join("\n"),
+        wrong.join("\n")
+    );
 }
