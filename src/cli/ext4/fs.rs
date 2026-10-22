@@ -1976,7 +1976,14 @@ fn linkable<'p>(
 /// byte-identical. The names are looked up as bytes, so none of them need
 /// be UTF-8.
 fn truncate(target: &OsString, offset: u64, path: &[u8], size: u64) -> Result<Outcome, CliError> {
-    let ino = truncatable(&open(target, offset)?, path, size)?;
+    let fs = open(target, offset)?;
+    let ino = truncatable(&fs, path, size)?;
+    if size
+        > fs.max_file_size_ino(ino)
+            .map_err(|e| driver_error(path, e))?
+    {
+        return Err(driver_error(path, fs_ext4::Error::FileTooLarge));
+    }
     edit(target, offset, path, |fs| fs.apply_truncate_ino(ino, size))?;
     let mut fields = path_fields(path);
     fields.push(("size", Json::from(size)));

@@ -67,9 +67,14 @@ fn listing(out: &std::process::Output) -> BTreeMap<String, Seen> {
 }
 
 fn fresh_volume(tag: &str, features: &[&str]) -> String {
+    fresh_volume_with_block_size(tag, 4096, features)
+}
+
+fn fresh_volume_with_block_size(tag: &str, block_size: u32, features: &[&str]) -> String {
     let img = sized_image(tag, 32 << 20);
+    let block_size = block_size.to_string();
     let made = oracle("mkfs.ext4")
-        .args(["-q", "-F", "-b", "4096", "-I", "256"])
+        .args(["-q", "-F", "-b", block_size.as_str(), "-I", "256"])
         .args(features)
         .arg(&img)
         .output();
@@ -330,4 +335,126 @@ fn truncate_of_a_block_mapped_file_grows_and_will_not_shrink() {
         "the kernel sees the grown block-mapped file (left) unlike its twin (right)"
     );
     assert_eq!(after["twin"], before["twin"], "the twin changed");
+}
+
+#[test]
+fn truncate_refuses_sizes_past_the_mapping_limit_the_kernel_enforces() {
+    // The largest length is measured, not assumed. Queue runs 39741203200
+    // and 39777565017 showed the kernel refusing 2^32 blocks of 1 KiB on an
+    // extent volume without huge_file, which the block-address arithmetic
+    // alone allows. So the guest kernel is asked for every length by
+    // bisection, and fs.ext4 must accept exactly the last length the kernel
+    // accepted and refuse the next byte. Every layout is measured before
+    // anything about the driver is asserted, so one run reports the table.
+    let mut table = Vec::new();
+    let mut wrong = Vec::new();
+    for (block_size, extents, huge_file) in [
+        (1024u32, true, false),
+        (1024, true, true),
+        (4096, true, false),
+        (4096, true, true),
+        (1024, false, false),
+        (1024, false, true),
+        (4096, false, false),
+        (4096, false, true),
+    ] {
+        let tag = format!(
+            "truncate-limit-{block_size}-{}-{}",
+            if extents { "extent" } else { "blockmap" },
+            if huge_file { "huge" } else { "ordinary" }
+        );
+        let map_feature = if extents {
+            "extent,^64bit"
+        } else {
+            "^extent,^64bit"
+        };
+        let huge_feature = if huge_file {
+            ",huge_file"
+        } else {
+            ",^huge_file"
+        };
+        let features = format!("{map_feature}{huge_feature}");
+        let img = fresh_volume_with_block_size(&tag, block_size, &["-O", &features]);
+
+        // Bisect the kernel's largest length on the tiny sparse volume
+        // (2^50 bytes is past every layout here), then require the next
+        // byte to be refused as too large.
+        let kernel = guest_kernel_write(
+            &img,
+            "cd \"$MNT\"\n\
+             : > kernel-limit\n\
+             : > ours\n\
+             lo=0; hi=$((1 << 50))\n\
+             while [ $((hi - lo)) -gt 1 ]; do\n\
+               mid=$((lo + (hi - lo) / 2))\n\
+               if truncate -s $mid kernel-limit 2>/dev/null; then lo=$mid; else hi=$mid; fi\n\
+             done\n\
+             truncate -s $lo kernel-limit\n\
+             if message=$(LC_ALL=C truncate -s $((lo + 1)) kernel-limit 2>&1); then\n\
+               echo 'kernel accepted a length it refused while bisecting' >&2; exit 1;\n\
+             fi\n\
+             case \"$message\" in *'File too large'*) ;; *) echo \"$message\" >&2; exit 1 ;; esac\n\
+             test \"$(stat -c %s kernel-limit)\" = $lo\n\
+             echo \"kernel-limit=$lo\"\n",
+        );
+        assert!(
+            kernel.status.success(),
+            "kernel truncate boundary for {tag}: {}{}",
+            stdout(&kernel),
+            stderr(&kernel)
+        );
+        let max_size: u64 = stdout(&kernel)
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("kernel-limit="))
+            .and_then(|n| n.parse().ok())
+            .unwrap_or_else(|| panic!("no kernel-limit line for {tag}: {}", stdout(&kernel)));
+        assert_e2fsck_clean(&img, "the kernel's truncate-size boundary image");
+        table.push(format!(
+            "{tag}: {max_size} bytes, {} blocks and {} bytes",
+            max_size / u64::from(block_size),
+            max_size % u64::from(block_size)
+        ));
+
+        // The driver must accept the same exact boundary. Its refusal one
+        // byte later is checked on the read-only mount, before opening the
+        // image for writing, so the rejected request cannot change a byte.
+        let max = max_size.to_string();
+        let accepted = tool("fs.ext4")
+            .args([img.as_str(), "truncate", "/ours", max.as_str()])
+            .output()
+            .expect("spawn fs.ext4 truncate");
+        if !accepted.status.success() {
+            wrong.push(format!(
+                "{tag}: fs.ext4 refused the kernel's largest length: {}",
+                stderr(&accepted).trim()
+            ));
+            continue;
+        }
+        assert_e2fsck_clean(&img, "the volume fs.ext4 grew to the mapping limit");
+        let image = std::fs::read(&img).expect("read the image before the refusal");
+        let too_large = (max_size + 1).to_string();
+        let refused = tool("fs.ext4")
+            .args([img.as_str(), "truncate", "/ours", too_large.as_str()])
+            .output()
+            .expect("spawn fs.ext4 truncate");
+        if refused.status.code() != Some(1) || !stderr(&refused).contains("file too large") {
+            wrong.push(format!(
+                "{tag}: fs.ext4 did not refuse one byte past it as too large: {:?} {}",
+                refused.status.code(),
+                stderr(&refused).trim()
+            ));
+            continue;
+        }
+        assert!(refused.stdout.is_empty(), "stdout: {}", stdout(&refused));
+        assert!(
+            std::fs::read(&img).expect("read the image after the refusal") == image,
+            "truncate one byte past the mapping limit changed the image"
+        );
+    }
+    assert!(
+        wrong.is_empty(),
+        "the kernel's largest lengths:\n{}\nwhere fs.ext4 disagrees:\n{}",
+        table.join("\n"),
+        wrong.join("\n")
+    );
 }

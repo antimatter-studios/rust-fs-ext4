@@ -463,6 +463,11 @@ fn stale() -> i32 {
 }
 
 #[test]
+fn a_file_size_beyond_the_mapping_limit_is_efbig() {
+    assert_eq!(Error::FileTooLarge.to_errno(), fs_ext4::error::errno::EFBIG);
+}
+
+#[test]
 fn a_freed_and_reused_inode_is_stale_under_its_old_generation() {
     let (dev, fs) = mount(formatted(FsFlavor::Ext4));
     let f = fs.apply_create_at(ROOT, b"f", 0o644).unwrap();

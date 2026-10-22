@@ -479,8 +479,8 @@ tasks:
     # which is what proves the split.
     cmds:
       - 'EXPECT_OVERFLOW_CHECKS=1 ../rust-fs-core/scripts/tier.sh test:unit unit 1390 81000 -- scripts/test.sh --locked $(scripts/test-targets.sh unit)'
-      # #536 adds one boundary regression in inode_api.rs.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh unit 441'
+      # #536 and #538 each add one boundary/error-mapping regression in inode_api.rs.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh unit 442'
 
   # EVERY TIER SAYS HOW FEW TESTS STILL COUNT AS HAVING RUN IT (#271).
   #
@@ -581,7 +581,9 @@ tasks:
       # cli_import_kernel.rs adds three cases, including a subprocess crash cut,
       # and cli_path_symlink_kernel.rs two. symlink_target_kernel.rs adds
       # two cases comparing the 1 KiB and 4 KiB target boundaries (#536).
-      - 'bash ../rust-fs-core/scripts/test-floor.sh kernel 53'
+      # #538 adds one kernel-boundary case (eight block-size/mapping/feature
+      # combinations) to cli_truncate_kernel.rs.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh kernel 54'
 
   test:lwext4:
     desc: 'CROSS-VALIDATION: lwext4 — a third implementation, built in the guest — reads what we wrote, and we read what it wrote'

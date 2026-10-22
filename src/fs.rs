@@ -263,6 +263,30 @@ fn is_dot_or_dotdot(name: &[u8]) -> bool {
     name == b"." || name == b".."
 }
 
+/// The indirect blocks a block-mapped file of `data` blocks needs, with
+/// `pointers` block numbers to an indirect block: none for the 12 direct
+/// blocks, one single-indirect block, a double-indirect block and its
+/// single-indirect blocks, then a triple-indirect block and the double- and
+/// single-indirect blocks under it.
+fn indirect_blocks(data: u64, pointers: u64) -> u64 {
+    let mut left = data.saturating_sub(12);
+    if left == 0 {
+        return 0;
+    }
+    let mut meta = 1;
+    left = left.saturating_sub(pointers);
+    if left == 0 {
+        return meta;
+    }
+    let per_double = pointers.saturating_mul(pointers);
+    meta += 1 + left.min(per_double).div_ceil(pointers);
+    left = left.saturating_sub(per_double);
+    if left == 0 {
+        return meta;
+    }
+    meta + 1 + left.div_ceil(per_double) + left.div_ceil(pointers)
+}
+
 /// Split a `/a/b/c` path into (`/a/b`, `c`). Returns an error for empty or
 /// `"/"` paths (no basename to act on).
 ///
@@ -2082,6 +2106,45 @@ impl Filesystem {
         }
     }
 
+    /// Largest byte length addressable by this inode's block mapping.
+    /// Inline files are converted to extent mapping when they grow beyond
+    /// their inline area, so their eventual limit is the extent limit.
+    pub fn max_file_size_ino(&self, ino: u32) -> Result<u64> {
+        let (inode, _) = self.live_inode(ino.into())?;
+        Ok(self.max_file_size(&inode))
+    }
+
+    /// The kernel's largest length, as measured for every block size,
+    /// mapping format and `huge_file` setting the guest mounts (#538,
+    /// `truncate_refuses_sizes_past_the_mapping_limit_the_kernel_enforces`).
+    /// A file holds at most `2^32 - 1` blocks. Without `huge_file`, its
+    /// block count is also held to what a 32-bit `i_blocks` of 512-byte
+    /// sectors records: an extent file reaches exactly that many blocks,
+    /// and a block-mapped one that many less the indirect blocks a file of
+    /// that size would need. On 4 KiB blocks that is 536 346 110 blocks,
+    /// which the indirect map alone would allow twice over.
+    fn max_file_size(&self, inode: &Inode) -> u64 {
+        let block_size = u64::from(self.sb.block_size());
+        let sectors_per_block = block_size / 512;
+        let sector_cap = (self.sb.feature_ro_compat & features::RoCompat::HUGE_FILE.bits() == 0)
+            .then(|| u64::from(u32::MAX) / sectors_per_block);
+        let max_blocks = if inode.has_extents() || inode.has_inline_data() {
+            sector_cap.unwrap_or(u64::MAX).min(u64::from(u32::MAX))
+        } else {
+            let pointers = block_size / 4;
+            let mapped = 12u64
+                .saturating_add(pointers)
+                .saturating_add(pointers.saturating_mul(pointers))
+                .saturating_add(pointers.saturating_pow(3))
+                .min(u64::from(u32::MAX));
+            match sector_cap {
+                Some(cap) => mapped.min(cap - indirect_blocks(cap, pointers)),
+                None => mapped,
+            }
+        };
+        max_blocks.saturating_mul(block_size)
+    }
+
     /// Map a logical block within `inode` to its physical block, choosing
     /// between the extent tree and the legacy direct/indirect scheme based
     /// on `EXT4_EXTENTS_FL`. Returns `None` for sparse holes and (for the
@@ -2673,6 +2736,9 @@ impl Filesystem {
             return Err(Error::InvalidArgument(
                 "apply_truncate_grow: new_size < old_size (use apply_truncate_shrink)",
             ));
+        }
+        if new_size > self.max_file_size(&inode) {
+            return Err(Error::FileTooLarge);
         }
         if inode.has_inline_data() {
             return self.truncate_inline_file(ino, &inode, raw, new_size);
@@ -8191,6 +8257,22 @@ mod tests {
         EXTRA_ISIZE_DEFAULT, INODE_SIZE_WITH_CRTIME, INODE_SIZE_WITH_EXTRA, OFF_ATIME, OFF_CRTIME,
         OFF_CTIME, OFF_EXTRA_ISIZE, OFF_GENERATION, OFF_MTIME,
     };
+
+    #[test]
+    fn indirect_blocks_reproduce_the_measured_block_map_limit() {
+        // The guest kernel's largest block-mapped file on 4 KiB blocks
+        // without huge_file is 536 346 110 blocks (#538): the 32-bit
+        // sector count's 536 870 911 blocks less the indirect blocks a
+        // file of that many would need.
+        let cap = u64::from(u32::MAX) / 8;
+        assert_eq!(indirect_blocks(cap, 1024), 524_801);
+        assert_eq!(cap - indirect_blocks(cap, 1024), 536_346_110);
+        assert_eq!(indirect_blocks(12, 1024), 0);
+        assert_eq!(indirect_blocks(13, 1024), 1);
+        assert_eq!(indirect_blocks(12 + 1024, 1024), 1);
+        assert_eq!(indirect_blocks(12 + 1024 + 1, 1024), 3);
+        assert_eq!(indirect_blocks(12 + 1024 + 1024 * 1024, 1024), 1 + 1 + 1024);
+    }
 
     fn read_le32(buf: &[u8], off: usize) -> u32 {
         u32::from_le_bytes(buf[off..off + 4].try_into().unwrap())

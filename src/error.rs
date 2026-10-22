@@ -40,6 +40,9 @@ pub enum Error {
     /// Container (xattr in-inode region, xattr block, etc.) has no free
     /// space for the requested entry — POSIX ENOSPC.
     NoSpaceLeftOnDevice,
+    /// Requested file size exceeds the addressable blocks for its mapping
+    /// format (POSIX EFBIG).
+    FileTooLarge,
     /// Caller passed a malformed argument or attempted a semantically
     /// invalid mutation (POSIX EINVAL — e.g. truncate-grow, moving a dir
     /// into its own subtree, operating on a legacy non-EXTENTS inode).
@@ -114,6 +117,7 @@ impl std::fmt::Display for Error {
             Error::ReadOnly => write!(f, "read-only filesystem"),
             Error::NameTooLong => write!(f, "name too long"),
             Error::NoSpaceLeftOnDevice => write!(f, "no space left on device"),
+            Error::FileTooLarge => write!(f, "file too large"),
             Error::InvalidArgument(msg) => write!(f, "invalid argument: {msg}"),
             Error::InvalidInode(n) => write!(f, "invalid inode number {n}"),
             Error::InvalidBlock(n) => write!(f, "invalid block number {n}"),
@@ -152,6 +156,7 @@ impl Error {
             Error::ReadOnly | Error::JournalNotReplayed => EROFS,
             Error::NameTooLong => ENAMETOOLONG,
             Error::NoSpaceLeftOnDevice => ENOSPC,
+            Error::FileTooLarge => EFBIG,
             Error::TooManyLinks => EMLINK,
             Error::SymlinkLoop => ELOOP,
             Error::InvalidArgument(_) => EINVAL,
@@ -175,6 +180,7 @@ pub mod errno {
     pub const ENOENT: i32 = 2;
     pub const EIO: i32 = 5;
     pub const EEXIST: i32 = 17;
+    pub const EFBIG: i32 = 27;
     pub const ENOTDIR: i32 = 20;
     pub const EISDIR: i32 = 21;
     pub const EINVAL: i32 = 22;
