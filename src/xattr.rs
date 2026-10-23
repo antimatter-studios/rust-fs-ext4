@@ -1211,6 +1211,113 @@ mod tests {
         assert!(matches!(err, Error::InvalidArgument(_)));
     }
 
+    /// `raw-\xff`: Linux takes any bytes but NUL in an attribute name, so
+    /// a volume can hold `user.raw-\xff`, which is not UTF-8.
+    const RAW: &[u8] = b"raw-\xff";
+
+    fn entry(name_index: u8, name_bytes: &[u8], value: &[u8]) -> DecodedEntry {
+        DecodedEntry {
+            name_index,
+            name_bytes: name_bytes.to_vec(),
+            value: value.to_vec(),
+            value_inum: 0,
+        }
+    }
+
+    fn names_and_values(parsed: &[XattrEntry]) -> Vec<(&str, &[u8])> {
+        parsed
+            .iter()
+            .map(|e| (e.name.as_str(), e.value.as_slice()))
+            .collect()
+    }
+
+    /// A name that is not UTF-8 is not corruption: the in-inode parser
+    /// reads it, shown lossily, and every attribute beside it (#541).
+    #[test]
+    fn a_name_that_is_not_utf8_is_read_with_the_others_in_the_inode() {
+        let mut region = vec![0u8; 96];
+        encode_in_inode_entries(
+            &mut region,
+            &[entry(1, RAW, b"raw"), entry(1, b"ok", b"fine")],
+        );
+        let mut parsed = Vec::new();
+        parse_entries(&region[4..], region.len() - 4, &mut parsed)
+            .expect("a name that is not UTF-8 is not corruption");
+        assert_eq!(
+            names_and_values(&parsed),
+            [
+                ("user.ok", b"fine".as_slice()),
+                ("user.raw-\u{fffd}", b"raw".as_slice()),
+            ]
+        );
+    }
+
+    /// The same in an external block, whose parser is a separate one.
+    #[test]
+    fn a_name_that_is_not_utf8_is_read_with_the_others_in_a_block() {
+        let mut block = vec![0u8; 4096];
+        encode_external_block(
+            &mut block,
+            &[entry(1, RAW, b"raw"), entry(4, b"ok", b"fine")],
+            1,
+        );
+        let mut parsed = Vec::new();
+        parse_entries_block(&block, &mut parsed)
+            .expect("a name that is not UTF-8 is not corruption");
+        assert_eq!(
+            names_and_values(&parsed),
+            [
+                ("user.raw-\u{fffd}", b"raw".as_slice()),
+                ("trusted.ok", b"fine".as_slice()),
+            ]
+        );
+    }
+
+    /// A device nothing is read from: these inodes have no external block.
+    struct NoDev;
+
+    impl BlockDevice for NoDev {
+        fn read_at(&self, _: u64, _: &mut [u8]) -> Result<()> {
+            unreachable!("no external attribute block")
+        }
+        fn write_at(&self, _: u64, _: &[u8]) -> Result<()> {
+            unreachable!()
+        }
+        fn size_bytes(&self) -> u64 {
+            0
+        }
+    }
+
+    /// An inline file's bytes past the first 60 are its `system.data`
+    /// attribute, found among the inode's attributes by name. A name
+    /// beside it that is not UTF-8 leaves the file readable, and a lookup
+    /// by its lossy spelling finds nothing: names are matched as bytes
+    /// (#541).
+    #[test]
+    fn an_inline_file_beside_a_name_that_is_not_utf8_reads_back() {
+        let content: Vec<u8> = (0..80u8).collect();
+        let mut raw = vec![0u8; 256];
+        raw[0x00..0x02].copy_from_slice(&0o100_644u16.to_le_bytes()); // i_mode
+        raw[0x04..0x08].copy_from_slice(&80u32.to_le_bytes()); // i_size_lo
+        raw[0x28..0x28 + 60].copy_from_slice(&content[..60]); // i_block
+        raw[0x80..0x82].copy_from_slice(&32u16.to_le_bytes()); // i_extra_isize
+        encode_in_inode_entries(
+            &mut raw[160..],
+            &[entry(7, b"data", &content[60..]), entry(1, RAW, b"raw")],
+        );
+        let inode = Inode::parse(&raw).unwrap();
+        assert_eq!(
+            crate::inline_data::read_all(&NoDev, &inode, &raw, 256, 4096)
+                .expect("the inline file reads"),
+            content
+        );
+        assert_eq!(
+            get(&NoDev, &inode, &raw, 256, 4096, "user.raw-\u{fffd}").unwrap(),
+            None,
+            "the lossy spelling is not the name"
+        );
+    }
+
     /// attributes.html: external-block entries are sorted by
     /// `(name_index, name_len, name)`. The kernel's lookup stops at the
     /// first entry that sorts at or after the target, so the block must be
