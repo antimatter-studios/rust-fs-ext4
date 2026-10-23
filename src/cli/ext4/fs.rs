@@ -616,7 +616,7 @@ fn driver_error(what: &[u8], e: fs_ext4::Error) -> CliError {
 /// A namespace verb's error: a refusal the volume's current state gives it
 /// (a directory that is not empty, a name already there, a missing target,
 /// a part of the path that is not a directory) is the CLI contract's exit 4,
-/// `refused` (diskjockey#413); every other error is the driver's, exit 1.
+/// `refused` (EXIT_REFUSED); every other error is the driver's, exit 1.
 fn state_error(what: &[u8], e: fs_ext4::Error) -> CliError {
     use fs_ext4::Error;
     match e {

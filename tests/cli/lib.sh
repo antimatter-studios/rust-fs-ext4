@@ -32,7 +32,7 @@ check() {
 # state_code REASON: the exit status of a namespace verb refused for REASON,
 # 4 (`refused`) where the volume's state forbids it -- a directory that is
 # not empty, a name already there, a missing target, a part of the path that
-# is not a directory -- as the CLI contract has it (diskjockey#413), and 1
+# is not a directory -- as the CLI contract has it (EXIT_REFUSED), and 1
 # for every other refusal.
 state_code() {
     case "$1" in

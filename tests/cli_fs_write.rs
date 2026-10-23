@@ -66,7 +66,7 @@ fn refusals_are_structured_and_leave_the_image_alone() {
     let img = written_image("refusals");
     let before = std::fs::read(&img).unwrap();
     // The volume's state refuses these: exit 4, `refused`, in the CLI
-    // contract (diskjockey#413), with the JSON error on stderr.
+    // contract (EXIT_REFUSED), with the JSON error on stderr.
     let cases: Vec<(Vec<&str>, &str)> = vec![
         (vec!["mkdir", "/d"], "already exists"),
         (vec!["mkdir", "/missing/child"], "not found"),
