@@ -342,7 +342,7 @@ fn fs_ext4_xattr_lists_and_reads_what_the_kernel_set() {
             let tail = ok(tool("fs.ext4").args([img, "xattr", path, "system.data"]));
             assert_eq!(
                 tail.stdout.len(),
-                sizes["system.data"],
+                sizes[b"system.data".as_slice()],
                 "{}",
                 what("system.data")
             );
