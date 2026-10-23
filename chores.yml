@@ -289,8 +289,9 @@ vars:
   # v0.3.14 provides the shared bounded single-file export, and v0.3.15 the
   # shared tree source recursive export adapts (#570). v0.3.17 has
   # `CliError::refused_by_state`, the exit 4 a namespace verb gives when the
-  # volume's state refuses it (#592).
-  FS_CORE_REF: v0.3.17
+  # volume's state refuses it (#592). v0.4.1 has `CliError::not_found`, the
+  # kind a reading verb gives a path that does not exist, and agent-core v8.
+  FS_CORE_REF: v0.4.1
   LINUX_HARNESS_URL: https://github.com/antimatter-studios/fs-linux-test-harness.git
   # v0.3.0 is the release with `vm.sh session`, which the test runner runs
   # cargo through so a run gives the VM and the machine-wide slot back

@@ -96,9 +96,9 @@ jobs:
       contents: write
       id-token: write
       attestations: write
-    uses: antimatter-studios/rust-fs-core/.github/workflows/release-cli.yml@34e3610c298b3789dd1d39d3635e9aad38fae06a # v0.3.17
+    uses: antimatter-studios/rust-fs-core/.github/workflows/release-cli.yml@5df837560ce3799f06aac2288f31289bfd128558 # v0.4.1
     with:
-      core-ref: v0.3.17
+      core-ref: v0.4.1
       toolchain: 1.95.0
 
   publish:
