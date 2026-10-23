@@ -173,7 +173,9 @@ check "truncate --text says the new length" test "$(cat "$SANDBOX/t.txt")" = "/f
 
 # Refusals are decided before the image is opened for writing, so each
 # leaves it byte-identical with nothing on stdout. A symlink is never
-# followed, whether it is the path or on the way. A SIZE that is not a
+# followed, whether it is the path or on the way. A missing name or a part
+# of the path that is not a directory is the volume's state refusing it,
+# exit 4 (EXIT_REFUSED, #592). A SIZE that is not a
 # byte count is a usage error (exit 2) before the image is opened at all.
 fs.ext4 "$img" ln -s /f4096 /fl >/dev/null 2>&1
 cp "$img" "$SANDBOX/before-t.img"
@@ -192,14 +194,14 @@ truncate_refused 1 "is a directory" /d 0
 truncate_refused 1 "is a directory" /d/ 0
 truncate_refused 1 "is a directory" / 0
 truncate_refused 1 "is a directory" /f0/ 0
-truncate_refused 1 "not a directory" /f0/x 0
-truncate_refused 1 "not found" /missing 0
-truncate_refused 1 "not found" /missing/x 0
+truncate_refused 4 "not a directory" /f0/x 0
+truncate_refused 4 "not found" /missing 0
+truncate_refused 4 "not found" /missing/x 0
 truncate_refused 1 "name too long" "/$long" 0
-truncate_refused 1 "not found" "" 0
+truncate_refused 4 "not found" "" 0
 truncate_refused 1 "symlink" /fl 0
 truncate_refused 1 "symlink" /dl 0
-truncate_refused 1 "not a directory" /dl/e 0
+truncate_refused 4 "not a directory" /dl/e 0
 for size in -1 12x 1K 18446744073709551616 ""; do
     truncate_refused 2 "" /f4096 "$size"
 done
@@ -269,14 +271,14 @@ write_at_refused() {
 write_at_refused 1 "is a directory" /d 0
 write_at_refused 1 "is a directory" / 0
 write_at_refused 1 "is a directory" /a/ 0
-write_at_refused 1 "not a directory" /a/x 0
-write_at_refused 1 "not found" /missing 0
-write_at_refused 1 "not found" /missing/x 0
+write_at_refused 4 "not a directory" /a/x 0
+write_at_refused 4 "not found" /missing 0
+write_at_refused 4 "not found" /missing/x 0
 write_at_refused 1 "name too long" "/$long" 0
-write_at_refused 1 "not found" "" 0
+write_at_refused 4 "not found" "" 0
 write_at_refused 1 "symlink" /fl 0
 write_at_refused 1 "symlink" /dl 0
-write_at_refused 1 "not a directory" /dl/e 0
+write_at_refused 4 "not a directory" /dl/e 0
 write_at_refused 1 "too large" /a 1125899906842624
 write_at_refused 1 "too large" /a 18446744073709551615
 for at in -1 12x 1K 18446744073709551616 ""; do
