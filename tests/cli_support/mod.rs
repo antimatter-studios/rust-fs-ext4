@@ -95,6 +95,20 @@ pub fn sized_image(tag: &str, size: u64) -> String {
     path
 }
 
+/// The exit status of a namespace verb's refusal, from the reason the
+/// kernel gave the same call: 4, `refused`, where the volume's state
+/// forbids it (a directory that is not empty, a name already there, a
+/// missing target, a part of the path that is not a directory), as the
+/// CLI contract has it (diskjockey#413); 1 for every other refusal.
+pub fn refusal_code(kernel_reason: &str) -> i32 {
+    match kernel_reason {
+        "Directory not empty" | "File exists" | "No such file or directory" | "Not a directory" => {
+            4
+        }
+        _ => 1,
+    }
+}
+
 pub fn stdout(out: &Output) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }

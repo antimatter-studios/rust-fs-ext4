@@ -83,7 +83,7 @@ check "mv --replace of a name onto itself left the image byte-identical" cmp -s 
 fs.ext4 "$img" mv --text /old /older >"$SANDBOX/text.out" 2>/dev/null
 check "mv --text says what it moved" test "$(cat "$SANDBOX/text.out")" = "moved /old to /older"
 
-# Refusals: status 1, a structured error naming why, nothing on stdout,
+# Refusals: status 4 or 1 (state_code), a structured error naming why, nothing on stdout,
 # and the image byte-identical. The reasons are the ones the kernel gives
 # renameat2, RENAME_NOREPLACE unless --replace (tests/cli_mv_kernel.rs).
 cp "$img" "$SANDBOX/before.img"
@@ -91,10 +91,11 @@ refused() {
     local why="$1"
     shift
     fs.ext4 "$img" mv "$@" >"$SANDBOX/x.out" 2>"$SANDBOX/x.err"
-    local rc=$?
-    check "mv $* exits 1, not $rc" test "$rc" -eq 1
+    local rc=$? want
+    want="$(state_code "$why")"
+    check "mv $* exits $want, not $rc" test "$rc" -eq "$want"
     check "mv $* prints nothing on stdout" test ! -s "$SANDBOX/x.out"
-    jq_check "mv $* is refused: $why" ".code == 1 and (.error | test(\"$why\"))" "$SANDBOX/x.err"
+    jq_check "mv $* is refused: $why" ".code == $want and (.error | test(\"$why\"))" "$SANDBOX/x.err"
     check "mv $* left the image byte-identical" cmp -s "$img" "$SANDBOX/before.img"
 }
 long="$(printf 'n%.0s' $(seq 256))"
