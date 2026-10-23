@@ -75,9 +75,12 @@ const RAW_INLINE: &[u8] = b"user.raw-\xff";
 /// `C|` and its content in hex. Never through a symlink (`-h`), and a
 /// symlink has no `lsattr` flags (`-`). getfattr prints a byte of a name
 /// that is not printable as a backslash and three octal digits, which
-/// `printf` turns back into the byte for `-n`.
+/// `printf` turns back into the byte for `-n`; in the C locale, as the
+/// report runs, every byte above 0x7f is one. In another the guest may
+/// print 0xfe raw, and the report, read as text, would hold U+FFFD for it.
 fn report_script() -> String {
     let mut script = String::from(FILL);
+    script.push_str("export LC_ALL=C\n");
     for path in PATHS {
         script.push_str(&format!(
             r#"rel=".{path}"
