@@ -21,7 +21,22 @@ check "ls --text / of a fresh image names lost+found alone" \
 fs.ext4 "$img" ls /missing >"$SANDBOX/lsm.out" 2>"$SANDBOX/lsm.err"
 check "ls of a missing path exits 1" test $? -eq 1
 check "ls of a missing path prints nothing on stdout" test ! -s "$SANDBOX/lsm.out"
-jq_check "ls of a missing path says not found" '.code == 1 and (.error | test("not found"))' "$SANDBOX/lsm.err"
+jq_check "ls of a missing path is the not_found kind" '.code == 1 and .kind == "not_found"' "$SANDBOX/lsm.err"
+
+# A path that does not exist is rust-fs-core's not_found kind, exit 1, on
+# every verb that reads one, whatever its message says.
+not_found() { # <what> <args...>
+    local what="$1"
+    shift
+    fs.ext4 "$img" "$@" >"$SANDBOX/nf.out" 2>"$SANDBOX/nf.err"
+    local rc=$?
+    check "$what of a missing path exits 1, not $rc" test "$rc" -eq 1
+    jq_check "$what of a missing path is the not_found kind" '.code == 1 and .kind == "not_found"' "$SANDBOX/nf.err"
+}
+not_found read read /missing
+not_found "read of a missing parent" read /missing/f
+not_found export export /missing "$SANDBOX/nf-export"
+not_found "export --recursive" export --recursive /missing "$SANDBOX/nf-tree"
 
 # get / info: every canonical key, typed; get and info identical.
 fs.ext4 "$img" get >"$SANDBOX/get.json" 2>/dev/null
