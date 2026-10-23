@@ -103,8 +103,10 @@ rust-fs-ext4 doctor                        # is every tool on PATH ours?
   so far still on stdout and the bound or the path named on stderr.
 - **`xattr PATH`** lists the extended attributes PATH's own inode holds
   as `[{"name": "user.comment", "size": 12}, ...]`, each name with its
-  namespace prefix and sorted by its bytes; `--text` prints size, a tab and
-  name. **`xattr PATH NAME`** writes that value's raw bytes to stdout, or
+  namespace prefix and sorted by its bytes, one that is not UTF-8 shown
+  lossily with its exact bytes in `name_hex`; `--text` prints size, a tab
+  and name. **`xattr PATH NAME`**, NAME matched as the bytes it is, writes
+  that value's raw bytes to stdout, or
   through `FILE.partial` to `-o FILE` as `read` does; a missing attribute
   exits 1. Attributes kept in the inode, in an external block and in an EA
   inode are all read, a symlink's own and never its target's. Values are
