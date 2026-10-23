@@ -1872,14 +1872,22 @@ impl Filesystem {
             if !dir.is_dir() {
                 return Err(Error::NotADirectory);
             }
-            let child = crate::path::find_entry(
-                self.dev.as_ref(),
-                &self.sb,
-                current,
-                &dir,
-                &name,
-                &self.csum,
-            )?;
+            // `.` is the directory itself, taken without a lookup as the
+            // kernel takes it: an htree directory files `.` in its dx_root,
+            // where a hashed lookup never looks, so `/` and every path under
+            // an indexed root would be NotFound.
+            let child = if name == b"." {
+                current
+            } else {
+                crate::path::find_entry(
+                    self.dev.as_ref(),
+                    &self.sb,
+                    current,
+                    &dir,
+                    &name,
+                    &self.csum,
+                )?
+            };
             if pending.is_empty() && !follow_last {
                 return Ok(child);
             }
