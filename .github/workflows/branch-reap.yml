@@ -18,6 +18,6 @@ jobs:
     permissions:
       contents: write
       pull-requests: read
-    uses: antimatter-studios/rust-fs-core/.github/workflows/branch-reap.yml@34e3610c298b3789dd1d39d3635e9aad38fae06a # v0.3.17
+    uses: antimatter-studios/rust-fs-core/.github/workflows/branch-reap.yml@9e841ae7ce94ed0ef9c37b9b217e03b9c978febc # v0.4.2
     with:
-      core-ref: v0.3.17
+      core-ref: v0.4.2

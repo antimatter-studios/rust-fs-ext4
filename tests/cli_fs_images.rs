@@ -99,10 +99,12 @@ fn read_writes_the_bytes_the_kernel_wrote() {
 #[test]
 fn read_refuses_a_directory_a_symlink_and_a_missing_path_with_nothing_on_stdout() {
     let img = basic();
+    // A missing path is told by its kind, never its wording; the other
+    // refusals carry no kind.
     for (path, says) in [
         ("/subdir", "is a directory"),
         ("/link.txt", "is a symlink to test.txt"),
-        ("/no/such/file", "not found"),
+        ("/no/such/file", "\"kind\": \"not_found\""),
     ] {
         let out = fs(&[&img, "read", path]);
         assert_eq!(out.status.code(), Some(1), "{path}");
@@ -112,6 +114,9 @@ fn read_refuses_a_directory_a_symlink_and_a_missing_path_with_nothing_on_stdout(
             err.contains(says) && err.contains("\"code\": 1"),
             "{path}: {err}"
         );
+        if path != "/no/such/file" {
+            assert!(!err.contains("\"kind\""), "{path}: {err}");
+        }
     }
 }
 

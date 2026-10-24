@@ -15,7 +15,7 @@ with every repository in this family**. Do not edit it here: change the
 canonical copy and propagate it, or `scripts/agents-core-check.sh` will fail.
 Everything after the END marker is specific to this repository.
 
-<!-- BEGIN SHARED BLOCK: agent-core v7 sha256:1d6c04c827b22c2836e4b9d3977fda083f1ec322d8408a6b2ae5bf72de42b3e5 -->
+<!-- BEGIN SHARED BLOCK: agent-core v8 sha256:1f9d7d85f68196088ee36428968ea4c365c6f99d41b908fd8d2e848a97e5b570 -->
 ## Claiming work
 
 Several agents work these repositories at the same time. Before you start on
@@ -105,17 +105,19 @@ Never write the fix before you have a red. A fix with no failing test to its
 name is a claim, not a result.
 
 **Red and green happen in one pull request, on one branch.** Push the commit
-that adds the failing test on its own, and let CI show it red on that pull
-request. Then push the fix to the **same branch**, with the test untouched,
-until the same pull request is green.
+that adds the failing test on its own and open the pull request with a title
+that starts `red:`. CI runs it on that pull request, and the run of a `red:`
+pull request is never cancelled, so its failure stays on record. Then put the
+fix on the **same branch**, with the test untouched: squash the branch to one
+commit, take `red:` off the title, and push. The same pull request goes green.
 
-- Never put a fix in a second pull request, stacked or not. A pull request
-  that only holds a red commit can never merge, and it blocks every pull
-  request built on it.
+- Never put a fix in a second pull request, stacked or not, and never push the
+  test to a `red/*` branch of its own: the red evidence is the pull request's
+  own run.
 - Never push the test and the fix together. The red has to be visible in CI,
   not claimed in the description.
-- Wait for the red run to finish before pushing the fix: a new push cancels
-  the run in progress.
+- A `red:` pull request holds a failing test, so it can never merge: nothing
+  is built on it and nothing queues it until it has lost `red:`.
 
 ## Nothing skips
 
@@ -239,7 +241,7 @@ a fragment until it ships and a line of `CHANGELOG.md` after, never both.
   copying it is not.
 - **Each of these is a standalone project.** Never mention a consuming
   application in the README, the source, or CLI help.
-<!-- END SHARED BLOCK: agent-core v7 -->
+<!-- END SHARED BLOCK: agent-core v8 -->
 
 
 ## Keep the features page current

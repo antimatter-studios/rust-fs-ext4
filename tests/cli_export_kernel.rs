@@ -84,6 +84,13 @@ fn export_matches_kernel_digests_and_shared_publication_rules() {
         assert_eq!(refused.status.code(), Some(1), "{}", stderr(&refused));
         assert!(refused.stdout.is_empty());
         assert!(!Path::new(&dest).exists());
+        // Only the missing path is the not_found kind.
+        assert_eq!(
+            stderr(&refused).contains("\"kind\": \"not_found\""),
+            path == "/missing",
+            "{path}: {}",
+            stderr(&refused)
+        );
     }
     let usage = tool("fs.ext4")
         .args([&img, "export", "--replace", "/big", "-"])

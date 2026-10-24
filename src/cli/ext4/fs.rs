@@ -613,6 +613,16 @@ fn driver_error(what: &[u8], e: fs_ext4::Error) -> CliError {
     CliError::failed(format!("{}: {e}", show(what)))
 }
 
+/// A reading verb's path lookup: a path that does not exist is
+/// rust-fs-core's `not_found` kind, exit 1, which a script matches whatever
+/// the message says; every other error is the driver's.
+fn read_error(what: &[u8], e: fs_ext4::Error) -> CliError {
+    match e {
+        fs_ext4::Error::NotFound => CliError::not_found(format!("{}: {e}", show(what))),
+        e => driver_error(what, e),
+    }
+}
+
 /// A namespace verb's error: a refusal the volume's current state gives it
 /// (a directory that is not empty, a name already there, a missing target,
 /// a part of the path that is not a directory) is the CLI contract's exit 4,
@@ -717,7 +727,7 @@ fn entry_text(e: &Json) -> String {
 fn ls(fs: &Filesystem, path: &[u8]) -> Result<Outcome, CliError> {
     let ino = fs
         .lookup_path_bytes(path)
-        .map_err(|e| driver_error(path, e))?;
+        .map_err(|e| read_error(path, e))?;
     let inode = fs.stat_ino(ino).map_err(|e| driver_error(path, e))?;
     let entries = if inode.is_dir() {
         let mut listed = Vec::new();
@@ -882,7 +892,7 @@ fn ls_recursive(
 ) -> Result<Outcome, CliError> {
     let ino = fs
         .lookup_path_bytes(path)
-        .map_err(|e| driver_error(path, e))?;
+        .map_err(|e| read_error(path, e))?;
     let inode = fs.stat_ino(ino).map_err(|e| driver_error(path, e))?;
     let bounds = (
         sub.get_one::<u64>("max-depth")
@@ -952,7 +962,7 @@ fn device_numbers(block: &[u8; 60]) -> (u32, u32) {
 fn stat(fs: &Filesystem, path: &[u8]) -> Result<Outcome, CliError> {
     let ino = fs
         .lookup_path_bytes(path)
-        .map_err(|e| driver_error(path, e))?;
+        .map_err(|e| read_error(path, e))?;
     let (inode, raw) = fs
         .read_inode_verified(ino)
         .map_err(|e| driver_error(path, e))?;
@@ -1035,7 +1045,7 @@ fn stat(fs: &Filesystem, path: &[u8]) -> Result<Outcome, CliError> {
 fn read(fs: &Filesystem, path: &[u8], output: Option<&OsString>) -> Result<Outcome, CliError> {
     let ino = fs
         .lookup_path_bytes(path)
-        .map_err(|e| driver_error(path, e))?;
+        .map_err(|e| read_error(path, e))?;
     let inode = fs.stat_ino(ino).map_err(|e| driver_error(path, e))?;
     if inode.is_dir() {
         return Err(driver_error(path, fs_ext4::Error::IsADirectory));
@@ -1111,7 +1121,7 @@ fn export(
     let path = os_bytes(&request.path);
     let ino = fs
         .lookup_path_bytes(path)
-        .map_err(|e| driver_error(path, e))?;
+        .map_err(|e| read_error(path, e))?;
     let inode = fs.stat_ino(ino).map_err(|e| driver_error(path, e))?;
     if inode.is_dir() {
         return Err(driver_error(path, fs_ext4::Error::IsADirectory));
@@ -1153,7 +1163,7 @@ impl TreeExport<'_> {
         let ino = self
             .fs
             .lookup_path_bytes(&bytes)
-            .map_err(|e| driver_error(&bytes, e))?;
+            .map_err(|e| read_error(&bytes, e))?;
         let inode = self.fs.stat_ino(ino).map_err(|e| driver_error(&bytes, e))?;
         Ok((bytes, ino, inode))
     }
