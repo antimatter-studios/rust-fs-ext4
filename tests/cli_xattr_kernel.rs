@@ -73,14 +73,12 @@ const RAW_INLINE: &[u8] = b"user.raw-\xff";
 /// `getfattr -d -m - -e hex`, then `V|` and each value `getfattr -n`
 /// returned for every name `getfattr -m -` listed, and for a regular file
 /// `C|` and its content in hex. Never through a symlink (`-h`), and a
-/// symlink has no `lsattr` flags (`-`). getfattr prints a byte of a name
-/// that is not printable as a backslash and three octal digits, which
-/// `printf` turns back into the byte for `-n`; in the C locale, as the
-/// report runs, every byte above 0x7f is one. In another the guest may
-/// print 0xfe raw, and the report, read as text, would hold U+FFFD for it.
+/// symlink has no `lsattr` flags (`-`). getfattr prints a control byte of
+/// a name as a backslash and three octal digits, which `printf` turns back
+/// into the byte for `-n`, and a byte above 0x7f as itself, so the report
+/// is read as bytes ([`parse`]).
 fn report_script() -> String {
     let mut script = String::from(FILL);
-    script.push_str("export LC_ALL=C\n");
     for path in PATHS {
         script.push_str(&format!(
             r#"rel=".{path}"
@@ -110,8 +108,8 @@ struct Seen {
 
 /// A name as getfattr prints it, its bytes back: `\` and three octal
 /// digits is one byte.
-fn unquote(name: &str) -> Vec<u8> {
-    let b = name.as_bytes();
+fn unquote(name: &[u8]) -> Vec<u8> {
+    let b = name;
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;
     while i < b.len() {
@@ -143,26 +141,37 @@ fn lossy(name: &[u8]) -> String {
 
 /// One `NAME=VALUE` line of `getfattr -e hex`: an empty value is printed
 /// with no `=`, with nothing after it, or as `""`; any other is `0x` hex.
-fn attribute(line: &str) -> (Vec<u8>, Vec<u8>) {
-    let (name, value) = line.split_once('=').unwrap_or((line, ""));
+fn attribute(line: &[u8]) -> (Vec<u8>, Vec<u8>) {
+    let shown = String::from_utf8_lossy(line);
+    let (name, value) = match line.iter().position(|&b| b == b'=') {
+        Some(at) => (&line[..at], &line[at + 1..]),
+        None => (line, &b""[..]),
+    };
     let value = match value {
-        "" | "\"\"" => Vec::new(),
+        b"" | b"\"\"" => Vec::new(),
         hex => hex::decode(
-            hex.strip_prefix("0x")
-                .unwrap_or_else(|| panic!("a getfattr -e hex value: {line}")),
+            hex.strip_prefix(b"0x")
+                .unwrap_or_else(|| panic!("a getfattr -e hex value: {shown}")),
         )
-        .unwrap_or_else(|e| panic!("{line}: {e}")),
+        .unwrap_or_else(|e| panic!("{shown}: {e}")),
     };
     (unquote(name), value)
 }
 
-fn parse(report: &str) -> Vec<(String, Seen)> {
+/// The guest's report, read as BYTES: an attribute name is any bytes but
+/// NUL, and getfattr prints one above 0x7f raw, which a lossy read as text
+/// would turn into U+FFFD and so into a name the volume does not hold.
+fn parse(report: &[u8]) -> Vec<(String, Seen)> {
     let mut seen: Vec<(String, Seen)> = Vec::new();
-    for line in report.lines() {
-        let (kind, rest) = line
-            .split_once('|')
+    for raw in report.split(|&b| b == b'\n').filter(|l| !l.is_empty()) {
+        let line = String::from_utf8_lossy(raw);
+        let bar = raw
+            .iter()
+            .position(|&b| b == b'|')
             .unwrap_or_else(|| panic!("a report line: {line}"));
+        let (kind, bytes) = (&line[..bar], &raw[bar + 1..]);
         if kind == "@" {
+            let rest = std::str::from_utf8(bytes).unwrap_or_else(|e| panic!("{line}: {e}"));
             let f: Vec<&str> = rest.split('|').collect();
             assert_eq!(f.len(), 3, "a path line: {line}");
             let seen_now = Seen {
@@ -177,11 +186,11 @@ fn parse(report: &str) -> Vec<(String, Seen)> {
             .last_mut()
             .unwrap_or_else(|| panic!("an attribute before any path: {line}"));
         if kind == "C" {
-            let content = hex::decode(rest).unwrap_or_else(|e| panic!("{line}: {e}"));
+            let content = hex::decode(bytes).unwrap_or_else(|e| panic!("{line}: {e}"));
             assert!(current.content.replace(content).is_none(), "twice: {line}");
             continue;
         }
-        let (name, value) = attribute(rest);
+        let (name, value) = attribute(bytes);
         let into = match kind {
             "D" => &mut current.dump,
             "V" => &mut current.each,
@@ -266,7 +275,7 @@ fn fs_ext4_xattr_lists_and_reads_what_the_kernel_set() {
         stderr(&out)
     );
     let report = stdout(&out);
-    let seen = parse(&report);
+    let seen = parse(&out.stdout);
     assert_eq!(
         seen.iter().map(|(p, _)| p.as_str()).collect::<Vec<_>>(),
         PATHS,
