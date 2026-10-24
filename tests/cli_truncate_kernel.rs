@@ -278,9 +278,10 @@ fn truncate_refuses_what_the_kernel_refuses() {
         let err = stderr(&got);
         let label = &path[..path.len().min(40)];
         let what = format!("truncate {label:?}: the kernel said {reason:?}; fs.ext4 said {err}");
-        assert_eq!(got.status.code(), Some(1), "{what}");
+        let code = refusal_code(reason);
+        assert_eq!(got.status.code(), Some(code), "{what}");
         assert!(got.stdout.is_empty(), "{what}; stdout: {}", stdout(&got));
-        assert!(err.contains("\"code\": 1"), "{what}");
+        assert!(err.contains(&format!("\"code\": {code}")), "{what}");
         assert!(err.contains(want), "{what}; expected {want:?}");
         assert!(
             std::fs::read(&img).expect("read the image") == image,

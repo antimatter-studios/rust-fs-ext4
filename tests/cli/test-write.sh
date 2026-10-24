@@ -47,20 +47,21 @@ jq_check "every ls entry has typed fields" \
 fs.ext4 "$img" ls /d >"$SANDBOX/lsd.json" 2>/dev/null
 jq_check "ls /d shows e as a directory" 'any(.[]; .name == "e" and .type == "dir")' "$SANDBOX/lsd.json"
 
-# Refusals: status 1, a structured error, nothing on stdout, image unchanged.
+# Refusals: a structured error, nothing on stdout, image unchanged; status 4
+# where the volume's state forbids a namespace verb (state_code), 1 for write.
 cp "$img" "$SANDBOX/before.img"
 fs.ext4 "$img" mkdir /d >"$SANDBOX/x.out" 2>"$SANDBOX/x.err"
-check "mkdir of an existing path exits 1" test $? -eq 1
+check "mkdir of an existing path exits 4" test $? -eq 4
 check "mkdir of an existing path prints nothing on stdout" test ! -s "$SANDBOX/x.out"
-jq_check "mkdir of an existing path says so" '.code == 1 and (.error | test("already exists"))' "$SANDBOX/x.err"
+jq_check "mkdir of an existing path says so" '.code == 4 and (.error | test("already exists"))' "$SANDBOX/x.err"
 echo x | fs.ext4 "$img" write /missing/f >"$SANDBOX/y.out" 2>"$SANDBOX/y.err"
 check "write under a missing parent exits 1" test $? -eq 1
 check "write under a missing parent prints nothing on stdout" test ! -s "$SANDBOX/y.out"
 jq_check "write under a missing parent is a structured error" '.code == 1 and (.error | test("not found"))' "$SANDBOX/y.err"
 check "the refusals left the image as it was" cmp -s "$img" "$SANDBOX/before.img"
 fs.ext4 "$img" mkdir /m1/m2 >"$SANDBOX/x.out" 2>"$SANDBOX/x.err"
-check "plain mkdir under a missing parent exits 1" test $? -eq 1
-jq_check "plain mkdir makes no parent" '.code == 1 and (.error | test("not found"))' "$SANDBOX/x.err"
+check "plain mkdir under a missing parent exits 4" test $? -eq 4
+jq_check "plain mkdir makes no parent" '.code == 4 and (.error | test("not found"))' "$SANDBOX/x.err"
 check "plain mkdir under a missing parent left the image as it was" cmp -s "$img" "$SANDBOX/before.img"
 
 # mkdir --parents makes every missing directory on the way, mode 0755, and
@@ -115,10 +116,11 @@ long="$(printf 'n%.0s' $(seq 256))"
 refused() {
     local why="$1" p="$2"
     fs.ext4 "$img" mkdir -p "$p" >"$SANDBOX/x.out" 2>"$SANDBOX/x.err"
-    local rc=$?
-    check "mkdir -p ${p:0:40} exits 1, not $rc" test "$rc" -eq 1
+    local rc=$? want
+    want="$(state_code "$why")"
+    check "mkdir -p ${p:0:40} exits $want, not $rc" test "$rc" -eq "$want"
     check "mkdir -p ${p:0:40} prints nothing on stdout" test ! -s "$SANDBOX/x.out"
-    jq_check "mkdir -p ${p:0:40} is refused: $why" ".code == 1 and (.error | test(\"$why\"))" "$SANDBOX/x.err"
+    jq_check "mkdir -p ${p:0:40} is refused: $why" ".code == $want and (.error | test(\"$why\"))" "$SANDBOX/x.err"
     check "mkdir -p ${p:0:40} left the image byte-identical" cmp -s "$img" "$SANDBOX/before-p.img"
 }
 refused "already exists" /f0
@@ -171,7 +173,9 @@ check "truncate --text says the new length" test "$(cat "$SANDBOX/t.txt")" = "/f
 
 # Refusals are decided before the image is opened for writing, so each
 # leaves it byte-identical with nothing on stdout. A symlink is never
-# followed, whether it is the path or on the way. A SIZE that is not a
+# followed, whether it is the path or on the way. A missing name or a part
+# of the path that is not a directory is the volume's state refusing it,
+# exit 4 (EXIT_REFUSED, #592). A SIZE that is not a
 # byte count is a usage error (exit 2) before the image is opened at all.
 fs.ext4 "$img" ln -s /f4096 /fl >/dev/null 2>&1
 cp "$img" "$SANDBOX/before-t.img"
@@ -190,14 +194,14 @@ truncate_refused 1 "is a directory" /d 0
 truncate_refused 1 "is a directory" /d/ 0
 truncate_refused 1 "is a directory" / 0
 truncate_refused 1 "is a directory" /f0/ 0
-truncate_refused 1 "not a directory" /f0/x 0
-truncate_refused 1 "not found" /missing 0
-truncate_refused 1 "not found" /missing/x 0
+truncate_refused 4 "not a directory" /f0/x 0
+truncate_refused 4 "not found" /missing 0
+truncate_refused 4 "not found" /missing/x 0
 truncate_refused 1 "name too long" "/$long" 0
-truncate_refused 1 "not found" "" 0
+truncate_refused 4 "not found" "" 0
 truncate_refused 1 "symlink" /fl 0
 truncate_refused 1 "symlink" /dl 0
-truncate_refused 1 "not a directory" /dl/e 0
+truncate_refused 4 "not a directory" /dl/e 0
 for size in -1 12x 1K 18446744073709551616 ""; do
     truncate_refused 2 "" /f4096 "$size"
 done
@@ -267,14 +271,14 @@ write_at_refused() {
 write_at_refused 1 "is a directory" /d 0
 write_at_refused 1 "is a directory" / 0
 write_at_refused 1 "is a directory" /a/ 0
-write_at_refused 1 "not a directory" /a/x 0
-write_at_refused 1 "not found" /missing 0
-write_at_refused 1 "not found" /missing/x 0
+write_at_refused 4 "not a directory" /a/x 0
+write_at_refused 4 "not found" /missing 0
+write_at_refused 4 "not found" /missing/x 0
 write_at_refused 1 "name too long" "/$long" 0
-write_at_refused 1 "not found" "" 0
+write_at_refused 4 "not found" "" 0
 write_at_refused 1 "symlink" /fl 0
 write_at_refused 1 "symlink" /dl 0
-write_at_refused 1 "not a directory" /dl/e 0
+write_at_refused 4 "not a directory" /dl/e 0
 write_at_refused 1 "too large" /a 1125899906842624
 write_at_refused 1 "too large" /a 18446744073709551615
 for at in -1 12x 1K 18446744073709551616 ""; do

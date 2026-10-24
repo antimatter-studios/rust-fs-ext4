@@ -49,17 +49,19 @@ fs.ext4 "$img" rm --text /big >"$SANDBOX/text.out" 2>/dev/null
 check "rm --text says what it removed" test "$(cat "$SANDBOX/text.out")" = "removed /big"
 check "removing the MiB gave its blocks back" test "$(fs.ext4 "$img" get free_bytes --text)" -eq "$free_before"
 
-# Refusals: status 1, a structured error naming why, nothing on stdout,
-# and the image byte-identical.
+# Refusals: status 4 where the volume's state forbids it and 1 otherwise
+# (state_code), a structured error naming why, nothing on stdout, and the
+# image byte-identical.
 cp "$img" "$SANDBOX/before.img"
 refused() {
     local why="$1"
     shift
     fs.ext4 "$img" "$@" >"$SANDBOX/x.out" 2>"$SANDBOX/x.err"
-    local rc=$?
-    check "$* exits 1, not $rc" test "$rc" -eq 1
+    local rc=$? want
+    want="$(state_code "$why")"
+    check "$* exits $want, not $rc" test "$rc" -eq "$want"
     check "$* prints nothing on stdout" test ! -s "$SANDBOX/x.out"
-    jq_check "$* is refused: $why" ".code == 1 and (.error | test(\"$why\"))" "$SANDBOX/x.err"
+    jq_check "$* is refused: $why" ".code == $want and (.error | test(\"$why\"))" "$SANDBOX/x.err"
     check "$* left the image byte-identical" cmp -s "$img" "$SANDBOX/before.img"
 }
 refused "not found" rm /missing

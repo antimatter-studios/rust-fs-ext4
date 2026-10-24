@@ -50,7 +50,10 @@ fn command() -> Cmd {
              it is dirty), not a place to do real filesystem work: for that, mount it.\n\n\
              Metadata is JSON on stdout (--text for people); `read` and `xattr PATH NAME` \
              write raw bytes. A failure is {\"error\": \"...\", \"code\": N} on stderr, N being the \
-             exit status: 1 failed, 2 wrong command line, 3 not implemented.",
+             exit status: 1 failed, 2 wrong command line, 3 not implemented, 4 refused by \
+             the volume's state (rm, rmdir, mv, ln, mkdir, truncate or write --at meeting a \
+             directory that is not empty, a name already there, a missing target or a part \
+             of the path that is not a directory).",
         )
         .arg(
             Arg::new("target")
@@ -608,6 +611,21 @@ fn open(target: &OsString, offset: u64) -> Result<Filesystem, CliError> {
 
 fn driver_error(what: &[u8], e: fs_ext4::Error) -> CliError {
     CliError::failed(format!("{}: {e}", show(what)))
+}
+
+/// A namespace verb's error: a refusal the volume's current state gives it
+/// (a directory that is not empty, a name already there, a missing target,
+/// a part of the path that is not a directory) is the CLI contract's exit 4,
+/// `refused` (EXIT_REFUSED); every other error is the driver's, exit 1.
+fn state_error(what: &[u8], e: fs_ext4::Error) -> CliError {
+    use fs_ext4::Error;
+    match e {
+        Error::DirectoryNotEmpty
+        | Error::AlreadyExists
+        | Error::NotFound
+        | Error::NotADirectory => CliError::refused_by_state(format!("{}: {e}", show(what))),
+        e => driver_error(what, e),
+    }
 }
 
 fn type_name(t: DirEntryType) -> &'static str {
@@ -1478,8 +1496,30 @@ fn edit<T>(
     what: &[u8],
     edit: impl FnOnce(&Filesystem) -> fs_ext4::Result<T>,
 ) -> Result<T, CliError> {
+    edit_reporting(target, offset, what, driver_error, edit)
+}
+
+/// [`edit`] for a namespace verb: a refusal the volume's state gives the
+/// library's own check is exit 4, as the verb's checks on the read-only
+/// mount are ([`state_error`]).
+fn edit_namespace<T>(
+    target: &OsString,
+    offset: u64,
+    what: &[u8],
+    edit: impl FnOnce(&Filesystem) -> fs_ext4::Result<T>,
+) -> Result<T, CliError> {
+    edit_reporting(target, offset, what, state_error, edit)
+}
+
+fn edit_reporting<T>(
+    target: &OsString,
+    offset: u64,
+    what: &[u8],
+    report: fn(&[u8], fs_ext4::Error) -> CliError,
+    edit: impl FnOnce(&Filesystem) -> fs_ext4::Result<T>,
+) -> Result<T, CliError> {
     let fs = super::device::mount(target, offset, true)?;
-    let done = edit(&fs).map_err(|e| driver_error(what, e))?;
+    let done = edit(&fs).map_err(|e| report(what, e))?;
     fs.finish()
         .map_err(|e| CliError::failed(format!("{}: finishing the write: {e}", show(what))))?;
     Ok(done)
@@ -1541,7 +1581,7 @@ fn write(target: &OsString, offset: u64, path: &[u8]) -> Result<Outcome, CliErro
 /// nothing at the path.
 fn mkdir(target: &OsString, offset: u64, path: &[u8]) -> Result<Outcome, CliError> {
     let name = utf8_path(path)?;
-    let ino = edit(target, offset, path, |fs| fs.apply_mkdir(name, 0o755))?;
+    let ino = edit_namespace(target, offset, path, |fs| fs.apply_mkdir(name, 0o755))?;
     let report = Json::object([("path", Json::from(name)), ("inode", Json::from(ino))]);
     Ok(Outcome::report(report).with_text(format!("created {name}")))
 }
@@ -1558,7 +1598,7 @@ fn mkdir(target: &OsString, offset: u64, path: &[u8]) -> Result<Outcome, CliErro
 fn mkdir_parents(target: &OsString, offset: u64, path: &[u8]) -> Result<Outcome, CliError> {
     let chain = chain(&open(target, offset)?, path)?;
     if !chain.is_empty() {
-        edit(target, offset, path, |fs| {
+        edit_namespace(target, offset, path, |fs| {
             let mut made: Vec<u32> = Vec::with_capacity(chain.len());
             let parent = |step: &Step, made: &[u32]| match step.parent {
                 Dir::Existing(ino) => ino,
@@ -1635,9 +1675,9 @@ struct Step<'p> {
 /// directory, which `mkdir -p` would follow.
 fn chain<'p>(fs: &Filesystem, path: &'p [u8]) -> Result<Vec<Step<'p>>, CliError> {
     use fs_ext4::Error;
-    let refuse = |e: Error| driver_error(path, e);
+    let refuse = |e: Error| state_error(path, e);
     if path.is_empty() {
-        return Err(CliError::failed("an empty path: not found"));
+        return Err(CliError::refused_by_state("an empty path: not found"));
     }
     // Each name, with where it ends in `path`.
     let mut names = Vec::new();
@@ -1715,7 +1755,7 @@ fn remove(
     removal: Removal,
 ) -> Result<Outcome, CliError> {
     let (parent, name) = removable(&open(target, offset)?, path, removal)?;
-    edit(target, offset, path, |fs| match removal {
+    edit_namespace(target, offset, path, |fs| match removal {
         Removal::Name => fs.apply_unlink_at(parent, name),
         Removal::Directory => fs.apply_rmdir_at(parent, name),
     })?;
@@ -1740,7 +1780,7 @@ fn removable<'p>(
     removal: Removal,
 ) -> Result<(u32, &'p [u8]), CliError> {
     use fs_ext4::Error;
-    let refuse = |e: Error| driver_error(path, e);
+    let refuse = |e: Error| state_error(path, e);
     let (dir, name, trailing_slash) = last_name(path);
     if name.is_empty() {
         return Err(match removal {
@@ -1835,7 +1875,7 @@ fn rename(
     replace: bool,
 ) -> Result<Outcome, CliError> {
     if let Some(the_move) = movable(&open(target, offset)?, source, path, replace)? {
-        edit(target, offset, source, |fs| {
+        edit_namespace(target, offset, source, |fs| {
             fs.apply_rename_at(
                 the_move.from_dir,
                 the_move.from_name,
@@ -1889,8 +1929,8 @@ fn movable<'p>(
     replace: bool,
 ) -> Result<Option<Move<'p>>, CliError> {
     use fs_ext4::Error;
-    let at_source = |e: Error| driver_error(source, e);
-    let at_path = |e: Error| driver_error(path, e);
+    let at_source = |e: Error| state_error(source, e);
+    let at_path = |e: Error| state_error(path, e);
     let busy = |what: &[u8]| {
         CliError::failed(format!(
             "{}: resource busy: ., .. and the root cannot be moved or replaced",
@@ -2002,7 +2042,7 @@ fn link(
     symbolic: bool,
 ) -> Result<Outcome, CliError> {
     let the_link = linkable(&open(target, offset)?, source, path, symbolic)?;
-    let ino = edit(target, offset, path, |fs| match the_link.inode {
+    let ino = edit_namespace(target, offset, path, |fs| match the_link.inode {
         Some(ino) => fs
             .apply_link_at(ino, the_link.dir, the_link.name)
             .map(|()| ino),
@@ -2059,8 +2099,8 @@ fn linkable<'p>(
     symbolic: bool,
 ) -> Result<Link<'p>, CliError> {
     use fs_ext4::Error;
-    let at_source = |e: Error| driver_error(source, e);
-    let at_path = |e: Error| driver_error(path, e);
+    let at_source = |e: Error| state_error(source, e);
+    let at_path = |e: Error| state_error(path, e);
     let too_long = |most: usize| {
         CliError::failed(format!(
             "{}: name too long: a symlink target here is at most {most} bytes",
@@ -2070,7 +2110,7 @@ fn linkable<'p>(
 
     let inode = if symbolic {
         if source.is_empty() {
-            return Err(CliError::failed(format!(
+            return Err(CliError::refused_by_state(format!(
                 "{}: not found: a symlink target cannot be empty",
                 show(path)
             )));
@@ -2158,7 +2198,7 @@ fn truncate(target: &OsString, offset: u64, path: &[u8], size: u64) -> Result<Ou
     {
         return Err(driver_error(path, fs_ext4::Error::FileTooLarge));
     }
-    edit(target, offset, path, |fs| fs.apply_truncate_ino(ino, size))?;
+    edit_namespace(target, offset, path, |fs| fs.apply_truncate_ino(ino, size))?;
     let mut fields = path_fields(path);
     fields.push(("size", Json::from(size)));
     let text = format!("{} is {size} bytes", show(path));
@@ -2202,9 +2242,9 @@ fn truncatable(fs: &Filesystem, path: &[u8], size: u64) -> Result<u32, CliError>
 /// key for its blocks.
 fn existing_file(fs: &Filesystem, path: &[u8]) -> Result<(u32, Inode), CliError> {
     use fs_ext4::Error;
-    let refuse = |e: Error| driver_error(path, e);
+    let refuse = |e: Error| state_error(path, e);
     if path.is_empty() {
-        return Err(CliError::failed("an empty path: not found"));
+        return Err(CliError::refused_by_state("an empty path: not found"));
     }
     let mut ino = fs_ext4::path::EXT4_ROOT_INODE;
     let mut inode = fs.stat_ino(ino).map_err(refuse)?;
@@ -2262,7 +2302,7 @@ fn write_at(target: &OsString, offset: u64, path: &[u8], at: u64) -> Result<Outc
     let size = if data.is_empty() {
         inode.size
     } else {
-        edit(target, offset, path, |fs| {
+        edit_namespace(target, offset, path, |fs| {
             fs.apply_pwrite_ino(ino, at, &data)
         })?
     };

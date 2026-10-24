@@ -65,17 +65,22 @@ fn the_volume_is_clean_after_the_writes() {
 fn refusals_are_structured_and_leave_the_image_alone() {
     let img = written_image("refusals");
     let before = std::fs::read(&img).unwrap();
+    // The volume's state refuses these: exit 4, `refused`, in the CLI
+    // contract (EXIT_REFUSED), with the JSON error on stderr.
     let cases: Vec<(Vec<&str>, &str)> = vec![
         (vec!["mkdir", "/d"], "already exists"),
         (vec!["mkdir", "/missing/child"], "not found"),
+        (vec!["rmdir", "/d"], "directory not empty"),
     ];
     for (args, says) in cases {
         let mut full = vec![img.as_str()];
         full.extend(&args);
         let out = tool("fs.ext4").args(&full).output().unwrap();
-        assert_eq!(out.status.code(), Some(1), "{args:?}");
+        let err = stderr(&out);
+        assert_eq!(out.status.code(), Some(4), "{args:?}: {err}");
         assert!(out.stdout.is_empty(), "{args:?}");
-        assert!(stderr(&out).contains(says), "{args:?}: {}", stderr(&out));
+        assert!(err.contains("\"code\": 4"), "{args:?}: {err}");
+        assert!(err.contains(says), "{args:?}: {err}");
     }
     for (path, says) in [("/missing/file", "not found"), ("/d", "is a directory")] {
         let out = fs_write(&img, path, b"x");
@@ -89,7 +94,7 @@ fn refusals_are_structured_and_leave_the_image_alone() {
     }
     assert!(
         std::fs::read(&img).unwrap() == before,
-        "a refused write or mkdir changed the image"
+        "a refused write, mkdir or rmdir changed the image"
     );
 }
 

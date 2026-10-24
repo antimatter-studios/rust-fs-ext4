@@ -86,7 +86,11 @@ rust-fs-ext4 doctor                        # is every tool on PATH ours?
 - **Output.** Metadata is JSON on stdout by default (`--text` for people);
   `read`, `write` and `xattr PATH NAME` carry raw bytes. A failure is
   `{"error": "...", "code": N}` on stderr, and `N` is the exit status: 1
-  failed, 2 wrong command line, 3 not implemented. `fsck.ext4` keeps
+  failed, 2 wrong command line, 3 not implemented, 4 refused by the
+  volume's state (`rm`, `rmdir`, `mv`, `ln`, `mkdir`, `truncate` or
+  `write --at` meeting a directory that is not empty, a name already there,
+  a missing target or a part of the path that is not a directory).
+  `fsck.ext4` keeps
   fsck(8)'s statuses instead: 0 clean, 1 corrected, 4 uncorrected, 8
   operational error, 16 usage.
 - **`ls --recursive`** (`-R`) walks the tree under PATH: each entry is the
