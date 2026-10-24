@@ -1490,8 +1490,9 @@ pub unsafe extern "C" fn fs_ext4_listxattr(
             };
 
             // Names only: resolving EA-inode values here read every one and
-            // failed the listing on any unreadable one (#122).
-            let names = match xattr::list_names(fs_ref, &inode, &inode_raw) {
+            // failed the listing on any unreadable one (#122). Each name's
+            // exact bytes, which need not be UTF-8 (#541).
+            let names = match xattr::list_raw_names(fs_ref, &inode, &inode_raw) {
                 Ok(v) => v,
                 Err(e) => {
                     set_err_from(&e, &format!("listxattr {path_str}"));
@@ -1504,8 +1505,7 @@ pub unsafe extern "C" fn fs_ext4_listxattr(
             if !buf.is_null() && bufsize > 0 {
                 let out = std::slice::from_raw_parts_mut(buf.cast::<u8>(), bufsize);
                 let mut pos = 0;
-                for name in &names {
-                    let name_bytes = name.as_bytes();
+                for name_bytes in &names {
                     let needed = name_bytes.len() + 1;
                     if pos + needed > bufsize {
                         break;

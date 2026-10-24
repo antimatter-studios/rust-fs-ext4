@@ -58,8 +58,8 @@ pub fn prefix_for_index(idx: u8) -> Option<&'static str> {
 ///
 /// `#[non_exhaustive]` (#120): the fields stay public to read, but a struct
 /// literal outside this crate is refused, so the next field the on-disk entry
-/// needs is not a break. Build one with [`XattrEntry::new`] or
-/// [`XattrEntry::in_ea_inode`].
+/// needs is not a break. Build one with [`XattrEntry::new`],
+/// [`XattrEntry::with_raw_name`] or [`XattrEntry::in_ea_inode`].
 ///
 /// Equality covers every field, `value_inum` and `value_size` included: an
 /// entry whose value lives in an EA inode never equals an inline one, even
@@ -67,8 +67,15 @@ pub fn prefix_for_index(idx: u8) -> Option<&'static str> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct XattrEntry {
-    /// Fully-qualified name, e.g. "user.com.apple.FinderInfo".
+    /// Fully-qualified name, e.g. "user.com.apple.FinderInfo", for a person:
+    /// [`raw_name`](Self::raw_name) shown lossily.
     pub name: String,
+    /// The fully-qualified name's exact bytes, namespace prefix included.
+    ///
+    /// Linux takes any bytes but NUL in a name, so `user.raw-\xff` is a
+    /// name a volume can hold; `name` shows it as `user.raw-\u{fffd}`,
+    /// which names nothing. A lookup matches these bytes (#541).
+    pub raw_name: Vec<u8>,
     /// Raw value bytes (Finder uses binary data, ACLs are binary, etc.).
     ///
     /// **Empty when `value_inum` is non-zero**, because the bytes are not
@@ -102,10 +109,19 @@ impl XattrEntry {
     /// Panics if the value is longer than `u32::MAX` bytes, which no ext4
     /// entry can describe.
     pub fn new(name: impl Into<String>, value: impl Into<Vec<u8>>) -> Self {
+        let name: String = name.into();
+        Self::with_raw_name(name.into_bytes(), value)
+    }
+
+    /// [`new`](Self::new) for a name given as its exact bytes, which need
+    /// not be UTF-8: `name` is their lossy form.
+    pub fn with_raw_name(raw_name: impl Into<Vec<u8>>, value: impl Into<Vec<u8>>) -> Self {
         let value = value.into();
         let value_size = u32::try_from(value.len()).expect("an xattr value fits in u32");
+        let raw_name: Vec<u8> = raw_name.into();
         Self {
-            name: name.into(),
+            name: String::from_utf8_lossy(&raw_name).into_owned(),
+            raw_name,
             value,
             value_inum: 0,
             value_size,
@@ -116,9 +132,32 @@ impl XattrEntry {
     /// the parsers produce one: `value` empty, and `value_size` the length
     /// the entry declares.
     pub fn in_ea_inode(name: impl Into<String>, value_inum: u32, value_size: u32) -> Self {
+        let name: String = name.into();
         Self {
-            name: name.into(),
+            raw_name: name.clone().into_bytes(),
+            name,
             value: Vec::new(),
+            value_inum,
+            value_size,
+        }
+    }
+
+    /// An entry as a parser reads one: `prefix` and the stored name bytes,
+    /// which need not be UTF-8.
+    fn parsed(
+        prefix: &str,
+        name_bytes: &[u8],
+        value: Vec<u8>,
+        value_inum: u32,
+        value_size: u32,
+    ) -> Self {
+        let mut raw_name = Vec::with_capacity(prefix.len() + name_bytes.len());
+        raw_name.extend_from_slice(prefix.as_bytes());
+        raw_name.extend_from_slice(name_bytes);
+        Self {
+            name: String::from_utf8_lossy(&raw_name).into_owned(),
+            raw_name,
+            value,
             value_inum,
             value_size,
         }
@@ -217,11 +256,10 @@ fn parse_entries(entries_buf: &[u8], _region_len: usize, out: &mut Vec<XattrEntr
             return Err(Error::Corrupt("xattr entry name overruns region"));
         }
 
+        // Any bytes but NUL: a name that is not UTF-8 is not corruption,
+        // and refusing it here refused every attribute on the inode (#541).
         let name_bytes = &entries_buf[pos + 16..pos + 16 + name_len];
         let prefix = prefix_for_index(name_index).unwrap_or("");
-        let suffix =
-            std::str::from_utf8(name_bytes).map_err(|_| Error::Corrupt("xattr name not utf-8"))?;
-        let full_name = format!("{prefix}{suffix}");
 
         // AN EA-INODE ENTRY'S VALUE IS NOT HERE. `e_value_offs` describes
         // nothing once `e_value_inum` is set, so slicing at it returns
@@ -239,12 +277,13 @@ fn parse_entries(entries_buf: &[u8], _region_len: usize, out: &mut Vec<XattrEntr
             Vec::new()
         };
 
-        out.push(XattrEntry {
-            name: full_name,
+        out.push(XattrEntry::parsed(
+            prefix,
+            name_bytes,
             value,
             value_inum,
-            value_size: value_size as u32,
-        });
+            value_size as u32,
+        ));
 
         pos += entry_padded;
     }
@@ -279,11 +318,9 @@ fn parse_entries_block(block: &[u8], out: &mut Vec<XattrEntry>) -> Result<()> {
             return Err(Error::Corrupt("xattr entry name overruns block"));
         }
 
+        // See `parse_entries`: any bytes but NUL (#541).
         let name_bytes = &block[pos + 16..pos + 16 + name_len];
         let prefix = prefix_for_index(name_index).unwrap_or("");
-        let suffix =
-            std::str::from_utf8(name_bytes).map_err(|_| Error::Corrupt("xattr name not utf-8"))?;
-        let full_name = format!("{prefix}{suffix}");
 
         // See `parse_entries`: with `e_value_inum` set the value is in
         // another inode's body, not at `e_value_offs` in this block.
@@ -298,12 +335,13 @@ fn parse_entries_block(block: &[u8], out: &mut Vec<XattrEntry>) -> Result<()> {
             Vec::new()
         };
 
-        out.push(XattrEntry {
-            name: full_name,
+        out.push(XattrEntry::parsed(
+            prefix,
+            name_bytes,
             value,
             value_inum,
-            value_size: value_size as u32,
-        });
+            value_size as u32,
+        ));
 
         pos += entry_padded;
     }
@@ -935,6 +973,9 @@ fn check_block_of(fs: &Filesystem, inode: &Inode) -> Result<()> {
 }
 
 /// Convenience: get a single xattr value by name. Returns `None` if not present.
+///
+/// The name is matched as bytes against [`XattrEntry::raw_name`]; one that
+/// is not UTF-8 is found with [`get_resolved_raw`].
 pub fn get(
     dev: &dyn BlockDevice,
     inode: &Inode,
@@ -944,7 +985,10 @@ pub fn get(
     name: &str,
 ) -> Result<Option<Vec<u8>>> {
     let all = read_all(dev, inode, inode_raw, inode_size, block_size)?;
-    Ok(all.into_iter().find(|e| e.name == name).map(|e| e.value))
+    Ok(all
+        .into_iter()
+        .find(|e| e.raw_name == name.as_bytes())
+        .map(|e| e.value))
 }
 
 /// Every xattr on `inode`, with EA-inode values followed.
@@ -992,18 +1036,35 @@ pub fn read_all_resolved(
 /// discard it -- and fails the whole listing when one of those values
 /// cannot be read, though every name was right there. A names-only listing
 /// does not depend on any value being readable.
+///
+/// A name that is not UTF-8 is listed lossily, which names nothing on the
+/// volume; [`list_raw_names`] gives each name's exact bytes.
 pub fn list_names(fs: &Filesystem, inode: &Inode, inode_raw: &[u8]) -> Result<Vec<String>> {
+    Ok(names_of(fs, inode, inode_raw)?
+        .into_iter()
+        .map(|e| e.name)
+        .collect())
+}
+
+/// [`list_names`] with each name's exact bytes, which need not be UTF-8
+/// (#541): what `fs_ext4_listxattr` hands back.
+pub fn list_raw_names(fs: &Filesystem, inode: &Inode, inode_raw: &[u8]) -> Result<Vec<Vec<u8>>> {
+    Ok(names_of(fs, inode, inode_raw)?
+        .into_iter()
+        .map(|e| e.raw_name)
+        .collect())
+}
+
+/// Every entry of `inode`, EA-inode values left unread.
+fn names_of(fs: &Filesystem, inode: &Inode, inode_raw: &[u8]) -> Result<Vec<XattrEntry>> {
     check_block_of(fs, inode)?;
-    Ok(read_all(
+    read_all(
         fs.dev.as_ref(),
         inode,
         inode_raw,
         fs.sb.inode_size,
         fs.sb.block_size(),
-    )?
-    .into_iter()
-    .map(|e| e.name)
-    .collect())
+    )
 }
 
 /// One xattr by fully-qualified name, with an EA-inode value followed.
@@ -1014,6 +1075,17 @@ pub fn get_resolved(
     inode_raw: &[u8],
     name: &str,
 ) -> Result<Option<Vec<u8>>> {
+    get_resolved_raw(fs, inode, inode_raw, name.as_bytes())
+}
+
+/// [`get_resolved`] for a name given as its exact bytes, which need not be
+/// UTF-8 (#541): matched against [`XattrEntry::raw_name`].
+pub fn get_resolved_raw(
+    fs: &Filesystem,
+    inode: &Inode,
+    inode_raw: &[u8],
+    name: &[u8],
+) -> Result<Option<Vec<u8>>> {
     check_block_of(fs, inode)?;
     let Some(entry) = read_all(
         fs.dev.as_ref(),
@@ -1023,7 +1095,7 @@ pub fn get_resolved(
         fs.sb.block_size(),
     )?
     .into_iter()
-    .find(|e| e.name == name) else {
+    .find(|e| e.raw_name == name) else {
         return Ok(None);
     };
     if entry.value_inum != 0 {
@@ -1209,6 +1281,173 @@ mod tests {
         let mut region = vec![0u8; 64];
         let err = plan_set_in_inode_region(&mut region, "weird.key", b"v").unwrap_err();
         assert!(matches!(err, Error::InvalidArgument(_)));
+    }
+
+    /// `raw-\xff`: Linux takes any bytes but NUL in an attribute name, so
+    /// a volume can hold `user.raw-\xff`, which is not UTF-8.
+    const RAW: &[u8] = b"raw-\xff";
+
+    fn entry(name_index: u8, name_bytes: &[u8], value: &[u8]) -> DecodedEntry {
+        DecodedEntry {
+            name_index,
+            name_bytes: name_bytes.to_vec(),
+            value: value.to_vec(),
+            value_inum: 0,
+        }
+    }
+
+    fn names_and_values(parsed: &[XattrEntry]) -> Vec<(&str, &[u8])> {
+        parsed
+            .iter()
+            .map(|e| (e.name.as_str(), e.value.as_slice()))
+            .collect()
+    }
+
+    /// A name that is not UTF-8 is not corruption: the in-inode parser
+    /// reads it, shown lossily, and every attribute beside it (#541).
+    #[test]
+    fn a_name_that_is_not_utf8_is_read_with_the_others_in_the_inode() {
+        let mut region = vec![0u8; 96];
+        encode_in_inode_entries(
+            &mut region,
+            &[entry(1, RAW, b"raw"), entry(1, b"ok", b"fine")],
+        );
+        let mut parsed = Vec::new();
+        parse_entries(&region[4..], region.len() - 4, &mut parsed)
+            .expect("a name that is not UTF-8 is not corruption");
+        assert_eq!(
+            names_and_values(&parsed),
+            [
+                ("user.ok", b"fine".as_slice()),
+                ("user.raw-\u{fffd}", b"raw".as_slice()),
+            ]
+        );
+    }
+
+    /// The same in an external block, whose parser is a separate one.
+    #[test]
+    fn a_name_that_is_not_utf8_is_read_with_the_others_in_a_block() {
+        let mut block = vec![0u8; 4096];
+        encode_external_block(
+            &mut block,
+            &[entry(1, RAW, b"raw"), entry(4, b"ok", b"fine")],
+            1,
+        );
+        let mut parsed = Vec::new();
+        parse_entries_block(&block, &mut parsed)
+            .expect("a name that is not UTF-8 is not corruption");
+        assert_eq!(
+            names_and_values(&parsed),
+            [
+                ("user.raw-\u{fffd}", b"raw".as_slice()),
+                ("trusted.ok", b"fine".as_slice()),
+            ]
+        );
+    }
+
+    /// A device nothing is read from: these inodes have no external block.
+    struct NoDev;
+
+    impl BlockDevice for NoDev {
+        fn read_at(&self, _: u64, _: &mut [u8]) -> Result<()> {
+            unreachable!("no external attribute block")
+        }
+        fn write_at(&self, _: u64, _: &[u8]) -> Result<()> {
+            unreachable!()
+        }
+        fn size_bytes(&self) -> u64 {
+            0
+        }
+    }
+
+    /// An inline file's bytes past the first 60 are its `system.data`
+    /// attribute, found among the inode's attributes by name. A name
+    /// beside it that is not UTF-8 leaves the file readable, and a lookup
+    /// by its lossy spelling finds nothing: names are matched as bytes
+    /// (#541).
+    #[test]
+    fn an_inline_file_beside_a_name_that_is_not_utf8_reads_back() {
+        let content: Vec<u8> = (0..80u8).collect();
+        let mut raw = vec![0u8; 256];
+        raw[0x00..0x02].copy_from_slice(&0o100_644u16.to_le_bytes()); // i_mode
+        raw[0x04..0x08].copy_from_slice(&80u32.to_le_bytes()); // i_size_lo
+        raw[0x28..0x28 + 60].copy_from_slice(&content[..60]); // i_block
+        raw[0x80..0x82].copy_from_slice(&32u16.to_le_bytes()); // i_extra_isize
+        encode_in_inode_entries(
+            &mut raw[160..],
+            &[entry(7, b"data", &content[60..]), entry(1, RAW, b"raw")],
+        );
+        let inode = Inode::parse(&raw).unwrap();
+        assert_eq!(
+            crate::inline_data::read_all(&NoDev, &inode, &raw, 256, 4096)
+                .expect("the inline file reads"),
+            content
+        );
+        assert_eq!(
+            get(&NoDev, &inode, &raw, 256, 4096, "user.raw-\u{fffd}").unwrap(),
+            None,
+            "the lossy spelling is not the name"
+        );
+    }
+
+    /// What the parsers read keeps each name's exact bytes, prefix
+    /// included, and equals what the constructors build: `with_raw_name`
+    /// for a name that is not UTF-8, `new` for one that is, an ACL's
+    /// implied name among them (#541).
+    #[test]
+    fn a_parsed_name_keeps_its_exact_bytes() {
+        let entries = [
+            entry(1, RAW, b"raw"),
+            entry(1, b"ok", b"fine"),
+            entry(2, b"", b"acl"),
+        ];
+        let mut region = vec![0u8; 128];
+        encode_in_inode_entries(&mut region, &entries);
+        let mut in_inode = Vec::new();
+        parse_entries(&region[4..], region.len() - 4, &mut in_inode).unwrap();
+        let raw = XattrEntry::with_raw_name(b"user.raw-\xff".to_vec(), b"raw".to_vec());
+        let ok = XattrEntry::new("user.ok", b"fine".to_vec());
+        let acl = XattrEntry::new("system.posix_acl_access", b"acl".to_vec());
+        assert_eq!(in_inode, [ok.clone(), raw.clone(), acl.clone()]);
+
+        let mut block = vec![0u8; 4096];
+        encode_external_block(&mut block, &entries, 1);
+        let mut in_block = Vec::new();
+        parse_entries_block(&block, &mut in_block).unwrap();
+        assert_eq!(in_block, [ok, raw.clone(), acl]);
+
+        assert_eq!(raw.raw_name, b"user.raw-\xff");
+        assert_eq!(raw.name, "user.raw-\u{fffd}");
+        assert_eq!(
+            XattrEntry::new("user.ok", Vec::new()).raw_name,
+            b"user.ok",
+            "new keeps a UTF-8 name's bytes"
+        );
+        assert_eq!(
+            XattrEntry::in_ea_inode("user.big", 42, 70_000).raw_name,
+            b"user.big"
+        );
+    }
+
+    /// `get` matches the exact bytes of a UTF-8 name beside one that is
+    /// not, in the inode and in the external block alike.
+    #[test]
+    fn get_finds_a_name_beside_one_that_is_not_utf8() {
+        let mut raw = vec![0u8; 256];
+        raw[0x80..0x82].copy_from_slice(&32u16.to_le_bytes()); // i_extra_isize
+        encode_in_inode_entries(
+            &mut raw[160..],
+            &[entry(1, RAW, b"raw"), entry(1, b"ok", b"fine")],
+        );
+        let inode = Inode::parse(&raw).unwrap();
+        assert_eq!(
+            get(&NoDev, &inode, &raw, 256, 4096, "user.ok").unwrap(),
+            Some(b"fine".to_vec())
+        );
+        assert_eq!(
+            get(&NoDev, &inode, &raw, 256, 4096, "user.raw-").unwrap(),
+            None
+        );
     }
 
     /// attributes.html: external-block entries are sorted by

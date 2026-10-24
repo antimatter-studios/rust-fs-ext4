@@ -1279,8 +1279,10 @@ fn deliver(
 /// `xattr PATH [NAME]`: the extended attributes PATH's own inode holds --
 /// a symlink's, never its target's -- as the library reads them, values
 /// in an EA inode followed. Without NAME, each name, namespace prefix
-/// included, and the size of its value, sorted by name bytes; with NAME,
-/// that value's raw bytes, written the way `read` writes a file's.
+/// included, and the size of its value, sorted by name bytes, a name that
+/// is not UTF-8 shown lossily with its exact bytes in `name_hex`; with
+/// NAME, matched as raw bytes, that value's raw bytes, written the way
+/// `read` writes a file's.
 /// Everything is the inode's stored bytes: an ACL in ext4's compact form,
 /// and the tail of an inline file or directory as `system.data`, which a
 /// mounted kernel does not list.
@@ -1297,14 +1299,13 @@ fn xattr(
         .read_inode_verified(ino)
         .map_err(|e| driver_error(path, e))?;
     if let Some(name) = name {
-        // The library's names are UTF-8, so a NAME that is not names
-        // nothing on this volume.
-        let value = match std::str::from_utf8(name) {
-            Ok(name) => fs_ext4::xattr::get_resolved(fs, &inode, &raw, name)
-                .map_err(|e| driver_error(path, e))?,
-            Err(_) => None,
-        }
-        .ok_or_else(|| CliError::failed(format!("{}: no attribute {}", show(path), show(name))))?;
+        // Any bytes but NUL name an attribute, so NAME is matched as the
+        // bytes it is, UTF-8 or not (#541).
+        let value = fs_ext4::xattr::get_resolved_raw(fs, &inode, &raw, name)
+            .map_err(|e| driver_error(path, e))?
+            .ok_or_else(|| {
+                CliError::failed(format!("{}: no attribute {}", show(path), show(name)))
+            })?;
         deliver(output, |sink| {
             sink.write_all(&value)
                 .and_then(|()| sink.flush())
@@ -1314,7 +1315,7 @@ fn xattr(
     }
     let mut attrs =
         fs_ext4::xattr::read_all_resolved(fs, &inode, &raw).map_err(|e| driver_error(path, e))?;
-    attrs.sort_by(|a, b| a.name.cmp(&b.name));
+    attrs.sort_by(|a, b| a.raw_name.cmp(&b.raw_name));
     let text: Vec<String> = attrs
         .iter()
         .map(|a| format!("{}\t{}", a.value.len(), a.name))
@@ -1322,10 +1323,20 @@ fn xattr(
     let entries = attrs
         .into_iter()
         .map(|a| {
-            Json::object([
-                ("name", Json::from(a.name)),
-                ("size", Json::from(a.value.len() as u64)),
-            ])
+            let mut fields = vec![("name", Json::from(a.name))];
+            if std::str::from_utf8(&a.raw_name).is_err() {
+                fields.push((
+                    "name_hex",
+                    Json::from(
+                        a.raw_name
+                            .iter()
+                            .map(|b| format!("{b:02x}"))
+                            .collect::<String>(),
+                    ),
+                ));
+            }
+            fields.push(("size", Json::from(a.value.len() as u64)));
+            Json::object(fields)
         })
         .collect();
     Ok(Outcome::report(Json::Arr(entries)).with_text(text.join("\n")))
