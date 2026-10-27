@@ -507,8 +507,13 @@ impl transfer::TreeSink for TreeImport {
         let ino = fs.lookup_path_bytes(&path_bytes(path)).map_err(error)?;
         let (atime, atime_nsec) = stored_time(accessed);
         let (mtime, mtime_nsec) = stored_time(modified);
+        // A time outside what this inode can hold is refused before any
+        // write, never truncated into one it can.
         fs.apply_utimens_ino(ino, atime, atime_nsec, mtime, mtime_nsec)
-            .map_err(error)?;
+            .map_err(|e| match e {
+                fs_ext4::Error::InvalidArgument(_) => CliError::refused(e.to_string()),
+                e => error(e),
+            })?;
         fs.finish().map_err(error)
     }
 }
