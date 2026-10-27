@@ -109,7 +109,7 @@ fn export_carries_what_the_kernel_set_and_refuses_a_namespace_the_host_cannot_ho
              setfattr -n user.comment -v 'hello world' tree/f\n\
              setfattr -n user.bin -v 0x00ff0a00ff tree/f\n\
              setfattr -n user.empty -v '\"\"' tree/f\n\
-             setfattr -n user.medium -v \"0x$(head -c 1500 /dev/zero | tr '\\0' 'a' | od -An -tx1 | tr -d ' \\n')\" tree/f\n\
+             setfattr -n user.medium -v \"0x$(head -c 1500 /dev/zero | tr '\\0' 'a' | od -An -v -tx1 | tr -d ' \\n')\" tree/f\n\
              setfattr -n user.dir -v dirvalue tree/sub\n\
              setfattr -n user.ok -v fine tree/priv\n\
              setfattr -n trusted.audit -v 0x7472757374656400ff tree/priv\n\
