@@ -329,7 +329,7 @@ fn recursive_export_preserves_kernel_links_and_times() {
     assert_ne!(ino(&plain, "file"), ino(&plain, "hard"));
     std::fs::remove_dir_all(&plain).unwrap();
 
-    let dest = sub_second_dest("export-tree-links");
+    let dest = sub_second_path("export-tree-links");
     let _ = std::fs::remove_dir_all(&dest);
     let out = tool("fs.ext4")
         .args([
@@ -448,40 +448,4 @@ fn single_file_export_refuses_preserve_without_recursive() {
         before,
         "export wrote the source"
     );
-}
-
-/// A destination whose filesystem keeps sub-second times, which
-/// `--preserve=times` reports as failed otherwise. The scratch root is the
-/// repository's `tmp`, and when this suite runs in the harness guest that
-/// is the 9p share, which keeps no nanoseconds; there the export goes to
-/// the guest's own `/var/tmp`. Neither keeping them fails, naming both.
-fn sub_second_dest(tag: &str) -> String {
-    let scratch = image_path(tag);
-    let name = Path::new(&scratch).file_name().unwrap().to_owned();
-    let local = Path::new("/var/tmp")
-        .join(name)
-        .to_string_lossy()
-        .into_owned();
-    for dest in [&scratch, &local] {
-        if keeps_sub_second_times(Path::new(dest).parent().unwrap()) {
-            return dest.clone();
-        }
-    }
-    panic!("neither {scratch}'s directory nor /var/tmp keeps sub-second times, which --preserve=times needs");
-}
-
-/// Whether a file in `dir` keeps the nanoseconds of the access and
-/// modification times set on it.
-fn keeps_sub_second_times(dir: &Path) -> bool {
-    let probe = dir.join(format!(".sub-second-probe-{}", std::process::id()));
-    let at = std::time::UNIX_EPOCH + std::time::Duration::new(1_000_000_000, 123_456_789);
-    let kept = std::fs::create_dir_all(dir).is_ok()
-        && std::fs::File::create(&probe)
-            .and_then(|f| f.set_times(std::fs::FileTimes::new().set_accessed(at).set_modified(at)))
-            .is_ok()
-        && std::fs::metadata(&probe)
-            .and_then(|m| Ok((m.accessed()?, m.modified()?)))
-            .is_ok_and(|(a, m)| a == at && m == at);
-    let _ = std::fs::remove_file(&probe);
-    kept
 }

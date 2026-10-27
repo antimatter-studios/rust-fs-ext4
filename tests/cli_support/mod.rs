@@ -86,6 +86,43 @@ pub fn image_path(tag: &str) -> String {
     path
 }
 
+/// A fresh path, not yet created, on a filesystem that keeps sub-second
+/// times: what `--preserve=times` reads them from or writes them to. The
+/// scratch root is the repository's `tmp`, and when the suite runs in the
+/// harness guest that is the 9p share, which keeps no nanoseconds; there
+/// the path is in the guest's own `/var/tmp`. Neither keeping them fails,
+/// naming both.
+pub fn sub_second_path(tag: &str) -> String {
+    let scratch = image_path(tag);
+    let name = Path::new(&scratch).file_name().unwrap().to_owned();
+    let local = Path::new("/var/tmp")
+        .join(name)
+        .to_string_lossy()
+        .into_owned();
+    for path in [&scratch, &local] {
+        if keeps_sub_second_times(Path::new(path).parent().unwrap()) {
+            return path.clone();
+        }
+    }
+    panic!("neither {scratch}'s directory nor /var/tmp keeps sub-second times, which --preserve=times needs");
+}
+
+/// Whether a file in `dir` keeps the nanoseconds of the access and
+/// modification times set on it.
+pub fn keeps_sub_second_times(dir: &Path) -> bool {
+    let probe = dir.join(format!(".sub-second-probe-{}", std::process::id()));
+    let at = std::time::UNIX_EPOCH + std::time::Duration::new(1_000_000_000, 123_456_789);
+    let kept = std::fs::create_dir_all(dir).is_ok()
+        && std::fs::File::create(&probe)
+            .and_then(|f| f.set_times(std::fs::FileTimes::new().set_accessed(at).set_modified(at)))
+            .is_ok()
+        && std::fs::metadata(&probe)
+            .and_then(|m| Ok((m.accessed()?, m.modified()?)))
+            .is_ok_and(|(a, m)| a == at && m == at);
+    let _ = std::fs::remove_file(&probe);
+    kept
+}
+
 /// A sparse file of `size` bytes, ready to format.
 pub fn sized_image(tag: &str, size: u64) -> String {
     let path = image_path(tag);

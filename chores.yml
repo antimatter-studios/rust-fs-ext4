@@ -593,7 +593,8 @@ tasks:
       # #559 adds one trailing-slash symlink comparison in cli_path_symlink_kernel.rs.
       # cli_export_tree_kernel.rs adds one single-file --preserve refusal case (#577).
       # cli_import_tree_kernel.rs adds two recursive import cases (#550).
-      - 'bash ../rust-fs-core/scripts/test-floor.sh kernel 61'
+      # cli_import_preserve_kernel.rs adds two --preserve=times,links cases (#526).
+      - 'bash ../rust-fs-core/scripts/test-floor.sh kernel 63'
 
   test:lwext4:
     desc: 'CROSS-VALIDATION: lwext4 — a third implementation, built in the guest — reads what we wrote, and we read what it wrote'
@@ -695,7 +696,8 @@ tasks:
         # #559 adds one unit case and one kernel case.
         # #577 adds one kernel case.
         # cli_import_tree_kernel.rs adds two kernel cases (#550).
-        bash ../rust-fs-core/scripts/test-floor.sh vm 1076
+        # cli_import_preserve_kernel.rs adds two kernel cases (#526).
+        bash ../rust-fs-core/scripts/test-floor.sh vm 1078
 
   test:
     desc: 'Everything, exactly as CI runs it — natively on Linux, inside the VM anywhere else'
@@ -743,7 +745,8 @@ tasks:
       # #559 adds one unit case and one kernel case.
       # #577 adds one kernel case.
       # cli_import_tree_kernel.rs adds two kernel cases (#550).
-      - 'bash ../rust-fs-core/scripts/test-floor.sh suite 1076'
+      # cli_import_preserve_kernel.rs adds two kernel cases (#526).
+      - 'bash ../rust-fs-core/scripts/test-floor.sh suite 1078'
       - task: test:scripts
       # The command-line tools, built and staged from this checkout, then
       # tested as installed. A separate invocation because test:cli reads
