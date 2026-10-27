@@ -95,7 +95,9 @@ on:
 
 # A newer push to a pull request cancels the run still going on the older one,
 # except while the pull request's title starts "red:". Such a pull request
-# holds only its failing test, and its run is the red evidence: it gets a group
+# holds only its failing test, and its run is the red evidence: it runs the
+# full profile (scripts/ci-plan.sh), so a kernel or VM test fails there, and
+# it gets a group
 # of its own commit and is never cancelled, so the push that adds the fix, made
 # after the title loses "red:", cannot cancel it either. Keyed by the commit
 # because GitHub keeps one pending run per group even with cancelling off: a
@@ -134,7 +136,8 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       code: ${{ steps.c.outputs.code }}
-      # quick for a pull request, full for everything else (scripts/ci-plan.sh).
+      # quick for a pull request, full for a "red:" pull request and for
+      # everything else (scripts/ci-plan.sh).
       profile: ${{ steps.plan.outputs.profile }}
     steps:
       - uses: actions/checkout@v4
@@ -150,9 +153,10 @@ jobs:
         id: plan
         env:
           EVENT: ${{ github.event_name }}
+          TITLE: ${{ github.event.pull_request.title }}
         run: |
           set -euo pipefail
-          profile="$(bash scripts/ci-plan.sh "$EVENT")"
+          profile="$(bash scripts/ci-plan.sh "$EVENT" "$TITLE")"
           echo "profile=$profile ($EVENT)"
           echo "profile=$profile" >> "$GITHUB_OUTPUT"
       - name: Classify the change

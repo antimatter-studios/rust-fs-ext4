@@ -1,7 +1,8 @@
 //! The CI profile's plan and verdict, as a truth table.
 //!
 //! `scripts/ci-plan.sh` says which profile an event runs: a pull request
-//! runs the quick one (unit, lint, semver, msrv, provenance), and every
+//! runs the quick one (unit, lint, semver, msrv, provenance) unless its
+//! title starts `red:`, and every
 //! other event, the merge queue, a push, a tag, a manual dispatch, a
 //! workflow_call and any event not known here, runs the full one.
 //! `scripts/ci-ok.sh` is the `ci-ok` verdict: it accepts a skipped job
@@ -72,13 +73,14 @@ fn assert_guard_is_wired() {
         .expect("ci.yml runs scripts/test-ci-plan.sh");
     let changes = ci.find("\n  changes:\n").expect("ci.yml has a changes job");
     let plan = ci
-        .find("profile=\"$(bash scripts/ci-plan.sh \"$EVENT\")\"")
+        .find("profile=\"$(bash scripts/ci-plan.sh \"$EVENT\" \"$TITLE\")\"")
         .expect("ci.yml plans the profile with scripts/ci-plan.sh");
     assert!(
         changes < grade && grade < plan,
         "the guard must run in changes, before the plan"
     );
     assert!(ci.contains("EVENT: ${{ github.event_name }}"));
+    assert!(ci.contains("TITLE: ${{ github.event.pull_request.title }}"));
 }
 
 fn assert_guard_grades(rows: &[&str]) {
@@ -101,6 +103,18 @@ fn only_a_pull_request_runs_the_quick_profile() {
         "ci-plan.sh\" pull_request)\" && [[ \"$got\" == quick ]]",
         "for event in merge_group push workflow_dispatch workflow_call schedule release \"\" pull_request_target; do",
         "[[ \"$got\" == full ]]",
+    ]);
+}
+
+/// A `red:` pull request's run is its red evidence, so it runs the full
+/// profile: a kernel, VM or fixture test it adds runs there and fails.
+#[test]
+fn a_red_pull_request_runs_the_full_profile() {
+    assert_guard_grades(&[
+        "for title in \"red: a kernel test fails\" \"red:\" \"Red: a capital\" \"RED: shouting\"; do",
+        "ci-plan.sh\" pull_request \"$title\")\" && [[ \"$got\" == full ]]",
+        "for title in \"\" \"fix: red: later\" \" red: a leading space\" \"redo: not red\" \"red a missing colon\"; do",
+        "ci-plan.sh\" pull_request \"$title\")\" && [[ \"$got\" == quick ]]",
     ]);
 }
 
