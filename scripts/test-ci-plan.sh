@@ -2,7 +2,8 @@
 # The CI profile's plan and verdict, graded as a truth table.
 #
 # scripts/ci-plan.sh says which profile an event runs: a pull request runs
-# the quick one, every other event the full one. scripts/ci-ok.sh is the
+# the quick one, unless its title starts "red:", and every other event the
+# full one. scripts/ci-ok.sh is the
 # ci-ok verdict: it accepts a skipped job only where that plan skipped it,
 # and refuses a missing or invalid plan, a missing job, and any failure or
 # cancellation. Each row is pinned here so a profile cannot quietly drop a
@@ -72,6 +73,22 @@ got="$(bash "$here/ci-plan.sh" pull_request)" && [[ "$got" == quick ]] && ok || 
 for event in merge_group push workflow_dispatch workflow_call schedule release "" pull_request_target; do
   got="$(bash "$here/ci-plan.sh" "$event")" && [[ "$got" == full ]] && ok ||
     fail "event '$event' planned '$got', must run the full profile"
+done
+
+# a red: pull request runs the full profile: its run is the red evidence, so a
+# kernel, VM or fixture test it adds must run there to fail. GitHub's
+# startsWith, which keeps the run uncancelled, ignores case; so does the plan.
+for title in "red: a kernel test fails" "red:" "Red: a capital" "RED: shouting"; do
+  got="$(bash "$here/ci-plan.sh" pull_request "$title")" && [[ "$got" == full ]] && ok ||
+    fail "pull_request titled '$title' planned '$got', want full"
+done
+for title in "" "fix: red: later" " red: a leading space" "redo: not red" "red a missing colon"; do
+  got="$(bash "$here/ci-plan.sh" pull_request "$title")" && [[ "$got" == quick ]] && ok ||
+    fail "pull_request titled '$title' planned '$got', want quick"
+done
+for event in merge_group push workflow_dispatch; do
+  got="$(bash "$here/ci-plan.sh" "$event" "fix: not red")" && [[ "$got" == full ]] && ok ||
+    fail "event '$event' with a title planned '$got', must run the full profile"
 done
 
 # every planned outcome is green
