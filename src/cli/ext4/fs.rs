@@ -187,12 +187,13 @@ fn command() -> Cmd {
         )
         .subcommand(
             Cmd::new("import")
-                .about("Import one regular file or stdin through bounded staged writes")
+                .about("Import a regular file, stdin or a local tree through bounded staged writes")
                 .arg(Arg::new("source").value_name("SRC").required(true).value_parser(value_parser!(OsString)))
                 .arg(Arg::new("path").value_name("PATH").required(true).value_parser(value_parser!(OsString)))
                 .arg(Arg::new("replace").long("replace").action(ArgAction::SetTrue))
                 .arg(Arg::new("verify").long("verify").action(ArgAction::SetTrue))
-                .after_help("Examples:\n  fs.ext4 disk.img import --verify backup.tar /backup.tar\n  fs.ext4 disk.img import --replace hostname /etc/hostname\n  cat backup.tar | fs.ext4 disk.img import - /backup.tar\n\nFiles use fixed chunks and publish only when complete. SRC - is spooled to a private temporary host file first. --verify reopens the image and checks the staged SHA-256 before publication. Atomic publication requires a journal; otherwise exit 3. A kill may leave a .dj-import-*.partial file beside the destination, visible through ls. Trees and metadata preservation await the shared tree API."),
+                .args(tree_import_args())
+                .after_help("Examples:\n  fs.ext4 disk.img import --verify backup.tar /backup.tar\n  fs.ext4 disk.img import --replace hostname /etc/hostname\n  cat backup.tar | fs.ext4 disk.img import - /backup.tar\n  fs.ext4 disk.img import --recursive --preserve=links,times photos /photos\n\nFiles use fixed chunks and publish only when complete. SRC - is spooled to a private temporary host file first. --verify reopens the image and checks the staged SHA-256 before publication. Atomic publication requires a journal; otherwise exit 3. A kill may leave a .dj-import-*.partial file beside the destination, visible through ls.\n\nWith --recursive a local directory is imported through the shared tree import: every item is reported, each file is published only when complete, existing directories merge, and an existing file is refused unless --replace is given. Symlinks are never followed: --preserve=links recreates them and repeats hard links, --preserve=times sets access and modification times. Special files and --preserve=sparse are refused per item. --verify is refused with --recursive, and --preserve without it."),
         )
         .subcommand(
             Cmd::new("xattr")
@@ -527,6 +528,38 @@ fn run(matches: &ArgMatches) -> Result<Outcome, CliError> {
                 export(&fs, &request, transfer::ExportOptions::from_matches(sub)?)
             }
         }
+        "import" if sub.get_flag("recursive") => {
+            if sub.get_flag("verify") {
+                return Err(CliError::usage(
+                    "--verify is not available with --recursive: the shared tree import does not read files back",
+                ));
+            }
+            let source = sub
+                .get_one::<OsString>("source")
+                .expect("clap requires source");
+            let request = transfer::ImportRequest {
+                input: if source == "-" {
+                    transfer::Input::Stdin
+                } else {
+                    transfer::Input::File(source.into())
+                },
+                path: sub
+                    .get_one::<OsString>("path")
+                    .expect("clap requires path")
+                    .into(),
+                replace: sub.get_flag("replace"),
+            };
+            super::import::run_tree(
+                target,
+                offset,
+                &request,
+                transfer::ImportTreeOptions::from_matches(sub)?,
+                transfer::SparseOptions::from_matches(sub)?,
+            )
+        }
+        "import" if sub.get_many::<String>("preserve").is_some() => Err(CliError::usage(
+            "--preserve requires --recursive: a single-file import keeps neither links nor times",
+        )),
         "import" => super::import::run(
             target,
             offset,
@@ -580,6 +613,13 @@ fn run(matches: &ArgMatches) -> Result<Outcome, CliError> {
         )),
         other => unreachable!("clap knows no verb {other}"),
     }
+}
+
+/// The shared tree import's `--recursive`, `--max-depth` and `--preserve`,
+/// added beside this verb's own source, path, `--replace` and `--verify`.
+fn tree_import_args() -> [Arg; 3] {
+    let [_, _, _, recursive, max_depth, preserve] = transfer::import_args_with_tree();
+    [recursive, max_depth, preserve]
 }
 
 fn path_arg(sub: &ArgMatches) -> &[u8] {

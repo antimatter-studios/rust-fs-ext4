@@ -1,10 +1,14 @@
-//! Single-file import over core 0.3.14's bounded writer destination.
+//! Single-file import over core 0.3.14's bounded writer destination, and
+//! tree import over core 0.4.2's shared tree sink.
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use fs_core::cli::{transfer, CliError, Json, Outcome};
 use fs_ext4::features::Compat;
+use fs_ext4::fs::UTIME_OMIT;
 use fs_ext4::inode::InodeFlags;
 use fs_ext4::runtime::process_id;
 use fs_ext4::{Filesystem, InodeRef};
@@ -301,6 +305,229 @@ pub(crate) fn run(
         }
     }
     result
+}
+
+/// `path` as the bytes ext4 stores, split at its last slash into the
+/// parent directory and the entry name.
+fn split_path(path: &Path) -> (Vec<u8>, Vec<u8>) {
+    let bytes = path_bytes(path);
+    let split = bytes.iter().rposition(|&b| b == b'/').map_or(0, |n| n + 1);
+    let (parent, name) = bytes.split_at(split);
+    (parent.to_vec(), name.to_vec())
+}
+
+#[cfg(unix)]
+fn path_bytes(path: &Path) -> Vec<u8> {
+    use std::os::unix::ffi::OsStrExt;
+    path.as_os_str().as_bytes().to_vec()
+}
+
+#[cfg(not(unix))]
+fn path_bytes(path: &Path) -> Vec<u8> {
+    path.to_string_lossy().into_owned().into_bytes()
+}
+
+/// A time as ext4 stores it: whole seconds either side of the epoch and a
+/// non-negative nanosecond part. `None` keeps the inode's time.
+fn stored_time(time: Option<SystemTime>) -> (i64, u32) {
+    let Some(time) = time else {
+        return (0, UTIME_OMIT);
+    };
+    match time.duration_since(SystemTime::UNIX_EPOCH) {
+        Ok(after) => (after.as_secs() as i64, after.subsec_nanos()),
+        Err(before) => {
+            let before = before.duration();
+            match before.subsec_nanos() {
+                0 => (-(before.as_secs() as i64), 0),
+                n => (-(before.as_secs() as i64) - 1, 1_000_000_000 - n),
+            }
+        }
+    }
+}
+
+/// The shared tree import's sink over ext4. Each file goes through the
+/// same staged transaction as a single-file import: a private name beside
+/// the destination, bounded writes, a commit, then a same-directory
+/// journaled rename. Directories, links and times are each one mount and
+/// one commit. The shared transfer holds the image lock for the whole walk.
+pub(crate) struct TreeImport {
+    target: OsString,
+    offset: u64,
+    image: PathBuf,
+    stage: Option<Stage>,
+    /// A read-only view of the persisted staging, opened for verification.
+    readback: Option<Filesystem>,
+}
+
+impl TreeImport {
+    pub(crate) fn new(target: &OsStr, offset: u64) -> Self {
+        Self {
+            target: target.to_os_string(),
+            offset,
+            image: PathBuf::from(target),
+            stage: None,
+            readback: None,
+        }
+    }
+
+    fn stage(&mut self) -> Result<&mut Stage, CliError> {
+        self.stage
+            .as_mut()
+            .ok_or_else(|| error("no staged import in progress"))
+    }
+
+    /// A writable mount and the directory holding `path`'s last component.
+    fn parent(&self, path: &Path) -> Result<(Filesystem, InodeRef, Vec<u8>), CliError> {
+        let (parent, name) = split_path(path);
+        check_name(&name)?;
+        let fs = super::device::mount(&self.target, self.offset, true)?;
+        let dir = fs.lookup_dir_path_bytes(&parent).map_err(error)?;
+        let generation = fs.stat_ino(dir).map_err(error)?.generation;
+        Ok((fs, InodeRef::new(dir, generation), name))
+    }
+}
+
+/// ext4 stores any byte but NUL and `/` in a name of 1 to 255 bytes, and
+/// compares names byte for byte.
+fn check_name(name: &[u8]) -> Result<(), CliError> {
+    if name.is_empty() || name == b"." || name == b".." {
+        return Err(CliError::refused(
+            "ext4 cannot store an empty, . or .. name",
+        ));
+    }
+    if name.len() > 255 {
+        return Err(CliError::refused(format!(
+            "ext4 names are at most 255 bytes; this one is {}",
+            name.len()
+        )));
+    }
+    if name.contains(&0) || name.contains(&b'/') {
+        return Err(CliError::refused("ext4 names cannot hold NUL or /"));
+    }
+    Ok(())
+}
+
+impl transfer::FileSink for TreeImport {
+    fn image_path(&self) -> Option<&Path> {
+        Some(&self.image)
+    }
+    fn supports_atomic_replace(&self) -> bool {
+        true
+    }
+    fn stage(&mut self, path: &Path, replace: bool) -> Result<(), CliError> {
+        self.readback = None;
+        self.stage = Some(Stage::create(
+            &self.target,
+            self.offset,
+            &path_bytes(path),
+            replace,
+        )?);
+        Ok(())
+    }
+    fn write_at(&mut self, offset: u64, bytes: &[u8]) -> Result<(), CliError> {
+        let stage = self.stage()?;
+        if offset != stage.written {
+            return Err(error("ext4 import writes must be contiguous"));
+        }
+        stage.write_all(bytes).map_err(error)
+    }
+    fn persist(&mut self) -> Result<(), CliError> {
+        let fs = self.stage()?.fs.take();
+        fs.ok_or_else(|| error("staged import already persisted"))?
+            .finish()
+            .map_err(error)
+    }
+    fn read_at(&mut self, offset: u64, bytes: &mut [u8]) -> Result<usize, CliError> {
+        if self.readback.is_none() {
+            self.readback = Some(super::device::mount(&self.target, self.offset, false)?);
+        }
+        let inode = self.stage()?.inode;
+        let fs = self.readback.as_ref().expect("opened above");
+        fs.read_ino(inode, offset, bytes).map_err(error)
+    }
+    fn publish(&mut self, replace: bool) -> Result<bool, CliError> {
+        self.readback = None;
+        let mut stage = self
+            .stage
+            .take()
+            .ok_or_else(|| error("no staged import in progress"))?;
+        stage.publish(replace)?;
+        Ok(stage.replaced)
+    }
+    fn abort(&mut self) -> Result<(), CliError> {
+        self.readback = None;
+        match self.stage.take() {
+            Some(mut stage) if !stage.published => stage.abort(),
+            _ => Ok(()),
+        }
+    }
+}
+
+impl transfer::TreeSink for TreeImport {
+    fn validate_name(&mut self, _parent: &Path, name: &OsStr) -> Result<OsString, CliError> {
+        check_name(&path_bytes(Path::new(name)))?;
+        Ok(name.to_os_string())
+    }
+    fn create_dir(&mut self, path: &Path) -> Result<bool, CliError> {
+        let (fs, dir, name) = self.parent(path)?;
+        let merged = match fs.lookup_at(dir, &name) {
+            Ok(ino) if fs.stat_ino(ino).map_err(error)?.is_dir() => true,
+            Ok(_) => return Err(CliError::refused("exists and is not a directory")),
+            Err(fs_ext4::Error::NotFound) => {
+                fs.apply_mkdir_at(dir, &name, 0o755).map_err(error)?;
+                false
+            }
+            Err(e) => return Err(error(e)),
+        };
+        fs.finish().map_err(error)?;
+        Ok(merged)
+    }
+    fn format_name(&self) -> &str {
+        "ext4"
+    }
+    fn create_symbolic_link(&mut self, path: &Path, target: &Path) -> Result<(), CliError> {
+        let (fs, dir, name) = self.parent(path)?;
+        fs.apply_symlink_at(dir, &name, &path_bytes(target))
+            .map_err(error)?;
+        fs.finish().map_err(error)
+    }
+    fn create_hard_link(&mut self, path: &Path, existing: &Path) -> Result<(), CliError> {
+        let (fs, dir, name) = self.parent(path)?;
+        let ino = fs.lookup_path_bytes(&path_bytes(existing)).map_err(error)?;
+        fs.apply_link_at(ino, dir, &name).map_err(error)?;
+        fs.finish().map_err(error)
+    }
+    fn set_times(
+        &mut self,
+        path: &Path,
+        accessed: Option<SystemTime>,
+        modified: Option<SystemTime>,
+    ) -> Result<(), CliError> {
+        let fs = super::device::mount(&self.target, self.offset, true)?;
+        let ino = fs.lookup_path_bytes(&path_bytes(path)).map_err(error)?;
+        let (atime, atime_nsec) = stored_time(accessed);
+        let (mtime, mtime_nsec) = stored_time(modified);
+        fs.apply_utimens_ino(ino, atime, atime_nsec, mtime, mtime_nsec)
+            .map_err(error)?;
+        fs.finish().map_err(error)
+    }
+}
+
+/// `fs.ext4 TARGET import --recursive SRC PATH`: a local file or tree
+/// through the shared tree import over [`TreeImport`].
+pub(crate) fn run_tree(
+    target: &OsString,
+    offset: u64,
+    request: &transfer::ImportRequest,
+    options: transfer::ImportTreeOptions,
+    sparse: transfer::SparseOptions,
+) -> Result<Outcome, CliError> {
+    let mut sink = TreeImport::new(target, offset);
+    let outcome = transfer::import_tree_with_sparse(request, Some(&mut sink), options, sparse);
+    // A refused or failed file aborts its own staging; this catches one the
+    // walk left behind when it stopped early.
+    transfer::FileSink::abort(&mut sink)?;
+    outcome
 }
 
 #[cfg(test)]
