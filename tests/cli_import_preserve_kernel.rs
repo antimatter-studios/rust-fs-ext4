@@ -30,8 +30,10 @@ fn fresh(tag: &str, inode_size: &str) -> String {
     img
 }
 
+/// A source tree on a filesystem that holds the nanoseconds set on it, so
+/// the times compared below are the times import read.
 fn source_dir(tag: &str) -> PathBuf {
-    let dir = PathBuf::from(image_path(tag));
+    let dir = PathBuf::from(sub_second_path(tag));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir(&dir).unwrap();
     dir
