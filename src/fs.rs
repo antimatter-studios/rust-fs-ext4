@@ -4511,6 +4511,14 @@ impl Filesystem {
             Ok(_) => {
                 // In-inode rewrite already in `raw`.
                 let mut buf = BlockBuffer::new(self.sb.block_size());
+                // An attribute on a volume without COMPAT_EXT_ATTR is one
+                // debugfs does not list and e2fsck ignores, whichever place
+                // holds it. The external-block path sets the feature (#88);
+                // so does this, in the same transaction, with the
+                // superblock checksum.
+                if self.sb.feature_compat & features::Compat::EXT_ATTR.bits() == 0 {
+                    self.buffer_patch_sb_compat(&mut buf, features::Compat::EXT_ATTR.bits())?;
+                }
                 if self.buffer_remove_from_external_block(&mut buf, ino, &inode, &mut raw, name)? {
                     set_inode_time(&mut raw, InodeTime::Ctime, self.runtime.now_unix_seconds());
                 }
