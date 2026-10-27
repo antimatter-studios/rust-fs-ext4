@@ -383,21 +383,14 @@ unsafe fn cstr_to_path<'a>(p: *const c_char, what: &str) -> Option<&'a [u8]> {
     Some(bytes)
 }
 
-/// An extended-attribute name, which is not a path: it is matched against
-/// namespace prefixes (`user.`, `trusted.`, ...) as text, so one that is
-/// not UTF-8 is refused with EINVAL — never turned into `""`.
-unsafe fn cstr_to_name<'a>(p: *const c_char, what: &str) -> Option<&'a str> {
-    let bytes = unsafe { cstr_to_path(p, what) }?;
-    match std::str::from_utf8(bytes) {
-        Ok(s) => Some(s),
-        Err(_) => {
-            set_err_msg(
-                &format!("{what} is not valid UTF-8: {:?}", shown(bytes)),
-                EINVAL,
-            );
-            None
-        }
-    }
+/// An extended-attribute name: its exact bytes, which need not be UTF-8
+/// (#591). Linux takes any bytes but NUL in a name, and
+/// `fs_ext4_listxattr` hands each one back as it is stored, so a name
+/// that is not UTF-8 must be one these calls take back. Only the namespace
+/// prefix (`user.`, `trusted.`, ...) is matched as text, and an unknown one
+/// is EINVAL from the write path.
+unsafe fn cstr_to_name<'a>(p: *const c_char, what: &str) -> Option<&'a [u8]> {
+    unsafe { cstr_to_path(p, what) }
 }
 
 /// A path as it appears in an error message. Lossy, and for messages
@@ -1544,9 +1537,10 @@ pub unsafe extern "C" fn fs_ext4_getxattr(
                 return -1;
             };
             let path_str = shown(path_b);
-            let Some(name_str) = (unsafe { cstr_to_name(name, "name") }) else {
+            let Some(name_b) = (unsafe { cstr_to_name(name, "name") }) else {
                 return -1;
             };
+            let name_str = shown(name_b);
 
             let ino = match resolve_path(fs_ref, path_b) {
                 Ok(n) => n,
@@ -1563,7 +1557,7 @@ pub unsafe extern "C" fn fs_ext4_getxattr(
                 }
             };
 
-            let value = match xattr::get_resolved(fs_ref, &inode, &inode_raw, name_str) {
+            let value = match xattr::get_resolved_raw(fs_ref, &inode, &inode_raw, name_b) {
                 Ok(Some(v)) => v,
                 Ok(None) => {
                     set_err_msg(
@@ -2493,10 +2487,11 @@ pub unsafe extern "C" fn fs_ext4_removexattr(
                 return -1;
             };
             let path_str = shown(path_b);
-            let Some(name_str) = (unsafe { cstr_to_name(name, "name") }) else {
+            let Some(name_b) = (unsafe { cstr_to_name(name, "name") }) else {
                 return -1;
             };
-            match fs_ref.apply_removexattr_bytes(path_b, name_str) {
+            let name_str = shown(name_b);
+            match fs_ref.apply_removexattr_bytes(path_b, name_b) {
                 Ok(()) => 0,
                 Err(e) => {
                     set_err_from(&e, &format!("removexattr {path_str} {name_str}"));
@@ -2556,15 +2551,16 @@ pub unsafe extern "C" fn fs_ext4_setxattr(
                 return -1;
             };
             let path_str = shown(path_b);
-            let Some(name_str) = (unsafe { cstr_to_name(name, "name") }) else {
+            let Some(name_b) = (unsafe { cstr_to_name(name, "name") }) else {
                 return -1;
             };
+            let name_str = shown(name_b);
             let value_bytes = if value_len == 0 {
                 &[][..]
             } else {
                 std::slice::from_raw_parts(value as *const u8, value_len)
             };
-            match fs_ref.apply_setxattr_bytes(path_b, name_str, value_bytes) {
+            match fs_ref.apply_setxattr_bytes(path_b, name_b, value_bytes) {
                 Ok(()) => 0,
                 Err(e) => {
                     set_err_from(&e, &format!("setxattr {path_str} {name_str}"));

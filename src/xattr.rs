@@ -351,8 +351,16 @@ fn parse_entries_block(block: &[u8], out: &mut Vec<XattrEntry>) -> Result<()> {
 /// Split a fully-qualified xattr name (e.g. `"user.com.apple.FinderInfo"`)
 /// into (name_index, suffix). Returns `None` if no known prefix matches.
 pub fn split_qualified_name(name: &str) -> Option<(u8, &str)> {
+    // Every prefix is ASCII, so the suffix starts on a char boundary.
+    split_qualified_name_raw(name.as_bytes())
+        .map(|(idx, rest)| (idx, &name[name.len() - rest.len()..]))
+}
+
+/// [`split_qualified_name`] for a name given as its exact bytes, which need
+/// not be UTF-8 (#591): only the prefix is text.
+pub fn split_qualified_name_raw(name: &[u8]) -> Option<(u8, &[u8])> {
     for (idx, prefix) in NAME_PREFIXES {
-        if let Some(rest) = name.strip_prefix(*prefix) {
+        if let Some(rest) = name.strip_prefix(prefix.as_bytes()) {
             return Some((*idx, rest));
         }
     }
@@ -376,7 +384,13 @@ pub enum RemoveOutcome {
 /// otherwise. `Error::InvalidArgument` if the name lacks a known
 /// namespace prefix.
 pub fn plan_remove_in_inode_region(region: &mut [u8], name: &str) -> Result<RemoveOutcome> {
-    let Some((name_index, suffix)) = split_qualified_name(name) else {
+    plan_remove_in_inode_region_raw(region, name.as_bytes())
+}
+
+/// [`plan_remove_in_inode_region`] for a name given as its exact bytes, which need
+/// not be UTF-8 (#591).
+pub fn plan_remove_in_inode_region_raw(region: &mut [u8], name: &[u8]) -> Result<RemoveOutcome> {
+    let Some((name_index, suffix)) = split_qualified_name_raw(name) else {
         return Err(Error::InvalidArgument(
             "xattr name missing known namespace prefix",
         ));
@@ -395,7 +409,7 @@ pub fn plan_remove_in_inode_region(region: &mut [u8], name: &str) -> Result<Remo
     let before = entries.len();
     let kept: Vec<DecodedEntry> = entries
         .into_iter()
-        .filter(|e| !(e.name_index == name_index && e.name_bytes == suffix.as_bytes()))
+        .filter(|e| !(e.name_index == name_index && e.name_bytes == suffix))
         .collect();
     if kept.len() == before {
         return Ok(RemoveOutcome::NotFound);
@@ -425,7 +439,17 @@ pub enum SetOutcome {
 /// - `Error::NoSpaceLeftOnDevice` when the rewritten region wouldn't fit
 ///   (entries + values + 4-byte terminator > region capacity).
 pub fn plan_set_in_inode_region(region: &mut [u8], name: &str, value: &[u8]) -> Result<SetOutcome> {
-    let Some((name_index, suffix)) = split_qualified_name(name) else {
+    plan_set_in_inode_region_raw(region, name.as_bytes(), value)
+}
+
+/// [`plan_set_in_inode_region`] for a name given as its exact bytes, which need
+/// not be UTF-8 (#591).
+pub fn plan_set_in_inode_region_raw(
+    region: &mut [u8],
+    name: &[u8],
+    value: &[u8],
+) -> Result<SetOutcome> {
+    let Some((name_index, suffix)) = split_qualified_name_raw(name) else {
         return Err(Error::InvalidArgument(
             "xattr name missing known namespace prefix",
         ));
@@ -452,7 +476,7 @@ pub fn plan_set_in_inode_region(region: &mut [u8], name: &str, value: &[u8]) -> 
     refuse_if_any_ea_inode_backed(&entries)?;
 
     let mut outcome = SetOutcome::Inserted;
-    let suffix_bytes = suffix.as_bytes();
+    let suffix_bytes = suffix;
     for e in entries.iter_mut() {
         if e.name_index == name_index && e.name_bytes == suffix_bytes {
             e.value = value.to_vec();
@@ -829,7 +853,18 @@ pub fn plan_set_in_external_block(
     value: &[u8],
     refcount: u32,
 ) -> Result<SetOutcome> {
-    let Some((name_index, suffix)) = split_qualified_name(name) else {
+    plan_set_in_external_block_raw(block, name.as_bytes(), value, refcount)
+}
+
+/// [`plan_set_in_external_block`] for a name given as its exact bytes, which need
+/// not be UTF-8 (#591).
+pub fn plan_set_in_external_block_raw(
+    block: &mut [u8],
+    name: &[u8],
+    value: &[u8],
+    refcount: u32,
+) -> Result<SetOutcome> {
+    let Some((name_index, suffix)) = split_qualified_name_raw(name) else {
         return Err(Error::InvalidArgument(
             "xattr name missing known namespace prefix",
         ));
@@ -853,7 +888,7 @@ pub fn plan_set_in_external_block(
     refuse_if_any_ea_inode_backed(&entries)?;
 
     let mut outcome = SetOutcome::Inserted;
-    let suffix_bytes = suffix.as_bytes();
+    let suffix_bytes = suffix;
     for e in entries.iter_mut() {
         if e.name_index == name_index && e.name_bytes == suffix_bytes {
             e.value = value.to_vec();
@@ -899,7 +934,17 @@ pub fn plan_remove_from_external_block(
     name: &str,
     refcount: u32,
 ) -> Result<BlockRemoveOutcome> {
-    let Some((name_index, suffix)) = split_qualified_name(name) else {
+    plan_remove_from_external_block_raw(block, name.as_bytes(), refcount)
+}
+
+/// [`plan_remove_from_external_block`] for a name given as its exact bytes, which need
+/// not be UTF-8 (#591).
+pub fn plan_remove_from_external_block_raw(
+    block: &mut [u8],
+    name: &[u8],
+    refcount: u32,
+) -> Result<BlockRemoveOutcome> {
+    let Some((name_index, suffix)) = split_qualified_name_raw(name) else {
         return Err(Error::InvalidArgument(
             "xattr name missing known namespace prefix",
         ));
@@ -917,7 +962,7 @@ pub fn plan_remove_from_external_block(
     let before = entries.len();
     let kept: Vec<DecodedEntry> = entries
         .into_iter()
-        .filter(|e| !(e.name_index == name_index && e.name_bytes == suffix.as_bytes()))
+        .filter(|e| !(e.name_index == name_index && e.name_bytes == suffix))
         .collect();
     if kept.len() == before {
         return Ok(BlockRemoveOutcome::NotFound);
@@ -1131,6 +1176,37 @@ mod tests {
             Some((6, "selinux"))
         );
         assert_eq!(split_qualified_name("unknown.foo"), None);
+    }
+
+    #[test]
+    fn a_name_that_is_not_utf8_is_set_replaced_and_removed_by_its_bytes() {
+        assert_eq!(
+            split_qualified_name_raw(b"trusted.raw-\xfe"),
+            Some((4, &b"raw-\xfe"[..]))
+        );
+        assert_eq!(split_qualified_name_raw(b"\xffuser.x"), None);
+
+        let mut region = vec![0u8; 96];
+        let name = b"user.raw-\xff";
+        let set = plan_set_in_inode_region_raw(&mut region, name, b"one").unwrap();
+        assert_eq!(set, SetOutcome::Inserted);
+        let set = plan_set_in_inode_region_raw(&mut region, name, b"two").unwrap();
+        assert_eq!(set, SetOutcome::Replaced);
+        let entries = decode_in_inode_entries(&region[4..]).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name_bytes, b"raw-\xff");
+        assert_eq!(entries[0].value, b"two");
+        let gone = plan_remove_in_inode_region_raw(&mut region, name).unwrap();
+        assert_eq!(gone, RemoveOutcome::Removed);
+
+        let mut block = vec![0u8; 1024];
+        plan_set_in_external_block_raw(&mut block, b"user.keep", b"k", 1).unwrap();
+        plan_set_in_external_block_raw(&mut block, name, b"v", 1).unwrap();
+        let gone = plan_remove_from_external_block_raw(&mut block, name, 1).unwrap();
+        assert_eq!(gone, BlockRemoveOutcome::Removed);
+        let left = decode_external_block_entries(&block).unwrap();
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].name_bytes, b"keep");
     }
 
     /// `XattrEntry` is `#[non_exhaustive]`, so its constructors are the only

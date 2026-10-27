@@ -4340,11 +4340,11 @@ impl Filesystem {
     /// - `Error::NotFound` if the entry isn't present in either region.
     /// - `Error::InvalidArgument` on namespace-prefix issues.
     pub fn apply_removexattr(&self, path: &str, name: &str) -> Result<()> {
-        self.apply_removexattr_bytes(path.as_bytes(), name)
+        self.apply_removexattr_bytes(path.as_bytes(), name.as_bytes())
     }
 
     /// [`apply_removexattr`](Self::apply_removexattr) of a path given as bytes, never decoded.
-    pub(crate) fn apply_removexattr_bytes(&self, path: &[u8], name: &str) -> Result<()> {
+    pub(crate) fn apply_removexattr_bytes(&self, path: &[u8], name: &[u8]) -> Result<()> {
         self.refuse_write()?;
         let ino = self.resolve(path)?;
         let (inode, mut raw) = self.read_inode_verified(ino)?;
@@ -4368,7 +4368,7 @@ impl Filesystem {
         // does not parse one there (#380).
         if i_extra_isize != 0 && region_start + 4 <= region_end {
             let region = &mut raw[region_start..region_end];
-            if crate::xattr::plan_remove_in_inode_region(region, name)?
+            if crate::xattr::plan_remove_in_inode_region_raw(region, name)?
                 == crate::xattr::RemoveOutcome::Removed
             {
                 found = true;
@@ -4405,7 +4405,7 @@ impl Filesystem {
         ino: u32,
         inode: &crate::inode::Inode,
         raw: &mut [u8],
-        name: &str,
+        name: &[u8],
     ) -> Result<bool> {
         if inode.file_acl == 0 {
             return Ok(false);
@@ -4413,7 +4413,7 @@ impl Filesystem {
         let block_nr = inode.file_acl;
         let mut block = self.buffer_read_xattr_block(buf, block_nr)?;
         let refs = u32::from_le_bytes(block[4..8].try_into().unwrap());
-        match crate::xattr::plan_remove_from_external_block(&mut block, name, 1)? {
+        match crate::xattr::plan_remove_from_external_block_raw(&mut block, name, 1)? {
             crate::xattr::BlockRemoveOutcome::NotFound => Ok(false),
             crate::xattr::BlockRemoveOutcome::Removed if refs > 1 => {
                 // Shared: this inode's remaining attributes move to a
@@ -4458,11 +4458,16 @@ impl Filesystem {
     ///    Returns `Error::NoSpaceLeftOnDevice` if even a full block can't
     ///    hold the new layout.
     pub fn apply_setxattr(&self, path: &str, name: &str, value: &[u8]) -> Result<()> {
-        self.apply_setxattr_bytes(path.as_bytes(), name, value)
+        self.apply_setxattr_bytes(path.as_bytes(), name.as_bytes(), value)
     }
 
     /// [`apply_setxattr`](Self::apply_setxattr) of a path given as bytes, never decoded.
-    pub(crate) fn apply_setxattr_bytes(&self, path: &[u8], name: &str, value: &[u8]) -> Result<()> {
+    pub(crate) fn apply_setxattr_bytes(
+        &self,
+        path: &[u8],
+        name: &[u8],
+        value: &[u8],
+    ) -> Result<()> {
         self.refuse_write()?;
         let ino = self.resolve(path)?;
         let (inode, mut raw) = self.read_inode_verified(ino)?;
@@ -4495,7 +4500,7 @@ impl Filesystem {
         // Try in-inode first; on overflow fall through to the external block.
         let inline_result = if inline_capable {
             let region = &mut raw[region_start..region_end];
-            crate::xattr::plan_set_in_inode_region(region, name, value)
+            crate::xattr::plan_set_in_inode_region_raw(region, name, value)
         } else {
             Err(Error::NoSpaceLeftOnDevice)
         };
@@ -4532,7 +4537,7 @@ impl Filesystem {
                 // new one, and `raw` carries that into the same commit.
                 if inline_capable {
                     let region = &mut raw[region_start..region_end];
-                    crate::xattr::plan_remove_in_inode_region(region, name)?;
+                    crate::xattr::plan_remove_in_inode_region_raw(region, name)?;
                 }
                 self.apply_setxattr_external_block(ino, &inode, &mut raw, name, value)
             }
@@ -4562,7 +4567,7 @@ impl Filesystem {
         ino: u32,
         inode: &crate::inode::Inode,
         raw: &mut [u8],
-        name: &str,
+        name: &[u8],
         value: &[u8],
     ) -> Result<()> {
         let bs = self.sb.block_size();
@@ -4585,7 +4590,7 @@ impl Filesystem {
             let block_nr = inode.file_acl;
             let mut block = self.buffer_read_xattr_block(&mut buf, block_nr)?;
             let refs = u32::from_le_bytes(block[4..8].try_into().unwrap());
-            crate::xattr::plan_set_in_external_block(&mut block, name, value, 1)?;
+            crate::xattr::plan_set_in_external_block_raw(&mut block, name, value, 1)?;
             if refs > 1 {
                 // Shared: the edit is this inode's alone, so it gets its
                 // own block. One block before and after, so i_blocks holds.
@@ -4619,7 +4624,7 @@ impl Filesystem {
         let block_nr = plan.first_block;
 
         let mut block = vec![0u8; bs as usize];
-        crate::xattr::plan_set_in_external_block(&mut block, name, value, 1)?;
+        crate::xattr::plan_set_in_external_block_raw(&mut block, name, value, 1)?;
         if self.csum.enabled {
             self.csum.patch_xattr_block(block_nr, &mut block);
         }
