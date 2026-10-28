@@ -6,8 +6,10 @@
 //! name and byte for byte.
 //!
 //! A namespace the other side cannot hold is refused for its own item in
-//! the report, never dropped: the test runs unprivileged, so the host
-//! cannot hold a `trusted.` attribute the kernel set on the volume.
+//! the report, never dropped: an unprivileged host cannot hold a
+//! `trusted.` attribute the kernel set on the volume. Where the host can
+//! (root in the harness guest, or a host with no namespaces), the export
+//! carries it instead, and the check holds the host to that.
 
 mod cli_support;
 
@@ -43,15 +45,18 @@ fn host_dir(tag: &str) -> PathBuf {
 /// Whether a file in `dir` keeps the `user.` attributes set on it, an
 /// empty value as well as a non-empty one.
 fn holds_user_attributes(dir: &Path) -> bool {
+    keeps_attributes(dir, &[("user.probe", b"v"), ("user.empty-probe", b"")])
+}
+
+/// Whether a file in `dir` keeps every one of `attributes` set on it.
+fn keeps_attributes(dir: &Path, attributes: &[(&str, &[u8])]) -> bool {
     let probe = dir.join(format!(".xattr-probe-{}", std::process::id()));
-    let keeps = |name: &str, value: &[u8]| {
-        xattr::set(&probe, name, value).is_ok()
-            && xattr::get(&probe, name).is_ok_and(|v| v.as_deref() == Some(value))
-    };
     let kept = std::fs::create_dir_all(dir).is_ok()
         && std::fs::write(&probe, b"").is_ok()
-        && keeps("user.probe", b"v")
-        && keeps("user.empty-probe", b"");
+        && attributes.iter().all(|&(name, value)| {
+            xattr::set(&probe, name, value).is_ok()
+                && xattr::get(&probe, name).is_ok_and(|v| v.as_deref() == Some(value))
+        });
     let _ = std::fs::remove_file(&probe);
     kept
 }
@@ -155,6 +160,7 @@ fn export_carries_what_the_kernel_set_and_refuses_a_namespace_the_host_cannot_ho
     assert_e2fsck_clean(&img, "the kernel-attributed tree");
 
     let dest = host_dir("xattr-export-dest");
+    let holds_trusted = keeps_attributes(dest.parent().unwrap(), &[("trusted.probe", b"v")]);
     let out = tool("fs.ext4")
         .args([
             &img,
@@ -167,8 +173,14 @@ fn export_carries_what_the_kernel_set_and_refuses_a_namespace_the_host_cannot_ho
         .output()
         .unwrap();
     let report = stdout(&out);
-    assert_eq!(out.status.code(), Some(1), "{report}{}", stderr(&out));
-    assert_eq!(json_field(&report, "refused"), "1", "{report}");
+    assert_eq!(
+        out.status.code(),
+        Some(if holds_trusted { 0 } else { 1 }),
+        "{report}{}",
+        stderr(&out)
+    );
+    let refusals = if holds_trusted { "0" } else { "1" };
+    assert_eq!(json_field(&report, "refused"), refusals, "{report}");
     assert_eq!(json_field(&report, "failed"), "0", "{report}");
     for path in ["/tree/f", "/tree/sub"] {
         assert!(
@@ -176,9 +188,18 @@ fn export_carries_what_the_kernel_set_and_refuses_a_namespace_the_host_cannot_ho
             "{path}: {report}"
         );
     }
-    let refused = item(&report, "path", "/tree/priv");
-    assert!(refused.contains("\"status\": \"refused\""), "{report}");
-    assert!(refused.contains("trusted.audit"), "named: {report}");
+    let private = item(&report, "path", "/tree/priv");
+    if holds_trusted {
+        assert!(private.contains("\"status\": \"completed\""), "{report}");
+        assert_eq!(
+            host(&dest.join("priv")),
+            guest(&listing, "tree/priv"),
+            "{listing}"
+        );
+    } else {
+        assert!(private.contains("\"status\": \"refused\""), "{report}");
+        assert!(private.contains("trusted.audit"), "named: {report}");
+    }
 
     assert_eq!(host(&dest.join("f")), file, "{listing}");
     assert_eq!(host(&dest.join("sub")), dir, "{listing}");
