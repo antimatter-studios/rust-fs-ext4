@@ -9,6 +9,8 @@ kernel calls; zero non-MIT/BSD/Apache dependencies. Runtime crates
 are `crc32c`, `bitflags`, `unicode-normalization` and `caseless`
 (casefold), plus the sister `rust-fs-core` block-device crate.
 
+Published on crates.io as `rust-fs-ext4`; the library name is `fs_ext4`.
+
 Designed for FFI: the C ABI is stable and the static library has no
 host-specific assumptions, so the same `libfs_ext4.a` works equally
 well in a macOS FSKit extension, a Linux FUSE binary, a Windows tool,

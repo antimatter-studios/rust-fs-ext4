@@ -1564,7 +1564,7 @@ fn the_release_tarball_is_packaged_by_core_release_cli_workflow_at_a_pinned_sha(
             .unwrap_or_else(|| panic!("release jobs.cli passes no `{name}` input"))
             .to_string()
     };
-    let core_pin = am_fs_core_versions_declared(&read_or_panic(&root.join("chores.yml")))
+    let core_pin = fs_core_versions_declared(&read_or_panic(&root.join("chores.yml")))
         .into_iter()
         .next()
         .map(|(_, v)| v)
@@ -3312,7 +3312,7 @@ tasks:
 /// A value that is not a literal version is not a declaration either:
 /// `release.yml` clones `--branch "$(pin FS_CORE_REF)"`, which reads the
 /// `chores.yml` variable and is not a second, independent pin.
-fn am_fs_core_versions_declared(text: &str) -> Vec<(String, String)> {
+fn fs_core_versions_declared(text: &str) -> Vec<(String, String)> {
     let mut found = Vec::new();
     let mut in_core_lock_entry = false;
     for line in text.lines() {
@@ -3417,13 +3417,13 @@ const FILES_THAT_PIN_AM_FS_CORE: &[&str] = &[
 /// The count is asserted as well as the agreement. A scan that stopped
 /// matching would otherwise report perfect agreement among nothing.
 #[test]
-fn every_declaration_of_the_am_fs_core_pin_names_the_same_version() {
+fn every_declaration_of_the_fs_core_pin_names_the_same_version() {
     let root = manifest_dir();
     let mut declared: Vec<(String, String, String)> = Vec::new();
     let mut miscounted = Vec::new();
 
     for rel in FILES_THAT_PIN_AM_FS_CORE {
-        let found = am_fs_core_versions_declared(&read_or_panic(&root.join(rel)));
+        let found = fs_core_versions_declared(&read_or_panic(&root.join(rel)));
         if found.len() != 1 {
             miscounted.push(format!("{rel}: {} declarations", found.len()));
         }
@@ -3467,7 +3467,7 @@ fn every_declaration_of_the_am_fs_core_pin_names_the_same_version() {
             .unwrap_or(&path)
             .display()
             .to_string();
-        for (spelling, version) in am_fs_core_versions_declared(&read_or_panic(&path)) {
+        for (spelling, version) in fs_core_versions_declared(&read_or_panic(&path)) {
             declared.push((rel.clone(), spelling, version));
         }
     }
@@ -3504,7 +3504,7 @@ const CORE_WITH_TREE_SOURCE: [u64; 3] = [0, 3, 15];
 #[test]
 fn the_rust_fs_core_pin_carries_the_shared_tree_source() {
     let root = manifest_dir();
-    let (_, pinned) = am_fs_core_versions_declared(&read_or_panic(&root.join("Cargo.toml")))
+    let (_, pinned) = fs_core_versions_declared(&read_or_panic(&root.join("Cargo.toml")))
         .into_iter()
         .next()
         .expect("Cargo.toml declares the rust-fs-core pin");
@@ -3520,7 +3520,7 @@ fn the_rust_fs_core_pin_carries_the_shared_tree_source() {
 }
 
 mod core_pin_parser {
-    use super::{am_fs_core_versions_declared, as_version};
+    use super::{as_version, fs_core_versions_declared};
 
     fn dep(v: &str) -> Vec<(String, String)> {
         vec![(
@@ -3533,7 +3533,7 @@ mod core_pin_parser {
     #[test]
     fn a_path_dependency_declares_its_version() {
         let toml = "rust-fs-core = { path = \"../rust-fs-core\", version = \"0.2.13\" }\n";
-        assert_eq!(am_fs_core_versions_declared(toml), dep("0.2.13"));
+        assert_eq!(fs_core_versions_declared(toml), dep("0.2.13"));
     }
 
     /// A lockfile's package entry declares the version it resolved; a
@@ -3544,7 +3544,7 @@ mod core_pin_parser {
                     [[package]]\nname = \"rust-fs-ext4\"\nversion = \"0.6.0\"\n\
                     dependencies = [\n \"rust-fs-core\",\n]\n";
         assert_eq!(
-            am_fs_core_versions_declared(lock),
+            fs_core_versions_declared(lock),
             vec![(
                 "the lockfile's resolved rust-fs-core `version`".to_string(),
                 "0.2.10".to_string()
@@ -3556,7 +3556,7 @@ mod core_pin_parser {
     #[test]
     fn the_env_variable_declares_its_version() {
         assert_eq!(
-            am_fs_core_versions_declared("  FS_CORE_REF: v0.2.13\n"),
+            fs_core_versions_declared("  FS_CORE_REF: v0.2.13\n"),
             vec![("`FS_CORE_REF`".to_string(), "0.2.13".to_string())],
         );
     }
@@ -3568,7 +3568,7 @@ mod core_pin_parser {
         let line = "run: git clone --depth 1 --branch v0.2.10 \
                     https://github.com/antimatter-studios/rust-fs-core.git ../rust-fs-core\n";
         assert_eq!(
-            am_fs_core_versions_declared(line),
+            fs_core_versions_declared(line),
             vec![(
                 "the `git clone --branch` ref".to_string(),
                 "0.2.10".to_string()
@@ -3582,7 +3582,7 @@ mod core_pin_parser {
     fn a_comment_naming_a_version_is_not_a_declaration() {
         let yaml = "  # FS_CORE_REF: v0.2.11 is the first release that packages it\n  \
                     # rust-fs-core = { version = \"0.2.10\" }\n";
-        assert!(am_fs_core_versions_declared(yaml).is_empty());
+        assert!(fs_core_versions_declared(yaml).is_empty());
     }
 
     /// `release.yml` clones `--branch "$(pin FS_CORE_REF)"`. That reads
@@ -3592,7 +3592,7 @@ mod core_pin_parser {
     fn a_branch_that_is_a_variable_is_not_a_declaration() {
         let line = "git clone --depth 1 --branch \"$(pin FS_CORE_REF)\" \
                     \"$(pin FS_CORE_URL)\" ../rust-fs-core\n";
-        assert!(am_fs_core_versions_declared(line).is_empty());
+        assert!(fs_core_versions_declared(line).is_empty());
     }
 
     /// A branch name is not a version. A pin moved to `main` is a pin
