@@ -27,10 +27,27 @@ fn fresh(tag: &str) -> String {
     img
 }
 
+/// A fresh host directory on a filesystem that holds `user.` attributes.
+/// The harness guest's 9p share does not, so there it is in `/var/tmp`.
 fn host_dir(tag: &str) -> PathBuf {
-    let dir = PathBuf::from(image_path(tag));
+    let dir = PathBuf::from(path_where(
+        tag,
+        "holds user. extended attributes, which --preserve=xattrs needs",
+        holds_user_attributes,
+    ));
     let _ = std::fs::remove_dir_all(&dir);
     dir
+}
+
+/// Whether a file in `dir` keeps a `user.` attribute set on it.
+fn holds_user_attributes(dir: &Path) -> bool {
+    let probe = dir.join(format!(".xattr-probe-{}", std::process::id()));
+    let kept = std::fs::create_dir_all(dir).is_ok()
+        && std::fs::write(&probe, b"").is_ok()
+        && xattr::set(&probe, "user.probe", b"v").is_ok()
+        && xattr::get(&probe, "user.probe").is_ok_and(|v| v.as_deref() == Some(&b"v"[..]));
+    let _ = std::fs::remove_file(&probe);
+    kept
 }
 
 /// Every attribute of each of `paths` below `$MNT`, as the guest's

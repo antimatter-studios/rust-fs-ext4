@@ -154,7 +154,13 @@ chore_min_version: 0.6.0
 #                                                    36404048578), which failed
 #                                                    the tier with exit 65 and
 #                                                    nothing red inside it
-#     kernel      725 /  50,891      940 /  66,000   ~30% / ~30%. PR #561's
+#     kernel      907 /  66,234    1,180 /  86,000   ~30% / ~30%. PR #602's
+#                                                    x86_64 merge-queue run
+#                                                    40603891696: 70 passing
+#                                                    tests; the 940 / 66,000
+#                                                    cap failed it with exit
+#                                                    65. Was 725 / 50,891 in
+#                                                    PR #561's
 #                                                    x86_64 merge-queue run
 #                                                    39172256275: 56 passing
 #                                                    tests, with #558's two in
@@ -576,8 +582,12 @@ tasks:
     # in run 39172256275 for PR #561, all 56 tests passing; the 680 / 49000
     # cap failed both with exit 65. 940 / 66000 keeps about 30% headroom
     # over the larger log, replacing 680 / 49000.
+    # RE-MEASURED: 907 lines and 66234 bytes in x86_64 merge-queue run
+    # 40603891696 (kernel.log) for PR #602, all 70 tests passing; the
+    # 940 / 66000 cap failed it with exit 65. 1180 / 86000 keeps about 30%
+    # headroom over that log, replacing 940 / 66000.
     cmds:
-      - '../rust-fs-core/scripts/tier.sh test:kernel kernel 940 66000 -- scripts/test.sh --locked --release $(scripts/test-targets.sh kernel) -- --show-output'
+      - '../rust-fs-core/scripts/tier.sh test:kernel kernel 1180 86000 -- scripts/test.sh --locked --release $(scripts/test-targets.sh kernel) -- --show-output'
       # 27 executed in the merge queue on 2026-10-17 (run 38991557768);
       # cli_ls_recursive_kernel.rs adds one, cli_rm_kernel.rs two,
       # cli_mv_kernel.rs two, cli_ln_kernel.rs two, cli_mkdir_kernel.rs
