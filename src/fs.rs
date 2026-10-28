@@ -4461,13 +4461,9 @@ impl Filesystem {
         self.apply_setxattr_bytes(path.as_bytes(), name.as_bytes(), value)
     }
 
-    /// [`apply_setxattr`](Self::apply_setxattr) of a path given as bytes, never decoded.
-    pub(crate) fn apply_setxattr_bytes(
-        &self,
-        path: &[u8],
-        name: &[u8],
-        value: &[u8],
-    ) -> Result<()> {
+    /// [`apply_setxattr`](Self::apply_setxattr) of a path and a name given
+    /// as bytes, never decoded: Linux takes any bytes but NUL in either.
+    pub fn apply_setxattr_bytes(&self, path: &[u8], name: &[u8], value: &[u8]) -> Result<()> {
         self.refuse_write()?;
         let ino = self.resolve(path)?;
         let (inode, mut raw) = self.read_inode_verified(ino)?;

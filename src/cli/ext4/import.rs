@@ -497,6 +497,23 @@ impl transfer::TreeSink for TreeImport {
         fs.apply_link_at(ino, dir, &name).map_err(error)?;
         fs.finish().map_err(error)
     }
+    fn set_extended_attribute(
+        &mut self,
+        path: &Path,
+        attribute: &transfer::ExtendedAttribute,
+    ) -> Result<(), CliError> {
+        let name = attribute.name.as_encoded_bytes();
+        carried(name)?;
+        let fs = super::device::mount(&self.target, self.offset, true)?;
+        // A value this inode and its attribute block cannot hold is refused
+        // before any write, never cut down to one they can.
+        fs.apply_setxattr_bytes(&path_bytes(path), name, &attribute.value)
+            .map_err(|e| match e {
+                fs_ext4::Error::InvalidArgument(_) => CliError::refused(e.to_string()),
+                e => error(e),
+            })?;
+        fs.finish().map_err(error)
+    }
     fn set_times(
         &mut self,
         path: &Path,
@@ -518,6 +535,25 @@ impl transfer::TreeSink for TreeImport {
     }
 }
 
+/// Whether an extended attribute named `name` is carried between ext4 and
+/// a host. A `user.`, `trusted.` or `security.` value is opaque bytes on
+/// both sides. A `system.` one is not: an ACL is stored on disk in another
+/// layout than the one a host's attribute calls exchange, so it is refused
+/// rather than copied as if it were opaque, as is a name in a namespace
+/// ext4 has no index for.
+pub(crate) fn carried(name: &[u8]) -> Result<(), CliError> {
+    const CARRIED: [&[u8]; 3] = [b"user.", b"trusted.", b"security."];
+    if CARRIED
+        .iter()
+        .any(|prefix| name.len() > prefix.len() && name.starts_with(prefix))
+    {
+        return Ok(());
+    }
+    Err(CliError::refused(
+        "ext4 transfers carry only user., trusted. and security. attributes",
+    ))
+}
+
 /// `fs.ext4 TARGET import --recursive SRC PATH`: a local file or tree
 /// through the shared tree import over [`TreeImport`].
 pub(crate) fn run_tree(
@@ -526,9 +562,19 @@ pub(crate) fn run_tree(
     request: &transfer::ImportRequest,
     options: transfer::ImportTreeOptions,
     sparse: transfer::SparseOptions,
+    xattrs: transfer::XattrOptions,
 ) -> Result<Outcome, CliError> {
     let mut sink = TreeImport::new(target, offset);
-    let outcome = transfer::import_tree_with_sparse(request, Some(&mut sink), options, sparse);
+    // The shared import takes sparse holes or attributes, not both; ext4
+    // refuses every sparse file anyway, so only the attributes are lost by
+    // choosing, and choosing silently would lose them.
+    let outcome = match (sparse.preserve_sparse, xattrs.preserve_xattrs) {
+        (true, true) => Err(CliError::usage(
+            "--preserve=sparse and --preserve=xattrs cannot be combined in one import",
+        )),
+        (_, true) => transfer::import_tree_with_xattrs(request, Some(&mut sink), options, xattrs),
+        _ => transfer::import_tree_with_sparse(request, Some(&mut sink), options, sparse),
+    };
     // A refused or failed file aborts its own staging; this catches one the
     // walk left behind when it stopped early.
     transfer::FileSink::abort(&mut sink)?;
@@ -540,6 +586,24 @@ mod tests {
     use super::*;
     use fs_core::cli::transfer::FileSource;
     use std::process::{Command, Stdio};
+
+    #[test]
+    fn only_opaque_namespaces_are_carried() {
+        for name in [&b"user.a"[..], b"trusted.raw-\xfe", b"security.capability"] {
+            assert!(carried(name).is_ok(), "{name:?}");
+        }
+        for name in [
+            &b"system.posix_acl_access"[..],
+            b"system.data",
+            b"lustre.lov",
+            b"com.apple.quarantine",
+            b"user.",
+            b"",
+        ] {
+            let refused = carried(name).unwrap_err();
+            assert_eq!(refused.code, CliError::refused("").code, "{name:?}");
+        }
+    }
 
     #[test]
     fn stdin_spool_uses_selected_scratch_without_named_residue() {

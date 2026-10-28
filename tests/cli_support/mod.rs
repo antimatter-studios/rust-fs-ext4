@@ -93,6 +93,18 @@ pub fn image_path(tag: &str) -> String {
 /// the path is in the guest's own `/var/tmp`. Neither keeping them fails,
 /// naming both.
 pub fn sub_second_path(tag: &str) -> String {
+    path_where(
+        tag,
+        "keeps sub-second times, which --preserve=times needs",
+        keeps_sub_second_times,
+    )
+}
+
+/// A fresh path, not yet created, in the scratch directory when `keeps`
+/// holds there, and otherwise in `/var/tmp`, the guest's own disk when the
+/// scratch directory is the harness guest's 9p share. Neither holding
+/// fails, naming both and `what` the test needed.
+pub fn path_where(tag: &str, what: &str, keeps: impl Fn(&Path) -> bool) -> String {
     let scratch = image_path(tag);
     let name = Path::new(&scratch).file_name().unwrap().to_owned();
     let local = Path::new("/var/tmp")
@@ -100,11 +112,11 @@ pub fn sub_second_path(tag: &str) -> String {
         .to_string_lossy()
         .into_owned();
     for path in [&scratch, &local] {
-        if keeps_sub_second_times(Path::new(path).parent().unwrap()) {
+        if keeps(Path::new(path).parent().unwrap()) {
             return path.clone();
         }
     }
-    panic!("neither {scratch}'s directory nor /var/tmp keeps sub-second times, which --preserve=times needs");
+    panic!("neither {scratch}'s directory nor /var/tmp {what}");
 }
 
 /// Whether a file in `dir` keeps the nanoseconds of the access and

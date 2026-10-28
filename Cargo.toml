@@ -115,6 +115,10 @@ saphyr = "0.0.12"
 # browser build uses them: tests/wasm.rs is the one test built for it.
 [target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dev-dependencies]
 fs-ext4-test-support = { path = "tests/support" }
+# Host extended attributes for tests/cli_transfer_xattrs_kernel.rs: the
+# same crate and version rust-fs-core's transfer reads and writes them
+# with, so it adds nothing to the lockfile but this edge.
+xattr = { version = "1.6.1", default-features = false }
 
 [profile.release]
 lto = true

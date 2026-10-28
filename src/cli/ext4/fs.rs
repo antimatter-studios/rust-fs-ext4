@@ -165,7 +165,7 @@ fn command() -> Cmd {
         .subcommand(
             Cmd::new("export")
                 .about("Copy a regular file, or with --recursive a tree, out through the shared bounded transfer")
-                .args(transfer::export_args_with_times())
+                .args(transfer::export_args_with_xattrs())
                 .after_help(
                     "Examples:\n  fs.ext4 disk.img export /backup.tar backup.tar\n  \
                      fs.ext4 disk.img export --replace /etc/hostname hostname\n  \
@@ -181,8 +181,11 @@ fn command() -> Cmd {
                      given, and symlinks and special files are skipped, never followed. \
                      --preserve=links recreates hard links once per inode and symlinks with \
                      their stored target; --preserve=times sets access and modification times \
-                     from the ext4 inode. --preserve requires --recursive: a single-file export \
-                     refuses it rather than publish a file without what was asked for.",
+                     from the ext4 inode; --preserve=xattrs copies user., trusted. and \
+                     security. attributes, and an item holding one the host cannot set, or a \
+                     system. attribute such as an ACL, is refused by name. --preserve requires \
+                     --recursive: a single-file export refuses it rather than publish a file \
+                     without what was asked for.",
                 ),
         )
         .subcommand(
@@ -193,7 +196,7 @@ fn command() -> Cmd {
                 .arg(Arg::new("replace").long("replace").action(ArgAction::SetTrue))
                 .arg(Arg::new("verify").long("verify").action(ArgAction::SetTrue))
                 .args(tree_import_args())
-                .after_help("Examples:\n  fs.ext4 disk.img import --verify backup.tar /backup.tar\n  fs.ext4 disk.img import --replace hostname /etc/hostname\n  cat backup.tar | fs.ext4 disk.img import - /backup.tar\n  fs.ext4 disk.img import --recursive --preserve=links,times photos /photos\n\nFiles use fixed chunks and publish only when complete. SRC - is spooled to a private temporary host file first. --verify reopens the image and checks the staged SHA-256 before publication. Atomic publication requires a journal; otherwise exit 3. A kill may leave a .dj-import-*.partial file beside the destination, visible through ls.\n\nWith --recursive a local directory is imported through the shared tree import: every item is reported, each file is published only when complete, existing directories merge, and an existing file is refused unless --replace is given. Symlinks are never followed: --preserve=links recreates them and repeats hard links, --preserve=times sets access and modification times. Special files and --preserve=sparse are refused per item. --verify is refused with --recursive, and --preserve without it."),
+                .after_help("Examples:\n  fs.ext4 disk.img import --verify backup.tar /backup.tar\n  fs.ext4 disk.img import --replace hostname /etc/hostname\n  cat backup.tar | fs.ext4 disk.img import - /backup.tar\n  fs.ext4 disk.img import --recursive --preserve=links,times photos /photos\n\nFiles use fixed chunks and publish only when complete. SRC - is spooled to a private temporary host file first. --verify reopens the image and checks the staged SHA-256 before publication. Atomic publication requires a journal; otherwise exit 3. A kill may leave a .dj-import-*.partial file beside the destination, visible through ls.\n\nWith --recursive a local directory is imported through the shared tree import: every item is reported, each file is published only when complete, existing directories merge, and an existing file is refused unless --replace is given. Symlinks are never followed: --preserve=links recreates them and repeats hard links, --preserve=times sets access and modification times, --preserve=xattrs copies user., trusted. and security. attributes and refuses an item holding any other by name. Special files and --preserve=sparse are refused per item, and sparse cannot be combined with xattrs. --verify is refused with --recursive, and --preserve without it."),
         )
         .subcommand(
             Cmd::new("xattr")
@@ -517,12 +520,13 @@ fn run(matches: &ArgMatches) -> Result<Outcome, CliError> {
             }
             let fs = open(target, offset)?;
             if tree.recursive {
-                transfer::export_tree_with_times(
+                transfer::export_tree_with_xattrs(
                     &request,
                     &mut TreeExport { fs: &fs },
                     tree,
                     transfer::LinkOptions::from_matches(sub)?,
                     transfer::TimeOptions::from_matches(sub)?,
+                    transfer::XattrOptions::from_matches(sub)?,
                 )
             } else {
                 export(&fs, &request, transfer::ExportOptions::from_matches(sub)?)
@@ -555,6 +559,7 @@ fn run(matches: &ArgMatches) -> Result<Outcome, CliError> {
                 &request,
                 transfer::ImportTreeOptions::from_matches(sub)?,
                 transfer::SparseOptions::from_matches(sub)?,
+                transfer::XattrOptions::from_matches(sub)?,
             )
         }
         "import" if sub.get_many::<String>("preserve").is_some() => Err(CliError::usage(
@@ -618,7 +623,7 @@ fn run(matches: &ArgMatches) -> Result<Outcome, CliError> {
 /// The shared tree import's `--recursive`, `--max-depth` and `--preserve`,
 /// added beside this verb's own source, path, `--replace` and `--verify`.
 fn tree_import_args() -> [Arg; 3] {
-    let [_, _, _, recursive, max_depth, preserve] = transfer::import_args_with_tree();
+    let [_, _, _, recursive, max_depth, preserve] = transfer::import_args_with_xattrs();
     [recursive, max_depth, preserve]
 }
 
@@ -1272,6 +1277,46 @@ impl transfer::TreeSource for TreeExport<'_> {
             target: os_name(&target).into(),
             target_is_directory: false,
         }))
+    }
+
+    /// Every attribute the inode holds, in name order, its exact name bytes
+    /// kept. `system.data` is where an inline file keeps its data, not an
+    /// attribute, and is never listed; any other name ext4 transfers do not
+    /// carry refuses the item by name.
+    fn extended_attributes(
+        &mut self,
+        path: &std::path::Path,
+    ) -> Result<Vec<transfer::ExtendedAttribute>, CliError> {
+        let (bytes, ino, _) = self.resolve(path)?;
+        let (inode, raw) = self
+            .fs
+            .read_inode_verified(ino)
+            .map_err(|e| driver_error(&bytes, e))?;
+        let mut attrs = fs_ext4::xattr::read_all_resolved(self.fs, &inode, &raw)
+            .map_err(|e| driver_error(&bytes, e))?;
+        attrs.sort_by(|a, b| a.raw_name.cmp(&b.raw_name));
+        attrs
+            .into_iter()
+            .filter(|a| a.raw_name != b"system.data")
+            .map(|a| {
+                super::import::carried(&a.raw_name).map_err(|mut e| {
+                    e.message = format!("extended attribute {}: {}", show(&a.raw_name), e.message);
+                    e
+                })?;
+                Ok(transfer::ExtendedAttribute {
+                    name: os_name(&a.raw_name),
+                    value: a.value,
+                })
+            })
+            .collect()
+    }
+
+    /// ext4 has no named streams.
+    fn named_streams(
+        &mut self,
+        _path: &std::path::Path,
+    ) -> Result<Vec<transfer::NamedStream>, CliError> {
+        Ok(Vec::new())
     }
 
     fn metadata(&mut self, path: &std::path::Path) -> Result<transfer::TreeMetadata, CliError> {

@@ -457,6 +457,7 @@ dependencies = [
  "tempfile",
  "unicode-normalization",
  "wasm-bindgen-test",
+ "xattr",
 ]
 
 [[package]]
