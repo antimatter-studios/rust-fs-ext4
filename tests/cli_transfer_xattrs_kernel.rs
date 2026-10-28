@@ -27,8 +27,9 @@ fn fresh(tag: &str) -> String {
     img
 }
 
-/// A fresh host directory on a filesystem that holds `user.` attributes.
-/// The harness guest's 9p share does not, so there it is in `/var/tmp`.
+/// A fresh host directory on a filesystem that holds `user.` attributes,
+/// empty ones included. The harness guest's 9p share takes an empty value
+/// as a removal and fails it with ENODATA, so there it is in `/var/tmp`.
 fn host_dir(tag: &str) -> PathBuf {
     let dir = PathBuf::from(path_where(
         tag,
@@ -39,13 +40,18 @@ fn host_dir(tag: &str) -> PathBuf {
     dir
 }
 
-/// Whether a file in `dir` keeps a `user.` attribute set on it.
+/// Whether a file in `dir` keeps the `user.` attributes set on it, an
+/// empty value as well as a non-empty one.
 fn holds_user_attributes(dir: &Path) -> bool {
     let probe = dir.join(format!(".xattr-probe-{}", std::process::id()));
+    let keeps = |name: &str, value: &[u8]| {
+        xattr::set(&probe, name, value).is_ok()
+            && xattr::get(&probe, name).is_ok_and(|v| v.as_deref() == Some(value))
+    };
     let kept = std::fs::create_dir_all(dir).is_ok()
         && std::fs::write(&probe, b"").is_ok()
-        && xattr::set(&probe, "user.probe", b"v").is_ok()
-        && xattr::get(&probe, "user.probe").is_ok_and(|v| v.as_deref() == Some(&b"v"[..]));
+        && keeps("user.probe", b"v")
+        && keeps("user.empty-probe", b"");
     let _ = std::fs::remove_file(&probe);
     kept
 }
