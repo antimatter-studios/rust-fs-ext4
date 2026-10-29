@@ -1,2 +1,3 @@
 ### Fixed
 - **`large_file` is set when a volume needs it.** `format_filesystem` and `mkfs.ext4` now format every flavor with `RO_COMPAT_LARGE_FILE`, as `mke2fs` does by default. A write that grows a regular file past 2 GiB - 1 (pwrite, truncate, content replacement) on a volume without the flag now sets it in the same transaction as the size. Before, `e2fsck` rejected any volume holding such a file.
+- On a volume without a journal, the flag is written to the superblock before the enlarged inode, so power lost partway through the write never leaves a file past 2 GiB - 1 on a volume without it.
