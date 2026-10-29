@@ -13,7 +13,8 @@
 //! - Block (4+itable_blocks)     : root directory data block
 //! - The blocks after it         : `/lost+found`'s directory blocks
 //!
-//! Features enabled: FILETYPE, EXTENTS, 64BIT, METADATA_CSUM, SPARSE_SUPER.
+//! Features enabled: FILETYPE, EXTENTS, 64BIT, METADATA_CSUM, SPARSE_SUPER,
+//! LARGE_FILE.
 //! Journal is intentionally OFF for v1, as the resulting FS mounts cleanly
 //! without it.
 //!
@@ -884,8 +885,12 @@ fn build_superblock(
     // entries carry a file_type byte); ext4 layers on EXTENTS + 64BIT for
     // wide block addressing and METADATA_CSUM for the on-disk CRCs the
     // checksum_type=crc32c byte selects below.
+    //
+    // Every flavor carries LARGE_FILE, as `mke2fs` sets it by default
+    // (`tests/large_file_oracle.rs` compares the two with `dumpe2fs`):
+    // without it a regular file past 2 GiB - 1 is an error to `e2fsck`.
     let (feat_compat, feat_incompat, feat_ro_compat): (u32, u32, u32) = match flavor {
-        FsFlavor::Ext2 => (0u32, Incompat::FILETYPE.bits(), 0u32),
+        FsFlavor::Ext2 => (0u32, Incompat::FILETYPE.bits(), RoCompat::LARGE_FILE.bits()),
         FsFlavor::Ext3 => (
             // HAS_JOURNAL signals that `s_journal_inum` (set below) names a
             // valid journal inode. Mounters that don't grok HAS_JOURNAL will
@@ -893,13 +898,15 @@ fn build_superblock(
             // only drivers stayed safe in the face of a dirty ext3 journal.
             Compat::HAS_JOURNAL.bits(),
             Incompat::FILETYPE.bits(),
-            0u32,
+            RoCompat::LARGE_FILE.bits(),
         ),
         FsFlavor::Ext4 => (
             0u32,
             Incompat::FILETYPE.bits() | Incompat::EXTENTS.bits() | Incompat::BIT64.bits(),
             // SPARSE_SUPER: backups in groups 0, 1, and powers of 3/5/7.
-            RoCompat::METADATA_CSUM.bits() | RoCompat::SPARSE_SUPER.bits(),
+            RoCompat::METADATA_CSUM.bits()
+                | RoCompat::SPARSE_SUPER.bits()
+                | RoCompat::LARGE_FILE.bits(),
         ),
     };
     sb[0x5C..0x60].copy_from_slice(&feat_compat.to_le_bytes());
