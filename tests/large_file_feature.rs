@@ -9,6 +9,8 @@
 //!   (`tests/large_file_oracle.rs` compares against `mke2fs` itself).
 //! - A volume without it gains it the moment a write grows a regular file
 //!   past 2 GiB - 1, in the same transaction as the size, and not before.
+//! - Without a journal, the flag reaches the disk before the size does, so
+//!   a crash at any write of that commit never leaves the file without it.
 //!
 //! In-memory volume: no fixture, no VM.
 
@@ -16,13 +18,33 @@ use fs_ext4::block_io::BlockDevice;
 use fs_ext4::error::Result;
 use fs_ext4::features::{FsFlavor, RoCompat};
 use fs_ext4::{mkfs, Filesystem};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// The largest size a file may have on a volume without the flag.
 const SMALL_FILE_MAX: u64 = (1 << 31) - 1;
 
+const NEVER: usize = usize::MAX;
+
+/// An in-memory device that can be made to lose power: once armed, the
+/// `crash_at`-th write (counting from zero) and every write after it fail
+/// and change nothing, as if the machine stopped there.
 struct MemDev {
     bytes: Mutex<Vec<u8>>,
+    seen: AtomicUsize,
+    crash_at: AtomicUsize,
+}
+
+impl MemDev {
+    fn arm(&self, crash_at: usize) {
+        self.seen.store(0, Ordering::SeqCst);
+        self.crash_at.store(crash_at, Ordering::SeqCst);
+    }
+
+    /// Writes asked for since [`Self::arm`], the failed ones included.
+    fn writes_seen(&self) -> usize {
+        self.seen.load(Ordering::SeqCst)
+    }
 }
 
 impl BlockDevice for MemDev {
@@ -36,6 +58,9 @@ impl BlockDevice for MemDev {
         self.bytes.lock().unwrap().len() as u64
     }
     fn write_at(&self, offset: u64, buf: &[u8]) -> Result<()> {
+        if self.seen.fetch_add(1, Ordering::SeqCst) >= self.crash_at.load(Ordering::SeqCst) {
+            return Err(fs_ext4::Error::Corrupt("injected power loss"));
+        }
         let mut b = self.bytes.lock().unwrap();
         let start = offset as usize;
         b[start..start + buf.len()].copy_from_slice(buf);
@@ -53,6 +78,8 @@ fn formatted(flavor: FsFlavor, block_size: u32) -> Arc<MemDev> {
     let size: u64 = 32 << 20;
     let dev = Arc::new(MemDev {
         bytes: Mutex::new(vec![0u8; size as usize]),
+        seen: AtomicUsize::new(0),
+        crash_at: AtomicUsize::new(NEVER),
     });
     mkfs::format_filesystem_with_flavor(
         dev.as_ref(),
@@ -154,4 +181,38 @@ fn a_file_of_2_gib_minus_1_leaves_the_flag_alone() {
         !has_large_file(&dev),
         "2 GiB - 1 fits in 31 bits: the flag is not needed, and is not set"
     );
+}
+
+/// Without a journal a commit is a series of plain writes. Wherever power
+/// is lost among them, the disk must not hold a file past 2 GiB - 1 on a
+/// volume without the flag: the flag has to reach the disk first.
+#[test]
+fn without_a_journal_the_flag_reaches_the_disk_before_the_size() {
+    let mut crash_at = 0;
+    loop {
+        let (dev, ino) = without_flag(FsFlavor::Ext4, 4096);
+        {
+            let fs = Filesystem::mount(dev.clone()).expect("mount");
+            assert!(fs.journal.is_none(), "the default format has no journal");
+            dev.arm(crash_at);
+            let _ = fs.apply_truncate_ino(ino, 3 << 30);
+        }
+        let completed = dev.writes_seen() <= crash_at;
+        dev.arm(NEVER);
+
+        let fs = Filesystem::mount(dev.clone()).expect("mount after the crash");
+        let size = fs.read_inode_verified(ino).expect("inode").0.size;
+        let flag = fs.sb.feature_ro_compat & RoCompat::LARGE_FILE.bits() != 0;
+        assert!(
+            size <= SMALL_FILE_MAX || flag,
+            "power lost at write {crash_at}: /f is {size} bytes on a volume \
+             without large_file"
+        );
+        if completed {
+            assert_eq!(size, 3 << 30, "the uninterrupted truncate completes");
+            assert!(crash_at >= 2, "a commit of at least two writes was tried");
+            break;
+        }
+        crash_at += 1;
+    }
 }
