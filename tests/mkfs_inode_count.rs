@@ -66,8 +66,8 @@ fn format(
 ) -> Result<()> {
     let size = dev.size_bytes();
     let opts = FormatOptions {
-        flavor,
         inodes_count,
+        ..FormatOptions::new(flavor)
     };
     mkfs::format_filesystem_with_options(dev, None, Some([5; 16]), size, block_size, &opts)
 }
@@ -185,12 +185,14 @@ fn a_request_past_the_per_group_limit_is_clamped() {
 }
 
 #[test]
-fn without_a_request_the_default_is_unchanged() {
+fn without_a_request_the_count_follows_the_volume_size() {
+    // 256 MiB is under 512 MiB: one inode per 4 KiB, 65536 over two
+    // groups (tests/mkfs_default_inode_count.rs).
     let dev = device(256 << 20);
     format(&dev, FsFlavor::Ext4, 4096, None).expect("format");
     let fs = Filesystem::mount(dev).expect("mount");
-    assert_eq!(fs.sb.inodes_per_group, 8192);
-    assert_eq!(fs.sb.inodes_count, 2 * 8192);
+    assert_eq!(fs.sb.inodes_per_group, 32768);
+    assert_eq!(fs.sb.inodes_count, 2 * 32768);
 }
 
 /// A refused request leaves every byte of the device as it was.
@@ -240,4 +242,12 @@ fn inodes_that_need_the_short_group_left_off_are_refused_before_writing() {
         (32768 + 600) * 4096,
         40000,
     );
+}
+
+#[test]
+fn a_free_count_a_32_byte_descriptor_cannot_hold_is_refused() {
+    // ext2's 32-byte group descriptor counts free inodes in 16 bits. At
+    // 16 KiB blocks one group may hold 131072 inodes, and 70000 fits its
+    // table, but 70005 free does not fit the descriptor.
+    refused("ext2_wide", FsFlavor::Ext2, 16384, 32 << 20, 70000);
 }

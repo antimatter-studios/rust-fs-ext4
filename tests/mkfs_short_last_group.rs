@@ -15,85 +15,24 @@
 //!
 //! Sparse in-memory volumes: no fixture, no VM.
 
-use fs_ext4::block_io::BlockDevice;
 use fs_ext4::error::{Error, Result};
 use fs_ext4::features::FsFlavor;
 use fs_ext4::mkfs::{self, FormatOptions};
 use fs_ext4::Filesystem;
-use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+
+mod sparse_device;
+use sparse_device::Sparse;
 
 const BS: u32 = 4096;
 /// Blocks in a full group at 4 KiB: one bitmap block's bits.
 const BPG: u64 = 32768;
-const CHUNK: u64 = 4096;
-
-/// A device of `size` bytes that stores only the chunks written to it, so
-/// a volume of several groups costs what its metadata costs.
-struct Sparse {
-    size: u64,
-    chunks: Mutex<BTreeMap<u64, Vec<u8>>>,
-}
-
-impl Sparse {
-    fn new(size: u64) -> Arc<Self> {
-        Arc::new(Self {
-            size,
-            chunks: Mutex::new(BTreeMap::new()),
-        })
-    }
-
-    /// One past the last byte anything has been written to.
-    fn written_end(&self) -> u64 {
-        self.chunks
-            .lock()
-            .unwrap()
-            .keys()
-            .next_back()
-            .map_or(0, |c| (c + 1) * CHUNK)
-    }
-}
-
-impl BlockDevice for Sparse {
-    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<()> {
-        assert!(offset + buf.len() as u64 <= self.size, "read past the end");
-        let chunks = self.chunks.lock().unwrap();
-        for (i, byte) in buf.iter_mut().enumerate() {
-            let at = offset + i as u64;
-            *byte = chunks
-                .get(&(at / CHUNK))
-                .map_or(0, |c| c[(at % CHUNK) as usize]);
-        }
-        Ok(())
-    }
-    fn size_bytes(&self) -> u64 {
-        self.size
-    }
-    fn write_at(&self, offset: u64, buf: &[u8]) -> Result<()> {
-        assert!(offset + buf.len() as u64 <= self.size, "write past the end");
-        let mut chunks = self.chunks.lock().unwrap();
-        for (i, &byte) in buf.iter().enumerate() {
-            let at = offset + i as u64;
-            chunks
-                .entry(at / CHUNK)
-                .or_insert_with(|| vec![0; CHUNK as usize])[(at % CHUNK) as usize] = byte;
-        }
-        Ok(())
-    }
-    fn flush(&self) -> Result<()> {
-        Ok(())
-    }
-    fn is_writable(&self) -> bool {
-        true
-    }
-}
-
 fn format(blocks: u64, inodes: Option<u32>) -> (Arc<Sparse>, Result<()>) {
     let size = blocks * u64::from(BS);
     let dev = Sparse::new(size);
     let opts = FormatOptions {
-        flavor: FsFlavor::Ext4,
         inodes_count: inodes,
+        ..FormatOptions::new(FsFlavor::Ext4)
     };
     let r =
         mkfs::format_filesystem_with_options(dev.as_ref(), None, Some([4; 16]), size, BS, &opts);
@@ -136,7 +75,9 @@ fn formats_as(tag: &str, blocks: u64, inodes: Option<u32>, expect_blocks: u64, e
 #[test]
 fn one_full_group_and_one_block_formats_as_one_group() {
     formats_as("1g+1", BPG + 1, Some(2000), BPG, 2000);
-    formats_as("1g+1_default", BPG + 1, None, BPG, 8192);
+    // Without a count: one group of 128 MiB, under 512 MiB, gets one
+    // inode per 4 KiB, worked out again after the drop.
+    formats_as("1g+1_default", BPG + 1, None, BPG, 32768);
 }
 
 #[test]
@@ -160,10 +101,11 @@ fn a_last_group_one_block_below_the_threshold_is_dropped() {
 
 #[test]
 fn a_device_too_small_for_group_0_is_still_refused() {
-    // Group 0 needs 521 blocks: the superblock, the descriptor table, two
-    // bitmaps, 8192 inodes' 512-block table, the root's block and
-    // lost+found's four. There is no group before it to fall back to.
-    let (dev, r) = format(512, None);
+    // With 8192 inodes group 0 needs 521 blocks: the superblock, the
+    // descriptor table, two bitmaps, a 512-block inode table, the root's
+    // block and lost+found's four. There is no group before it to fall
+    // back to. (Without a count, 512 blocks get 256 inodes, and fit.)
+    let (dev, r) = format(512, Some(8192));
     assert!(matches!(r, Err(Error::InvalidArgument(_))), "{r:?}");
     assert_eq!(dev.written_end(), 0, "a refused format writes nothing");
 }
