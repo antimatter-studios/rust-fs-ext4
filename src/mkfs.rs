@@ -111,14 +111,16 @@ pub struct FormatOptions {
     /// How many inodes the volume should have, as `mke2fs -N` takes it, or
     /// `None` for [`DEFAULT_INODES_PER_GROUP`] in every group.
     ///
-    /// The count is spread over the groups and rounded up, so the volume
-    /// has at least this many: each group gets `ceil(count / groups)`,
-    /// rounded up to fill whole inode-table blocks and whole inode-bitmap
-    /// bytes, and never fewer than the reserved inodes and `/lost+found`
-    /// need in group 0. Zero, or a count the layout cannot hold -- more
-    /// inodes in a group than its bitmap block has bits, or an inode table
-    /// that leaves a group no room -- is [`Error::InvalidArgument`], and
-    /// nothing is written.
+    /// The count is spread over the groups as `mke2fs` spreads it: each
+    /// group gets `ceil(count / groups)`, rounded up to fill whole
+    /// inode-table blocks, then down to whole bytes of the inode bitmap.
+    /// Where a table block holds fewer than eight inodes that can leave a
+    /// few fewer than asked. A group holds at most 65536 inodes less one
+    /// table block's worth, and a count past that is clamped to it. Zero, a count that leaves group 0
+    /// too few inodes for the reserved ones and `/lost+found`, or one the
+    /// layout cannot hold -- more inodes in a group than its bitmap block
+    /// has bits, or an inode table that leaves a group no room -- is
+    /// [`Error::InvalidArgument`], and nothing is written.
     pub inodes_count: Option<u32>,
 }
 
@@ -131,6 +133,13 @@ impl FormatOptions {
         }
     }
 }
+
+/// The inodes a group may hold are fewer than this by one inode-table
+/// block's worth: 65472, 65408 and 65280 at 16, 32 and 64 KiB blocks with
+/// 256-byte inodes. `mke2fs` clamps a larger request to it, and `e2fsck`
+/// refuses a superblock past it as corrupt.
+/// `tests/mkfs_inode_count_oracle.rs` holds the clamp to `mke2fs`.
+const INODES_PER_GROUP_CEILING: u32 = 1 << 16;
 
 /// Inodes per group for a volume of `groups` groups, from the count the
 /// caller asked for (see [`FormatOptions::inodes_count`]).
@@ -148,15 +157,19 @@ fn inodes_per_group_for(
             "mkfs: inode count must be at least 1",
         ));
     }
+    // Up to whole inode-table blocks, then down to whole bytes of the
+    // inode bitmap, whose checksum covers `inodes_per_group / 8` bytes:
+    // what `mke2fs` does, read back from it at 1, 2 and 4 KiB blocks.
+    let per_block = u64::from(block_size / u32::from(inode_size));
+    let per_group = u64::from(requested).div_ceil(groups).div_ceil(per_block) * per_block;
+    let per_group = (per_group / 8 * 8).min(u64::from(INODES_PER_GROUP_CEILING) - per_block);
     // Inode numbers are 1-based and group 0 holds the reserved ones and
     // lost+found, so it needs one past it before a file can be made.
-    let wanted = u64::from(requested)
-        .div_ceil(groups)
-        .max(u64::from(LOST_FOUND_INO) + 1);
-    // Whole inode-table blocks, and whole bytes of the inode bitmap, whose
-    // checksum covers `inodes_per_group / 8` bytes. Both are powers of two.
-    let unit = u64::from(block_size / u32::from(inode_size)).max(8);
-    let per_group = wanted.div_ceil(unit) * unit;
+    if per_group <= u64::from(LOST_FOUND_INO) {
+        return Err(Error::InvalidArgument(
+            "mkfs: too few inodes per group for the reserved inodes and lost+found",
+        ));
+    }
     if per_group > u64::from(block_size) * 8 {
         return Err(Error::InvalidArgument(
             "mkfs: more inodes per group than one inode bitmap block can track",
