@@ -30,6 +30,16 @@ pub(crate) struct BlockBuffer {
     /// unspecified bytes the flag existed to license skipping, and a
     /// planner that trusted the flag would allocate out of them.
     pub uninit_cleared: BTreeMap<usize, u16>,
+    /// `s_feature_ro_compat` bits a commit without a journal writes to the
+    /// superblock before any other block, as well as in the staged copy.
+    ///
+    /// A journal commits the buffer whole. Without one the blocks go out
+    /// in stages and the superblock goes last, so a feature the other
+    /// blocks need -- `LARGE_FILE` under an inode grown past 2 GiB - 1 --
+    /// would be on disk after the structure that needs it, and a crash in
+    /// between leaves a volume `e2fsck` rejects. Setting a feature early is
+    /// harmless: it says the volume may hold such a structure.
+    pub ro_compat_first: u32,
 }
 
 impl BlockBuffer {
@@ -45,6 +55,7 @@ impl BlockBuffer {
         Self {
             dirty: BTreeMap::new(),
             uninit_cleared: BTreeMap::new(),
+            ro_compat_first: 0,
         }
     }
 
@@ -1205,10 +1216,16 @@ impl Filesystem {
     /// directly rather than through a transaction -- the kernel's own
     /// mount and unmount writes are direct -- keeping its checksum right.
     fn write_superblock_state(&self, state: u16) -> Result<()> {
+        self.write_superblock_with(|sb| sb[0x3A..0x3C].copy_from_slice(&state.to_le_bytes()))
+    }
+
+    /// Apply `edit` to the on-disk superblock and write it straight back,
+    /// flushed, keeping its checksum right.
+    fn write_superblock_with(&self, edit: impl FnOnce(&mut [u8])) -> Result<()> {
         let at = crate::superblock::SUPERBLOCK_OFFSET;
         let mut sb = vec![0u8; 1024];
         self.dev.read_at(at, &mut sb)?;
-        sb[0x3A..0x3C].copy_from_slice(&state.to_le_bytes());
+        edit(&mut sb);
         if self.csum.enabled {
             let csum = crate::checksum::linux_crc32c(!0, &sb[..0x3FC]);
             sb[0x3FC..0x400].copy_from_slice(&csum.to_le_bytes());
@@ -3225,7 +3242,53 @@ impl Filesystem {
         let it_buf = buf.get_mut(self, block)?;
         let off = offset as usize;
         it_buf[off..off + inode_raw.len()].copy_from_slice(inode_raw);
-        Ok(())
+        self.buffer_note_large_file(buf, inode_raw)
+    }
+
+    /// Stage `RO_COMPAT_LARGE_FILE` into the superblock when `inode_raw` is
+    /// a regular file whose size does not fit in 31 bits.
+    ///
+    /// The format documentation gives the flag as "this filesystem has been
+    /// used to store a file greater than 2 GiB", and `e2fsck` refuses a
+    /// volume holding such a file without it. Every inode write passes
+    /// through [`Self::buffer_write_inode`], so checking here covers every
+    /// path that grows a file (pwrite, truncate, content replacement) in
+    /// the same transaction as the size. The superblock is staged only when
+    /// the flag is missing from it, so a volume that has it pays nothing.
+    fn buffer_note_large_file(&self, buf: &mut BlockBuffer, inode_raw: &[u8]) -> Result<()> {
+        const S_IFMT: u16 = 0o170000;
+        const S_IFREG: u16 = 0o100000;
+        const SMALL_FILE_MAX: u64 = (1 << 31) - 1;
+        let large = features::RoCompat::LARGE_FILE.bits();
+        if self.sb.feature_ro_compat & large != 0 || inode_raw.len() < 0x70 {
+            return Ok(());
+        }
+        let mode = u16::from_le_bytes(inode_raw[0x00..0x02].try_into().unwrap());
+        let lo = u32::from_le_bytes(inode_raw[0x04..0x08].try_into().unwrap());
+        let hi = u32::from_le_bytes(inode_raw[0x6C..0x70].try_into().unwrap());
+        let size = (u64::from(hi) << 32) | u64::from(lo);
+        if mode & S_IFMT != S_IFREG || size <= SMALL_FILE_MAX {
+            return Ok(());
+        }
+
+        let bs = self.sb.block_size() as u64;
+        let sb_offset = crate::superblock::SUPERBLOCK_OFFSET;
+        let sb_block = sb_offset / bs;
+        let off = (sb_offset % bs) as usize;
+        // The mount-time copy above is not updated, so ask the current
+        // superblock -- staged in this buffer, or on disk -- before
+        // staging it again.
+        let ro_of =
+            |block: &[u8]| u32::from_le_bytes(block[off + 0x64..off + 0x68].try_into().unwrap());
+        let current = match buf.dirty.get(&sb_block) {
+            Some(block) => ro_of(block),
+            None => ro_of(&self.read_block(sb_block)?),
+        };
+        if current & large != 0 {
+            return Ok(());
+        }
+        buf.ro_compat_first |= large;
+        self.buffer_patch_sb_ro_compat(buf, large)
     }
 
     /// Every block an extent-mapped inode holds, as runs: its data extents,
@@ -3771,6 +3834,22 @@ impl Filesystem {
         Ok(())
     }
 
+    /// Buffer-side OR of `bits` into the SB's `s_feature_ro_compat` (0x64).
+    pub(crate) fn buffer_patch_sb_ro_compat(&self, buf: &mut BlockBuffer, bits: u32) -> Result<()> {
+        let bs = self.sb.block_size() as u64;
+        let sb_offset = crate::superblock::SUPERBLOCK_OFFSET;
+        let block = buf.get_mut(self, sb_offset / bs)?;
+        let off = (sb_offset % bs) as usize;
+        let sb = &mut block[off..off + 1024];
+        let ro_compat = u32::from_le_bytes(sb[0x64..0x68].try_into().unwrap());
+        sb[0x64..0x68].copy_from_slice(&(ro_compat | bits).to_le_bytes());
+        if self.csum.enabled {
+            let csum = crate::checksum::linux_crc32c(!0, &sb[..0x3FC]);
+            sb[0x3FC..0x400].copy_from_slice(&csum.to_le_bytes());
+        }
+        Ok(())
+    }
+
     /// Buffer-side patch of the SB's `s_last_orphan` field at byte
     /// 0xE8. Used by orphan recovery (Phase 6.2) to clear / advance the
     /// chain head atomically with the inode/block frees.
@@ -4183,7 +4262,7 @@ impl Filesystem {
                 .keys()
                 .map(|&gi| self.sb.descriptor_location(gi as u64).0)
                 .collect();
-            if let Err(e) = self.write_direct(buf.dirty, &descriptors) {
+            if let Err(e) = self.write_direct(buf.dirty, &descriptors, buf.ro_compat_first) {
                 // Part of the commit may be on disk and none of it is in
                 // `uninit_cleared`: stop this mount writing (#319).
                 self.direct_commit_failed
@@ -4198,6 +4277,10 @@ impl Filesystem {
     /// Write a committed buffer straight to the device, in three flushed
     /// stages, for a mount with no journal.
     ///
+    /// 0. **Features the other blocks need** (`ro_compat_first`, see
+    ///    [`BlockBuffer::ro_compat_first`]), set in the superblock on disk
+    ///    and nothing else of it changed, so the stage-3 markers still go
+    ///    last.
     /// 1. **Everything else** -- bitmaps, inode tables, extent and directory
     ///    blocks, data.
     /// 2. **The descriptor blocks that clear an uninit flag** (`descriptors`).
@@ -4219,7 +4302,14 @@ impl Filesystem {
         &self,
         mut dirty: std::collections::BTreeMap<u64, Vec<u8>>,
         descriptors: &std::collections::BTreeSet<u64>,
+        ro_compat_first: u32,
     ) -> Result<()> {
+        if ro_compat_first != 0 {
+            self.write_superblock_with(|sb| {
+                let ro = u32::from_le_bytes(sb[0x64..0x68].try_into().unwrap());
+                sb[0x64..0x68].copy_from_slice(&(ro | ro_compat_first).to_le_bytes());
+            })?;
+        }
         let bs = self.sb.block_size() as u64;
         let sb_block = crate::superblock::SUPERBLOCK_OFFSET / bs;
         let superblock = dirty.remove(&sb_block);
