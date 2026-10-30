@@ -1,0 +1,2 @@
+### Fixed
+- **A device that ends in a short block group is formatted, as `mke2fs` formats it.** `format_filesystem` and `mkfs.ext4` refused any ext4 size whose last group could not hold its own metadata ("group overhead exceeds group size"). Now a last group that cannot hold its bitmaps, its inode table, any superblock backup and 50 data blocks is left off the volume, and the layout is worked out again. The volume is then a little smaller than the device, and the superblock's block count says so. With an inode count requested, the volume still holds at least that many.
