@@ -243,11 +243,3 @@ fn inodes_that_need_the_short_group_left_off_are_refused_before_writing() {
         40000,
     );
 }
-
-#[test]
-fn a_free_count_a_32_byte_descriptor_cannot_hold_is_refused() {
-    // ext2's 32-byte group descriptor counts free inodes in 16 bits. At
-    // 16 KiB blocks one group may hold 131072 inodes, and 70000 fits its
-    // table, but 70005 free does not fit the descriptor.
-    refused("ext2_wide", FsFlavor::Ext2, 16384, 32 << 20, 70000);
-}

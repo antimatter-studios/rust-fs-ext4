@@ -3,12 +3,14 @@
 //! `mke2fs` sizes it from the volume: one inode for every so many bytes,
 //! a ratio that depends on how large the volume is. Below 3 MiB it is one
 //! per 8 KiB, below 512 MiB one per 4 KiB, and from there one per 16 KiB.
-//! The count is then spread over the groups and rounded up as an explicit
-//! count is (`tests/mkfs_inode_count.rs`). A fixed 8192 a group, which
-//! this formatter used, agrees with that only at 4 KiB blocks on volumes
-//! of 512 MiB and more: at 1 KiB blocks it spends a quarter of the volume
-//! on inode tables, and at 64 KiB a large volume runs out of inodes long
-//! before it runs out of space. `tests/mkfs_default_inode_count_oracle.rs`
+//! The ratio is never below the block size, so by default a volume never
+//! has more inodes than blocks; a ratio the caller chooses is taken as
+//! given. The count is then spread over the groups and rounded and clamped
+//! as an explicit count is (`tests/mkfs_inode_count.rs`). A fixed 8192 a
+//! group, which this formatter used, agrees with that only at 4 KiB
+//! blocks on volumes of 512 MiB and more: at 1 KiB blocks it spends a
+//! quarter of the volume on inode tables, and a full 64 KiB group gets
+//! 8192 where `mke2fs` gives 65280. `tests/mkfs_default_inode_count_oracle.rs`
 //! holds each count here to `mke2fs` itself.
 //!
 //! Sparse in-memory volumes: no fixture, no VM.
@@ -75,4 +77,22 @@ fn a_volume_under_3_mib_gets_one_inode_per_8_kib() {
     // 2 MiB / 8 KiB = 256. A fixed 8192 needed a 512-block table, the
     // whole device, and was refused.
     formats_with("4k_2m", FsFlavor::Ext4, 4096, 2 << 20, 256, 1);
+}
+
+#[test]
+fn the_default_ratio_is_never_below_the_block_size() {
+    // 256 MiB is under 512 MiB, one inode per 4 KiB by size, but 8 KiB
+    // and 16 KiB blocks raise it to one per block: 32768 and 16384.
+    formats_with("8k_256m", FsFlavor::Ext4, 8192, 256 << 20, 32768, 1);
+    formats_with("16k_256m", FsFlavor::Ext4, 16384, 256 << 20, 16384, 1);
+    // 98304 blocks of 64 KiB, two groups: one inode per block, 49152 a
+    // group, not one per 16 KiB.
+    formats_with("64k_2g", FsFlavor::Ext4, 65536, 98304 * 65536, 49152, 2);
+}
+
+#[test]
+fn a_full_group_of_large_blocks_is_clamped_to_the_per_group_limit() {
+    // One full 16 KiB group, 65528 blocks at one inode per block, is past
+    // 65536 inodes less one table block's worth: 65472.
+    formats_with("16k_1g", FsFlavor::Ext4, 16384, 65528 * 16384, 65472, 1);
 }

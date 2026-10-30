@@ -139,3 +139,24 @@ fn ext2_eight_mib_at_1_kib_blocks() {
 fn a_ratio_of_64_kib() {
     matches_mke2fs("4k_1g_i64k", FsFlavor::Ext4, 4096, 1 << 30, Some(64 << 10));
 }
+
+/// The default ratio is raised to the block size: one inode per block.
+#[test]
+fn the_default_ratio_is_never_below_the_block_size() {
+    matches_mke2fs("8k_256m", FsFlavor::Ext4, 8192, 256 << 20, None);
+    matches_mke2fs("16k_256m", FsFlavor::Ext4, 16384, 256 << 20, None);
+    matches_mke2fs("64k_2g", FsFlavor::Ext4, 65536, 98304 * 65536, None);
+}
+
+/// A ratio the caller chooses is not raised: at 64 KiB blocks, one inode
+/// per 16 KiB reaches the per-group limit.
+#[test]
+fn a_chosen_ratio_below_the_block_size_is_taken_as_given() {
+    matches_mke2fs(
+        "64k_2g_i16k",
+        FsFlavor::Ext4,
+        65536,
+        98304 * 65536,
+        Some(16 << 10),
+    );
+}
