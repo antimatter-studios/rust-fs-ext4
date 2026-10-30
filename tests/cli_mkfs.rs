@@ -171,3 +171,92 @@ fn a_block_device_is_refused_by_size() {
         stderr(&out)
     );
 }
+
+/// `-N` / `--inodes` sets the inode count, as for mke2fs: 1000 inodes on
+/// one group of 256-byte inodes in 4 KiB blocks is rounded up to a whole
+/// table block, 1008. It was accepted and ignored, with a warning.
+#[test]
+fn dash_n_sets_the_inode_count() {
+    for flag in ["-N", "--inodes"] {
+        let img = sized_image(&format!("inodes{flag}"), SIZE);
+        let out = ok(tool("mkfs.ext4").args([flag, "1000", &img]));
+        assert!(
+            !stderr(&out).contains("not yet honored"),
+            "{flag}: {}",
+            stderr(&out)
+        );
+        assert_eq!(json_field(&stdout(&out), "total_inodes"), "1008", "{flag}");
+        let fs = mount(&img);
+        assert_eq!(fs.sb.inodes_count, 1008, "{flag}");
+        assert_eq!(fs.sb.inodes_per_group, 1008, "{flag}");
+    }
+}
+
+#[test]
+fn a_bad_inode_count_is_a_usage_error_before_the_device_is_opened() {
+    for bad in ["0", "-5", "lots", "4294967296"] {
+        let img = image_path(&format!("badinodes{bad}"));
+        let pattern = vec![0xAAu8; SIZE as usize];
+        std::fs::write(&img, &pattern).unwrap();
+        let out = tool("mkfs.ext4").args(["-N", bad, &img]).output().unwrap();
+        assert_eq!(out.status.code(), Some(2), "{bad}: {}", stderr(&out));
+        assert!(
+            !stderr(&out).contains("formatting"),
+            "{bad}: {}",
+            stderr(&out)
+        );
+        assert_eq!(std::fs::read(&img).unwrap(), pattern, "{bad}");
+    }
+}
+
+#[test]
+fn an_inode_count_the_layout_cannot_hold_is_refused_and_writes_nothing() {
+    // One 4 KiB group's bitmap block covers 32768 inodes.
+    let img = image_path("toomanyinodes");
+    let pattern = vec![0xAAu8; SIZE as usize];
+    std::fs::write(&img, &pattern).unwrap();
+    let out = tool("mkfs.ext4")
+        .args(["-N", "40000", &img])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert_eq!(std::fs::read(&img).unwrap(), pattern);
+}
+
+/// `-i` / `--bytes-per-inode` sets the ratio, as for mke2fs: 32 MiB at one
+/// inode per 64 KiB is 512 inodes. It was accepted and ignored, with a
+/// warning. `-N` takes precedence over it.
+#[test]
+fn dash_i_sets_the_bytes_per_inode() {
+    for flag in ["-i", "--bytes-per-inode"] {
+        let img = sized_image(&format!("ratio{flag}"), SIZE);
+        let out = ok(tool("mkfs.ext4").args([flag, "65536", &img]));
+        assert!(
+            !stderr(&out).contains("not yet honored"),
+            "{flag}: {}",
+            stderr(&out)
+        );
+        assert_eq!(json_field(&stdout(&out), "total_inodes"), "512", "{flag}");
+        assert_eq!(mount(&img).sb.inodes_count, 512, "{flag}");
+    }
+    let img = sized_image("ratio-and-count", SIZE);
+    let out = ok(tool("mkfs.ext4").args(["-i", "65536", "-N", "1000", &img]));
+    assert_eq!(json_field(&stdout(&out), "total_inodes"), "1008");
+}
+
+#[test]
+fn a_bad_bytes_per_inode_is_a_usage_error_before_the_device_is_opened() {
+    for bad in ["0", "1023", "67108865", "lots"] {
+        let img = image_path(&format!("badratio{bad}"));
+        let pattern = vec![0xAAu8; SIZE as usize];
+        std::fs::write(&img, &pattern).unwrap();
+        let out = tool("mkfs.ext4").args(["-i", bad, &img]).output().unwrap();
+        assert_eq!(out.status.code(), Some(2), "{bad}: {}", stderr(&out));
+        assert!(
+            !stderr(&out).contains("formatting"),
+            "{bad}: {}",
+            stderr(&out)
+        );
+        assert_eq!(std::fs::read(&img).unwrap(), pattern, "{bad}");
+    }
+}

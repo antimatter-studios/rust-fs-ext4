@@ -20,8 +20,10 @@ use clap::{Arg, ArgAction, ArgMatches, Command as Cmd};
 
 use fs_core::cli::{CliError, Json, Outcome, Tool};
 use fs_ext4::block_io::{BlockDevice, FileDevice};
+use fs_ext4::features::FsFlavor;
 use fs_ext4::mkfs::{
-    format_filesystem, is_valid_block_size, DEFAULT_BLOCK_SIZE, MAX_BLOCK_SIZE, MIN_BLOCK_SIZE,
+    format_filesystem_with_options, is_valid_block_size, FormatOptions, DEFAULT_BLOCK_SIZE,
+    MAX_BLOCK_SIZE, MAX_BYTES_PER_INODE, MIN_BLOCK_SIZE, MIN_BYTES_PER_INODE,
 };
 
 pub const TOOL: Tool = Tool {
@@ -37,7 +39,7 @@ pub const TOOL: Tool = Tool {
 /// The standard formatter's flags accepted and ignored that take one
 /// argument, which is discarded. A flag listed here consumes the token
 /// after it, so a boolean flag listed here would eat the device.
-pub const IGNORED_FLAGS_WITH_ARG: &[char] = &['m', 'N', 'i', 'E', 'O', 'T'];
+pub const IGNORED_FLAGS_WITH_ARG: &[char] = &['m', 'E', 'O', 'T'];
 
 /// The standard formatter's flags accepted and ignored that take nothing.
 /// `-c` (check for bad blocks) is why this list exists: listed as
@@ -81,6 +83,31 @@ fn command() -> Cmd {
                      Default: {DEFAULT_BLOCK_SIZE}."
                 ))
                 .value_parser(parse_block_size),
+        )
+        .arg(
+            Arg::new("inodes")
+                .short('N')
+                .long("inodes")
+                .value_name("COUNT")
+                .help(
+                    "Number of inodes, at least 1, as for the standard formatter's -N. \
+                     Spread over the block groups and rounded up to whole inode-table \
+                     blocks. Takes precedence over -i. Default: from -i.",
+                )
+                .value_parser(parse_inodes),
+        )
+        .arg(
+            Arg::new("bytes-per-inode")
+                .short('i')
+                .long("bytes-per-inode")
+                .value_name("BYTES")
+                .help(format!(
+                    "One inode per BYTES of the volume, as for the standard formatter's -i: \
+                     {MIN_BYTES_PER_INODE}..={MAX_BYTES_PER_INODE}. Default: by volume \
+                     size, as the standard formatter chooses (8 KiB under 3 MiB, 4 KiB \
+                     under 512 MiB, then 16 KiB)."
+                ))
+                .value_parser(parse_bytes_per_inode),
         )
         .arg(
             Arg::new("uuid")
@@ -130,7 +157,7 @@ fn command() -> Cmd {
              mkfs.ext4 -n disk.img                  open and report, write nothing\n  \
              mkfs.ext4 --text -q disk.img           print nothing on success\n\n\
              Accepted and ignored, with a warning, because scripts pass them: \
-             -m -N -i -E -O -T (each takes a value), and -c.",
+             -m -E -O -T (each takes a value), and -c.",
         );
     for &flag in IGNORED_FLAGS_WITH_ARG {
         cmd = cmd.arg(
@@ -154,12 +181,10 @@ fn command() -> Cmd {
 }
 
 /// The clap id of an ignored flag. clap ids are static strings, and there
-/// are seven of these, so a table beats building one per run.
+/// are five of these, so a table beats building one per run.
 fn ignored_id(flag: char) -> &'static str {
     match flag {
         'm' => "ignored-m",
-        'N' => "ignored-N",
-        'i' => "ignored-i",
         'E' => "ignored-E",
         'O' => "ignored-O",
         'T' => "ignored-T",
@@ -175,6 +200,8 @@ struct Opts {
     label: Option<String>,
     block_size: Option<u32>,
     uuid: Option<[u8; 16]>,
+    inodes: Option<u32>,
+    bytes_per_inode: Option<u32>,
     dry_run: bool,
     quiet: bool,
     create_size: Option<u64>,
@@ -217,6 +244,8 @@ fn opts(matches: &ArgMatches) -> Opts {
         label: matches.get_one::<String>("label").cloned(),
         block_size: matches.get_one::<u32>("block-size").copied(),
         uuid: matches.get_one::<[u8; 16]>("uuid").copied(),
+        inodes: matches.get_one::<u32>("inodes").copied(),
+        bytes_per_inode: matches.get_one::<u32>("bytes-per-inode").copied(),
         dry_run: matches.get_count("dry-run") > 0,
         quiet: matches.get_count("quiet") > 0,
         create_size: matches.get_one::<u64>("size").copied(),
@@ -326,8 +355,20 @@ fn run(matches: &ArgMatches) -> Result<Outcome, CliError> {
     let Some(dev) = dev else {
         unreachable!("only a dry run leaves the device unopened");
     };
-    format_filesystem(&dev, opts.label.as_deref(), opts.uuid, size, block_size)
-        .map_err(|e| CliError::failed(format!("format failed: {e:?}")))?;
+    let format = FormatOptions {
+        inodes_count: opts.inodes,
+        bytes_per_inode: opts.bytes_per_inode,
+        ..FormatOptions::new(FsFlavor::Ext4)
+    };
+    format_filesystem_with_options(
+        &dev,
+        opts.label.as_deref(),
+        opts.uuid,
+        size,
+        block_size,
+        &format,
+    )
+    .map_err(|e| CliError::failed(format!("format failed: {e:?}")))?;
     // Flush so the bytes reach storage before exit: `mkfs && mount` must
     // not race the page cache.
     dev.flush()
@@ -398,6 +439,33 @@ fn parse_block_size(v: &str) -> Result<u32, String> {
         ));
     }
     Ok(n)
+}
+
+/// An inode count: a whole number from 1 to `u32::MAX`. Refused here, at
+/// parse time, like a bad block size; whether the layout can hold it is
+/// the formatter's to say, before it writes anything.
+fn parse_inodes(v: &str) -> Result<u32, String> {
+    match v.parse::<u32>() {
+        Ok(0) => Err("inode count must be at least 1".to_string()),
+        Ok(n) => Ok(n),
+        Err(_) => Err(format!(
+            "inode count must be a whole number from 1 to {}, got {v}",
+            u32::MAX
+        )),
+    }
+}
+
+/// A bytes-per-inode ratio, in [`MIN_BYTES_PER_INODE`]`..=`
+/// [`MAX_BYTES_PER_INODE`]. Refused here, at parse time, like a bad inode
+/// count.
+fn parse_bytes_per_inode(v: &str) -> Result<u32, String> {
+    match v.parse::<u32>() {
+        Ok(n) if (MIN_BYTES_PER_INODE..=MAX_BYTES_PER_INODE).contains(&n) => Ok(n),
+        _ => Err(format!(
+            "bytes per inode must be a whole number from {MIN_BYTES_PER_INODE} to \
+             {MAX_BYTES_PER_INODE}, got {v}"
+        )),
+    }
 }
 
 /// A size like `64M`, `1G`, `1024K` or `33554432`: 1024-based K/M/G/T,
