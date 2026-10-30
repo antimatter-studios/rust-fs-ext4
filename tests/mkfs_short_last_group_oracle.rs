@@ -8,10 +8,18 @@
 //! The volume this crate made must pass `e2fsck -fn` and hold at least
 //! the inodes asked for.
 //!
-//! `-I 256` is given to `mke2fs` because a device this small falls in its
-//! small-volume profile, which picks 128-byte inodes; this crate's ext4
-//! inodes are 256 bytes, and the inode table's size is what the short
-//! group is measured against.
+//! `mke2fs` is asked for the layout this crate writes, because a group's
+//! metadata is what its short tail is measured against:
+//!
+//! - `-I 256`, because a device this small falls in `mke2fs`'s
+//!   small-volume profile, which picks 128-byte inodes, and this crate's
+//!   ext4 inodes are 256 bytes.
+//! - `-O ^resize_inode`, because by default `mke2fs` reserves descriptor
+//!   table blocks for growing the volume in every group that carries a
+//!   superblock backup -- 48 of them at these sizes -- and counts them
+//!   against that group. This crate reserves none. With them, `mke2fs`
+//!   keeps a 3-group-plus tail of 571 blocks and drops 570; without them,
+//!   523 and 522, which is this crate's threshold.
 
 use fs_ext4::block_io::{BlockDevice, FileDevice};
 use fs_ext4::features::FsFlavor;
@@ -72,7 +80,7 @@ fn matches_mke2fs(tag: &str, blocks: u64, inodes: u32) {
             "-t",
             "ext4",
             "-O",
-            "^has_journal",
+            "^has_journal,^resize_inode",
             "-b",
             "4096",
             "-I",
