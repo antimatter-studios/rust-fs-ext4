@@ -98,9 +98,32 @@ pub fn is_valid_block_size(block_size: u32) -> bool {
     block_size.is_power_of_two() && (MIN_BLOCK_SIZE..=MAX_BLOCK_SIZE).contains(&block_size)
 }
 
-/// Inodes per group when the caller does not ask for a count: 8192, which
-/// at 4 KiB blocks and 256-byte inodes is 512 inode-table blocks a group.
-pub const DEFAULT_INODES_PER_GROUP: u32 = 8192;
+/// The smallest bytes-per-inode ratio a format accepts: one inode per KiB.
+pub const MIN_BYTES_PER_INODE: u32 = 1024;
+/// The largest bytes-per-inode ratio a format accepts: one inode per 64 MiB.
+pub const MAX_BYTES_PER_INODE: u32 = 64 << 20;
+
+/// The bytes-per-inode ratio `mke2fs` uses for a volume of `volume_bytes`
+/// when it is given neither an inode count nor a ratio: one inode per
+/// 8 KiB below 3 MiB, per 4 KiB below 512 MiB, per 16 KiB below 4 TiB, per
+/// 32 KiB below 16 TiB, and per 64 KiB from there.
+///
+/// `tests/mkfs_default_inode_count_oracle.rs` holds the counts this gives
+/// to `mke2fs` either side of 512 MiB and below 3 MiB. The two largest
+/// bands are not held to it: a volume that size is beyond what the oracle
+/// tier formats.
+#[must_use]
+pub fn default_bytes_per_inode(volume_bytes: u64) -> u32 {
+    const MIB: u64 = 1 << 20;
+    const TIB: u64 = 1 << 40;
+    match volume_bytes {
+        b if b < 3 * MIB => 8 << 10,
+        b if b < 512 * MIB => 4 << 10,
+        b if b < 4 * TIB => 16 << 10,
+        b if b < 16 * TIB => 32 << 10,
+        _ => 64 << 10,
+    }
+}
 
 /// What a format may be asked for beyond the device, label, UUID and block
 /// size.
@@ -109,19 +132,28 @@ pub struct FormatOptions {
     /// The on-disk dialect; see [`format_filesystem_with_flavor`].
     pub flavor: FsFlavor,
     /// How many inodes the volume should have, as `mke2fs -N` takes it, or
-    /// `None` for [`DEFAULT_INODES_PER_GROUP`] in every group.
+    /// `None` for one per [`Self::bytes_per_inode`] bytes of the volume.
+    /// A count takes precedence over a ratio.
     ///
     /// The count is spread over the groups as `mke2fs` spreads it: each
     /// group gets `ceil(count / groups)`, rounded up to fill whole
     /// inode-table blocks, then down to whole bytes of the inode bitmap.
     /// Where a table block holds fewer than eight inodes that can leave a
     /// few fewer than asked. A group holds at most 65536 inodes less one
-    /// table block's worth, and a count past that is clamped to it. Zero, a count that leaves group 0
-    /// too few inodes for the reserved ones and `/lost+found`, or one the
-    /// layout cannot hold -- more inodes in a group than its bitmap block
-    /// has bits, or an inode table that leaves a group no room -- is
-    /// [`Error::InvalidArgument`], and nothing is written.
+    /// table block's worth, and a count past that is clamped to it. Zero,
+    /// a count that leaves group 0 too few inodes for the reserved ones and
+    /// `/lost+found`, or one the layout cannot hold -- more inodes in a
+    /// group than its bitmap block has bits, or an inode table that leaves
+    /// a group no room -- is [`Error::InvalidArgument`], and nothing is
+    /// written.
     pub inodes_count: Option<u32>,
+    /// One inode for every this many bytes of the volume, as `mke2fs -i`
+    /// takes it, or `None` for [`default_bytes_per_inode`] of the volume's
+    /// size. The count it gives is spread and rounded as
+    /// [`Self::inodes_count`] is. A ratio outside
+    /// [`MIN_BYTES_PER_INODE`]`..=`[`MAX_BYTES_PER_INODE`] is
+    /// [`Error::InvalidArgument`], and nothing is written.
+    pub bytes_per_inode: Option<u32>,
 }
 
 impl FormatOptions {
@@ -130,6 +162,7 @@ impl FormatOptions {
         Self {
             flavor,
             inodes_count: None,
+            bytes_per_inode: None,
         }
     }
 }
@@ -141,27 +174,37 @@ impl FormatOptions {
 /// `tests/mkfs_inode_count_oracle.rs` holds the clamp to `mke2fs`.
 const INODES_PER_GROUP_CEILING: u32 = 1 << 16;
 
-/// Inodes per group for a volume of `groups` groups, from the count the
-/// caller asked for (see [`FormatOptions::inodes_count`]).
-fn inodes_per_group_for(
-    requested: Option<u32>,
-    groups: u64,
-    block_size: u32,
-    inode_size: u16,
-) -> Result<u32> {
-    let Some(requested) = requested else {
-        return Ok(DEFAULT_INODES_PER_GROUP);
-    };
-    if requested == 0 {
+/// How many inodes a volume of `volume_bytes` should have: the caller's
+/// count, or one per bytes-per-inode ratio of the volume (see
+/// [`FormatOptions::inodes_count`] and [`FormatOptions::bytes_per_inode`]).
+fn inodes_wanted(opts: &FormatOptions, volume_bytes: u64) -> Result<u64> {
+    if let Some(count) = opts.inodes_count {
+        if count == 0 {
+            return Err(Error::InvalidArgument(
+                "mkfs: inode count must be at least 1",
+            ));
+        }
+        return Ok(u64::from(count));
+    }
+    let ratio = opts
+        .bytes_per_inode
+        .unwrap_or_else(|| default_bytes_per_inode(volume_bytes));
+    if !(MIN_BYTES_PER_INODE..=MAX_BYTES_PER_INODE).contains(&ratio) {
         return Err(Error::InvalidArgument(
-            "mkfs: inode count must be at least 1",
+            "mkfs: bytes per inode must be from 1 KiB to 64 MiB",
         ));
     }
+    Ok(volume_bytes / u64::from(ratio))
+}
+
+/// Inodes per group for a volume of `groups` groups, from the `wanted`
+/// inodes [`inodes_wanted`] gives (see [`FormatOptions::inodes_count`]).
+fn inodes_per_group_for(wanted: u64, groups: u64, block_size: u32, inode_size: u16) -> Result<u32> {
     // Up to whole inode-table blocks, then down to whole bytes of the
     // inode bitmap, whose checksum covers `inodes_per_group / 8` bytes:
     // what `mke2fs` does, read back from it at 1, 2 and 4 KiB blocks.
     let per_block = u64::from(block_size / u32::from(inode_size));
-    let per_group = u64::from(requested).div_ceil(groups).div_ceil(per_block) * per_block;
+    let per_group = wanted.div_ceil(groups).div_ceil(per_block) * per_block;
     let per_group = (per_group / 8 * 8).min(u64::from(INODES_PER_GROUP_CEILING) - per_block);
     // Inode numbers are 1-based and group 0 holds the reserved ones and
     // lost+found, so it needs one past it before a file can be made.
@@ -269,8 +312,9 @@ pub fn format_filesystem_with_options(
 
     // Geometry. blocks_per_group is one bitmap block's bits, 8 * block_size
     // (32768 for 4 KiB blocks), capped at 65528 from 16 KiB blocks on.
-    // Inodes per group is the caller's count spread over the groups, or
-    // DEFAULT_INODES_PER_GROUP (`inodes_per_group_for`).
+    // Inodes per group is the caller's count, or the volume's size over a
+    // bytes-per-inode ratio, spread over the groups (`inodes_wanted`,
+    // `inodes_per_group_for`).
     let blocks_per_group: u32 = blocks_per_group_for(block_size); // 32768 at 4 KiB
     let blocks_count: u64 = size_bytes / block_size as u64;
     if blocks_count < 64 {
@@ -278,7 +322,7 @@ pub fn format_filesystem_with_options(
     }
 
     if matches!(flavor, FsFlavor::Ext4) && block_size >= 2048 {
-        return format_block_groups(dev, label, uuid, size_bytes, block_size, opts.inodes_count);
+        return format_block_groups(dev, label, uuid, size_bytes, block_size, opts);
     }
     if blocks_count > blocks_per_group as u64 {
         return Err(Error::InvalidArgument(
@@ -286,7 +330,8 @@ pub fn format_filesystem_with_options(
         ));
     }
 
-    let inodes_per_group = inodes_per_group_for(opts.inodes_count, 1, block_size, inode_size)?;
+    let wanted = inodes_wanted(opts, blocks_count * u64::from(block_size))?;
+    let inodes_per_group = inodes_per_group_for(wanted, 1, block_size, inode_size)?;
     let inode_table_blocks: u32 =
         (inodes_per_group as u64 * inode_size as u64).div_ceil(block_size as u64) as u32;
 
@@ -351,6 +396,12 @@ pub fn format_filesystem_with_options(
     };
     let free_blocks: u64 = blocks_count - used_blocks;
     let free_inodes: u32 = inodes_per_group - LOST_FOUND_INO;
+    // A 32-byte descriptor (ext2, ext3) counts free inodes in 16 bits.
+    if desc_size < 64 && free_inodes > u32::from(u16::MAX) {
+        return Err(Error::InvalidArgument(
+            "mkfs: more free inodes in a group than a 32-byte group descriptor can count",
+        ));
+    }
 
     let uuid = uuid.unwrap_or_else(generate_uuid);
 
@@ -702,7 +753,7 @@ fn format_block_groups(
     uuid: Option<[u8; 16]>,
     size_bytes: u64,
     block_size: u32,
-    inodes_requested: Option<u32>,
+    opts: &FormatOptions,
 ) -> Result<()> {
     let (inode_size, desc_size, _, dir_csum_tail) = FsFlavor::Ext4.geometry();
 
@@ -712,17 +763,17 @@ fn format_block_groups(
     let bpg = blocks_per_group as u64;
     // The volume is the device's whole groups, and its last short group
     // only when that group can hold its own metadata and
-    // MIN_LAST_GROUP_DATA_BLOCKS of data besides. A group left off takes
-    // the inodes spread over it with it, which changes every group's
-    // inode table, so the layout is worked out again until the last group
-    // stays. Each pass leaves one group fewer, and a full group always
+    // MIN_LAST_GROUP_DATA_BLOCKS of data besides. A group left off
+    // changes how the inodes are spread -- and, without a count, how many
+    // the smaller volume gets -- so every group's inode table changes, and
+    // the layout is worked out again until the last group stays. Each pass leaves one group fewer, and a full group always
     // holds its metadata, so this ends.
     let mut blocks_count: u64 = size_bytes / bs;
     let (group_count, gdt_blocks, inodes_per_group, inode_table_blocks) = loop {
         let group_count: u64 = blocks_count.div_ceil(bpg);
         let gdt_blocks: u32 = (group_count * desc_size as u64).div_ceil(bs) as u32;
-        let inodes_per_group =
-            inodes_per_group_for(inodes_requested, group_count, block_size, inode_size)?;
+        let wanted = inodes_wanted(opts, blocks_count * bs)?;
+        let inodes_per_group = inodes_per_group_for(wanted, group_count, block_size, inode_size)?;
         let inode_table_blocks: u32 =
             (inodes_per_group as u64 * inode_size as u64).div_ceil(bs) as u32;
         let last = group_count - 1;
@@ -1198,8 +1249,10 @@ fn write_bgd_group(
         out[0x24..0x28].copy_from_slice(&((inode_bitmap_block >> 32) as u32).to_le_bytes());
         out[0x28..0x2C].copy_from_slice(&((inode_table_block >> 32) as u32).to_le_bytes());
         out[0x2C..0x2E].copy_from_slice(&((free_blocks >> 16) as u16).to_le_bytes()); // free_blocks_hi
-        out[0x2E..0x30].copy_from_slice(&0u16.to_le_bytes()); // free_inodes_hi
-        out[0x30..0x32].copy_from_slice(&0u16.to_le_bytes()); // used_dirs_hi
+                                                                                      // A group holds up to `8 * block_size` inodes, past 16 bits from
+                                                                                      // 16 KiB blocks on.
+        out[0x2E..0x30].copy_from_slice(&((free_inodes >> 16) as u16).to_le_bytes()); // free_inodes_hi
+        out[0x30..0x32].copy_from_slice(&((used_dirs >> 16) as u16).to_le_bytes()); // used_dirs_hi
         out[0x32..0x34].copy_from_slice(&0u16.to_le_bytes()); // itable_unused_hi
                                                               // 0x34..0x38 reserved
         out[0x38..0x3A].copy_from_slice(&0u16.to_le_bytes()); // bb_csum_hi
