@@ -1,13 +1,19 @@
 //! The inode count a caller asks the formatter for, as `mke2fs -N` takes
 //! one.
 //!
-//! A request of N inodes is spread over the groups and rounded up: each
-//! group gets `ceil(N / groups)` inodes, rounded up to fill whole
-//! inode-table blocks and whole inode-bitmap bytes, so the volume has at
-//! least N and never a partial table block. A request the layout cannot
-//! hold -- more inodes than a group's bitmap block has bits, or an inode
-//! table larger than a group -- is refused before anything is written.
-//! `tests/mkfs_inode_count_oracle.rs` holds the rounding to `mke2fs -N`.
+//! A request of N inodes is spread over the groups as `mke2fs` spreads it:
+//! each group gets `ceil(N / groups)`, rounded up to fill whole
+//! inode-table blocks, then down to whole bytes of the inode bitmap, so a
+//! group never has a partial table block. Where a table block holds fewer
+//! than eight inodes (256-byte inodes in 1 KiB blocks) that can leave a
+//! few fewer than asked: 100 becomes 96. A group never holds more than
+//! 65536 less one table block of inodes; a request past that is clamped,
+//! not refused. A group too small for the reserved inodes and
+//! `/lost+found`, or a request the layout cannot hold -- more inodes than
+//! a group's bitmap block has bits, or an inode table larger than a group
+//! -- is refused before anything is written. Every number here was read
+//! from `mke2fs` 1.47.0, and `tests/mkfs_inode_count_oracle.rs` holds the
+//! rounding and the clamp to it.
 //!
 //! In-memory volumes: no fixture, no VM.
 
@@ -91,7 +97,6 @@ fn formats_with(
         expect_per_group * expect_groups,
         "[{tag}] inode count"
     );
-    assert!(fs.sb.inodes_count >= requested, "[{tag}] at least as asked");
     assert_eq!(
         u64::from(fs.sb.free_inodes_count),
         u64::from(fs.sb.inodes_count) - 11,
@@ -111,18 +116,72 @@ fn a_requested_count_is_spread_over_the_groups_and_rounded_up() {
     // One group of 128-byte inodes, 32 to a block: 1000 becomes 1024.
     formats_with("ext2_1g", FsFlavor::Ext2, 4096, 32 << 20, 1000, 1024, 1);
     formats_with("ext3_1g", FsFlavor::Ext3, 4096, 32 << 20, 1000, 1024, 1);
-    // 1 KiB blocks hold four 256-byte inodes, but a bitmap byte covers
-    // eight: 100 becomes 104.
-    formats_with("one_kib", FsFlavor::Ext4, 1024, 8 << 20, 100, 104, 1);
+    // 1 KiB blocks hold four 256-byte inodes and a bitmap byte covers
+    // eight: up to whole table blocks, then down to whole bitmap bytes.
+    formats_with("one_kib", FsFlavor::Ext4, 1024, 8 << 20, 100, 96, 1);
+    formats_with("one_kib_101", FsFlavor::Ext4, 1024, 8 << 20, 101, 104, 1);
+    formats_with("one_kib_108", FsFlavor::Ext4, 1024, 8 << 20, 108, 104, 1);
+    formats_with("one_kib_2500", FsFlavor::Ext4, 1024, 8 << 20, 2500, 2496, 1);
     // An exact fit is kept as asked.
     formats_with("exact", FsFlavor::Ext4, 4096, 32 << 20, 4096, 4096, 1);
 }
 
 #[test]
 fn a_tiny_request_still_leaves_room_past_the_reserved_inodes() {
-    // Group 0 holds the ten reserved inodes and lost+found, so at least
-    // twelve are needed; rounded to a whole table block, sixteen.
+    // A whole 4 KiB table block is sixteen inodes.
     formats_with("tiny", FsFlavor::Ext4, 4096, 32 << 20, 1, 16, 1);
+    formats_with("tiny_1k", FsFlavor::Ext4, 1024, 8 << 20, 13, 16, 1);
+}
+
+#[test]
+fn a_request_too_small_for_the_reserved_inodes_is_refused() {
+    // At 1 KiB blocks 12 rounds to 8 inodes a group, fewer than the ten
+    // reserved ones and lost+found. mke2fs refuses it too.
+    refused("tiny_1k_12", FsFlavor::Ext4, 1024, 8 << 20, 12);
+}
+
+#[test]
+fn a_request_past_the_per_group_limit_is_clamped() {
+    // A group holds at most 65536 inodes less one table block's worth:
+    // 64, 128 and 256 of them at 16, 32 and 64 KiB blocks with 256-byte
+    // inodes, and 128 at 16 KiB with ext2's 128-byte ones. mke2fs clamps
+    // 70000 to exactly these, and e2fsck refuses a group holding more.
+    formats_with(
+        "clamp_16k",
+        FsFlavor::Ext4,
+        16384,
+        32 << 20,
+        70000,
+        65472,
+        1,
+    );
+    formats_with(
+        "clamp_32k",
+        FsFlavor::Ext4,
+        32768,
+        64 << 20,
+        70000,
+        65408,
+        1,
+    );
+    formats_with(
+        "clamp_64k",
+        FsFlavor::Ext4,
+        65536,
+        128 << 20,
+        70000,
+        65280,
+        1,
+    );
+    formats_with(
+        "clamp_ext2",
+        FsFlavor::Ext2,
+        16384,
+        32 << 20,
+        70000,
+        65408,
+        1,
+    );
 }
 
 #[test]
@@ -154,6 +213,9 @@ fn zero_inodes_is_refused() {
 #[test]
 fn more_inodes_than_a_bitmap_block_holds_is_refused() {
     // One 4 KiB bitmap block has 32768 bits: one group cannot hold more.
+    // mke2fs makes more, smaller groups instead (32769 on 32 MiB becomes
+    // two groups of 16400); this formatter's groups are always full size,
+    // so it refuses.
     refused("bitmap", FsFlavor::Ext4, 4096, 32 << 20, 32769);
 }
 
