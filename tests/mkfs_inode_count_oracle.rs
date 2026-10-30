@@ -102,3 +102,19 @@ fn ext2_one_group() {
 fn ext3_one_group() {
     matches_mke2fs("ext3_1g", FsFlavor::Ext3, 4096, 32 << 20, 1000);
 }
+
+/// Up to whole table blocks, then down to whole bitmap bytes: fewer than
+/// asked where a table block holds fewer than eight inodes.
+#[test]
+fn one_kib_blocks_round_down_to_bitmap_bytes() {
+    matches_mke2fs("one_kib_108", FsFlavor::Ext4, 1024, 8 << 20, 108);
+    matches_mke2fs("one_kib_2500", FsFlavor::Ext4, 1024, 8 << 20, 2500);
+}
+
+/// A group holds at most 65536 inodes less one table block's worth.
+#[test]
+fn a_request_past_the_per_group_limit_is_clamped() {
+    matches_mke2fs("clamp_16k", FsFlavor::Ext4, 16384, 32 << 20, 70000);
+    matches_mke2fs("clamp_64k", FsFlavor::Ext4, 65536, 128 << 20, 70000);
+    matches_mke2fs("clamp_ext2", FsFlavor::Ext2, 16384, 32 << 20, 70000);
+}
