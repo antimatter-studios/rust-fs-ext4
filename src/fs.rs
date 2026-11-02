@@ -504,6 +504,7 @@ pub(crate) enum DirBlockRole {
 pub struct Filesystem {
     runtime: Arc<dyn crate::runtime::Runtime>,
     managed_recovery: bool,
+    writer: Mutex<()>,
     /// The buffer cache `dev` routes through, kept typed for its statistics.
     cache: Arc<crate::block_cache::CachedDevice>,
     pub dev: Arc<dyn BlockDevice>,
@@ -560,6 +561,8 @@ pub struct Filesystem {
     /// [`Error::JournalNotReplayed`] until
     /// [`Self::replay_journal_if_dirty`] has put them on the device.
     replay_pending: std::sync::atomic::AtomicBool,
+    #[cfg(test)]
+    write_test_hook: Mutex<Option<concurrent_writers::Hook>>,
 }
 
 /// A mount that cleared `EXT4_VALID_FS` puts the state it found back when
@@ -579,6 +582,7 @@ impl Drop for Filesystem {
             .marked_not_clean
             .load(std::sync::atomic::Ordering::SeqCst)
             && self.dev.is_writable()
+            && !self.writer.is_poisoned()
             && !journal_failed
             && !self
                 .direct_commit_failed
@@ -635,6 +639,20 @@ pub const MAX_SYMLINKS: u32 = 40;
 pub const DEFAULT_CACHE_BLOCKS: usize = 256;
 
 impl Filesystem {
+    pub(crate) fn lock_write(&self) -> Result<std::sync::MutexGuard<'_, ()>> {
+        #[cfg(test)]
+        match self.writer.try_lock() {
+            Ok(guard) => return Ok(guard),
+            Err(std::sync::TryLockError::WouldBlock) => {
+                self.write_test_event(concurrent_writers::Event::Contended);
+            }
+            Err(std::sync::TryLockError::Poisoned(_)) => {}
+        }
+        self.writer
+            .lock()
+            .map_err(|_| Error::Corrupt("filesystem writer mutex poisoned (prior write panicked)"))
+    }
+
     /// Open an exclusively owned, backed-up device with checked journal recovery.
     /// Opening this writable handle is already a mutation: retain an external
     /// backup before calling. Only plain JBD2 (no transaction checksums, fast
@@ -712,6 +730,7 @@ impl Filesystem {
     /// transaction another thread is committing either finishes first or
     /// starts after: the check never sees one half-done.
     pub fn flush(&self) -> Result<()> {
+        let _write_guard = self.lock_write()?;
         if self
             .direct_commit_failed
             .load(std::sync::atomic::Ordering::SeqCst)
@@ -902,6 +921,7 @@ impl Filesystem {
         let mut fs = Self {
             runtime,
             managed_recovery: false,
+            writer: Mutex::new(()),
             cache,
             dev,
             sb,
@@ -914,6 +934,8 @@ impl Filesystem {
             direct_commit_failed: std::sync::atomic::AtomicBool::new(false),
             replay_pending: std::sync::atomic::AtomicBool::new(false),
             state_found: std::sync::atomic::AtomicU16::new(0),
+            #[cfg(test)]
+            write_test_hook: Mutex::new(None),
         };
 
         // Replay a dirty journal: onto the device if it is writable (below,
@@ -1436,6 +1458,7 @@ impl Filesystem {
     /// so the orphans we're about to reclaim are guaranteed not still in
     /// use by an in-flight kernel-level transaction.
     pub fn recover_orphans(&self) -> Result<usize> {
+        let _write_guard = self.lock_write()?;
         // NOT AN ERROR HERE, unlike the other write paths. This runs
         // from the mount path on every mount, and a volume that cannot
         // be written -- or that this driver must not write, because it
@@ -2100,6 +2123,15 @@ impl Filesystem {
     /// drops; a grow is sparse. `Error::IsADirectory` for a directory and
     /// `Error::InvalidArgument` for any other non-regular file.
     pub fn apply_truncate_ino(&self, r: impl Into<InodeRef>, new_size: u64) -> Result<()> {
+        let _write_guard = self.lock_write()?;
+        self.apply_truncate_ino_locked(r, new_size)
+    }
+
+    pub(crate) fn apply_truncate_ino_locked(
+        &self,
+        r: impl Into<InodeRef>,
+        new_size: u64,
+    ) -> Result<()> {
         self.refuse_write()?;
         let r = r.into();
         let (inode, _) = self.live_inode(r)?;
@@ -2115,9 +2147,9 @@ impl Filesystem {
         }
         // At equality either works; grow only bumps timestamps.
         if new_size >= inode.size {
-            self.apply_truncate_grow(r.ino, new_size)
+            self.apply_truncate_grow_locked(r.ino, new_size)
         } else {
-            self.apply_truncate_shrink(r.ino, new_size)
+            self.apply_truncate_shrink_locked(r.ino, new_size)
         }
     }
 
@@ -2220,6 +2252,7 @@ impl Filesystem {
     /// version. Use only when the caller has the full write-ordering story
     /// under control.
     pub fn write_inode_raw(&self, ino: u32, raw: &[u8]) -> Result<()> {
+        let _write_guard = self.lock_write()?;
         if raw.len() != self.sb.inode_size as usize {
             return Err(Error::Corrupt("write_inode_raw: length != inode_size"));
         }
@@ -2374,6 +2407,11 @@ impl Filesystem {
     /// the warning outlived it and was steering callers away from an API
     /// that is safe.
     pub fn apply_truncate_shrink(&self, ino: u32, new_size: u64) -> Result<()> {
+        let _write_guard = self.lock_write()?;
+        self.apply_truncate_shrink_locked(ino, new_size)
+    }
+
+    fn apply_truncate_shrink_locked(&self, ino: u32, new_size: u64) -> Result<()> {
         self.refuse_write()?;
         let (inode, mut raw) = self.read_inode_verified(ino)?;
         Self::refuse_truncate_of(&inode)?;
@@ -2744,6 +2782,11 @@ impl Filesystem {
     }
 
     pub fn apply_truncate_grow(&self, ino: u32, new_size: u64) -> Result<()> {
+        let _write_guard = self.lock_write()?;
+        self.apply_truncate_grow_locked(ino, new_size)
+    }
+
+    fn apply_truncate_grow_locked(&self, ino: u32, new_size: u64) -> Result<()> {
         self.refuse_write()?;
         let (inode, mut raw) = self.read_inode_verified(ino)?;
         Self::refuse_truncate_of(&inode)?;
@@ -2785,6 +2828,16 @@ impl Filesystem {
     ///   slot; a full root is promoted to an index node and a deeper tree
     ///   is descended, with the node blocks drawn in the same transaction.
     pub fn apply_fallocate_keep_size(&self, ino: u32, offset: u64, len: u64) -> Result<()> {
+        let _write_guard = self.lock_write()?;
+        self.apply_fallocate_keep_size_locked(ino, offset, len)
+    }
+
+    pub(crate) fn apply_fallocate_keep_size_locked(
+        &self,
+        ino: u32,
+        offset: u64,
+        len: u64,
+    ) -> Result<()> {
         self.refuse_write()?;
         if len == 0 {
             return Ok(());
@@ -2961,6 +3014,16 @@ impl Filesystem {
     /// - Indirect-block (ext2/3) inodes return EINVAL — punch is an
     ///   ext4-specific kernel API.
     pub fn apply_fallocate_punch_hole(&self, ino: u32, offset: u64, len: u64) -> Result<()> {
+        let _write_guard = self.lock_write()?;
+        self.apply_fallocate_punch_hole_locked(ino, offset, len)
+    }
+
+    pub(crate) fn apply_fallocate_punch_hole_locked(
+        &self,
+        ino: u32,
+        offset: u64,
+        len: u64,
+    ) -> Result<()> {
         self.refuse_write()?;
         if len == 0 {
             return Ok(());
@@ -3134,10 +3197,20 @@ impl Filesystem {
     /// Two separate transactions today (punch then alloc); a future
     /// optimization could fold them into one.
     pub fn apply_fallocate_zero_range(&self, ino: u32, offset: u64, len: u64) -> Result<()> {
+        let _write_guard = self.lock_write()?;
+        self.apply_fallocate_zero_range_locked(ino, offset, len)
+    }
+
+    pub(crate) fn apply_fallocate_zero_range_locked(
+        &self,
+        ino: u32,
+        offset: u64,
+        len: u64,
+    ) -> Result<()> {
         if len == 0 {
             return Ok(());
         }
-        self.apply_fallocate_punch_hole(ino, offset, len)?;
+        self.apply_fallocate_punch_hole_locked(ino, offset, len)?;
         // Only the whole blocks the punch freed are preallocated again: the
         // partial ones at the edges stay mapped, their range zeroed (#388).
         let bs = self.sb.block_size() as u64;
@@ -3148,7 +3221,7 @@ impl Filesystem {
         if first >= last {
             return Ok(());
         }
-        self.apply_fallocate_keep_size(ino, first, last - first)
+        self.apply_fallocate_keep_size_locked(ino, first, last - first)
     }
 
     /// Change the permission bits on `path`. Only the low 12 bits of `mode`
@@ -3164,13 +3237,19 @@ impl Filesystem {
 
     /// [`apply_chmod`](Self::apply_chmod) of a path given as bytes, never decoded.
     pub(crate) fn apply_chmod_bytes(&self, path: &[u8], mode: u16) -> Result<()> {
+        let _write_guard = self.lock_write()?;
         self.refuse_write()?;
         let ino = self.resolve(path)?;
-        self.apply_chmod_ino(ino, mode)
+        self.apply_chmod_ino_locked(ino, mode)
     }
 
     /// [`apply_chmod`](Self::apply_chmod) on the inode `r` names.
     pub fn apply_chmod_ino(&self, r: impl Into<InodeRef>, mode: u16) -> Result<()> {
+        let _write_guard = self.lock_write()?;
+        self.apply_chmod_ino_locked(r, mode)
+    }
+
+    fn apply_chmod_ino_locked(&self, r: impl Into<InodeRef>, mode: u16) -> Result<()> {
         self.refuse_write()?;
         let r = r.into();
         let ino = r.ino;
@@ -4158,6 +4237,8 @@ impl Filesystem {
         if buf.dirty.is_empty() {
             return Ok(());
         }
+        #[cfg(test)]
+        self.write_test_event(concurrent_writers::Event::BeforeCommit);
         let cleared = buf.uninit_cleared.clone();
         let publish = |fs: &Self| fs.uninit_cleared.lock().unwrap().publish(cleared);
         if let Some(jw_mu) = &self.journal {
@@ -4255,13 +4336,19 @@ impl Filesystem {
 
     /// [`apply_chown`](Self::apply_chown) of a path given as bytes, never decoded.
     pub(crate) fn apply_chown_bytes(&self, path: &[u8], uid: u32, gid: u32) -> Result<()> {
+        let _write_guard = self.lock_write()?;
         self.refuse_write()?;
         let ino = self.resolve(path)?;
-        self.apply_chown_ino(ino, uid, gid)
+        self.apply_chown_ino_locked(ino, uid, gid)
     }
 
     /// [`apply_chown`](Self::apply_chown) on the inode `r` names.
     pub fn apply_chown_ino(&self, r: impl Into<InodeRef>, uid: u32, gid: u32) -> Result<()> {
+        let _write_guard = self.lock_write()?;
+        self.apply_chown_ino_locked(r, uid, gid)
+    }
+
+    fn apply_chown_ino_locked(&self, r: impl Into<InodeRef>, uid: u32, gid: u32) -> Result<()> {
         self.refuse_write()?;
         let r = r.into();
         let ino = r.ino;
@@ -4302,6 +4389,7 @@ impl Filesystem {
 
     /// [`apply_set_flags`](Self::apply_set_flags) of a path given as bytes, never decoded.
     pub(crate) fn apply_set_flags_bytes(&self, path: &[u8], flags: u32) -> Result<()> {
+        let _write_guard = self.lock_write()?;
         use crate::inode::{OFF_FLAGS, USER_MODIFIABLE_FLAGS};
         self.refuse_write()?;
         let ino = self.resolve(path)?;
@@ -4345,6 +4433,7 @@ impl Filesystem {
 
     /// [`apply_removexattr`](Self::apply_removexattr) of a path given as bytes, never decoded.
     pub(crate) fn apply_removexattr_bytes(&self, path: &[u8], name: &[u8]) -> Result<()> {
+        let _write_guard = self.lock_write()?;
         self.refuse_write()?;
         let ino = self.resolve(path)?;
         let (inode, mut raw) = self.read_inode_verified(ino)?;
@@ -4464,6 +4553,7 @@ impl Filesystem {
     /// [`apply_setxattr`](Self::apply_setxattr) of a path and a name given
     /// as bytes, never decoded: Linux takes any bytes but NUL in either.
     pub fn apply_setxattr_bytes(&self, path: &[u8], name: &[u8], value: &[u8]) -> Result<()> {
+        let _write_guard = self.lock_write()?;
         self.refuse_write()?;
         let ino = self.resolve(path)?;
         let (inode, mut raw) = self.read_inode_verified(ino)?;
@@ -4805,17 +4895,30 @@ impl Filesystem {
         mtime_sec: i64,
         mtime_nsec: u32,
     ) -> Result<()> {
+        let _write_guard = self.lock_write()?;
         self.refuse_write()?;
         // Before resolving, so an unstorable time or nanosecond count is
         // refused as EINVAL whether or not the path exists.
         TimeUpdate::check(atime_sec, atime_nsec)?;
         TimeUpdate::check(mtime_sec, mtime_nsec)?;
         let ino = self.resolve(path)?;
-        self.apply_utimens_ino(ino, atime_sec, atime_nsec, mtime_sec, mtime_nsec)
+        self.apply_utimens_ino_locked(ino, atime_sec, atime_nsec, mtime_sec, mtime_nsec)
     }
 
     /// [`apply_utimens`](Self::apply_utimens) on the inode `r` names.
     pub fn apply_utimens_ino(
+        &self,
+        r: impl Into<InodeRef>,
+        atime_sec: i64,
+        atime_nsec: u32,
+        mtime_sec: i64,
+        mtime_nsec: u32,
+    ) -> Result<()> {
+        let _write_guard = self.lock_write()?;
+        self.apply_utimens_ino_locked(r, atime_sec, atime_nsec, mtime_sec, mtime_nsec)
+    }
+
+    fn apply_utimens_ino_locked(
         &self,
         r: impl Into<InodeRef>,
         atime_sec: i64,
@@ -4910,6 +5013,7 @@ impl Filesystem {
 
     /// [`apply_unlink`](Self::apply_unlink) of a path given as bytes, never decoded.
     pub(crate) fn apply_unlink_bytes(&self, path: &[u8]) -> Result<()> {
+        let _write_guard = self.lock_write()?;
         self.refuse_write()?;
         // POSIX: a trailing slash asserts the path refers to a directory,
         // which is incompatible with `unlink(2)` no matter what kind of file
@@ -4932,12 +5036,17 @@ impl Filesystem {
                 Error::NotADirectory
             });
         }
-        self.apply_unlink_at(parent_ino, base_name)
+        self.apply_unlink_at_locked(parent_ino, base_name)
     }
 
     /// [`apply_unlink`](Self::apply_unlink) of entry `name` in directory
     /// `dir`.
     pub fn apply_unlink_at(&self, dir: impl Into<InodeRef>, name: &[u8]) -> Result<()> {
+        let _write_guard = self.lock_write()?;
+        self.apply_unlink_at_locked(dir, name)
+    }
+
+    fn apply_unlink_at_locked(&self, dir: impl Into<InodeRef>, name: &[u8]) -> Result<()> {
         self.refuse_write()?;
         check_entry_name(name)?;
         let dir = dir.into();
@@ -5083,14 +5192,25 @@ impl Filesystem {
 
     /// [`apply_create`](Self::apply_create) of a path given as bytes, never decoded.
     pub(crate) fn apply_create_bytes(&self, path: &[u8], mode: u16) -> Result<u32> {
+        let _write_guard = self.lock_write()?;
         self.refuse_write()?;
         let (parent, name) = self.resolve_new_parent(path)?;
-        self.apply_create_at(parent, name, mode)
+        self.apply_create_at_locked(parent, name, mode)
     }
 
     /// [`apply_create`](Self::apply_create) of entry `name` in directory
     /// `dir`. `name` is bytes and need not be UTF-8.
     pub fn apply_create_at(&self, dir: impl Into<InodeRef>, name: &[u8], mode: u16) -> Result<u32> {
+        let _write_guard = self.lock_write()?;
+        self.apply_create_at_locked(dir, name, mode)
+    }
+
+    fn apply_create_at_locked(
+        &self,
+        dir: impl Into<InodeRef>,
+        name: &[u8],
+        mode: u16,
+    ) -> Result<u32> {
         self.refuse_write()?;
         let dir = dir.into();
         let NewInodePlan {
@@ -5152,10 +5272,11 @@ impl Filesystem {
         major: u32,
         minor: u32,
     ) -> Result<u32> {
+        let _write_guard = self.lock_write()?;
         self.refuse_write()?;
         Self::mknod_entry_type(mode)?;
         let (parent, name) = self.resolve_new_parent(path)?;
-        self.apply_mknod_at(parent, name, mode, major, minor)
+        self.apply_mknod_at_locked(parent, name, mode, major, minor)
     }
 
     /// The directory-entry type for a special file of `mode`, or the
@@ -5176,6 +5297,18 @@ impl Filesystem {
     /// [`apply_mknod`](Self::apply_mknod) of entry `name` in directory
     /// `dir`.
     pub fn apply_mknod_at(
+        &self,
+        dir: impl Into<InodeRef>,
+        name: &[u8],
+        mode: u16,
+        major: u32,
+        minor: u32,
+    ) -> Result<u32> {
+        let _write_guard = self.lock_write()?;
+        self.apply_mknod_at_locked(dir, name, mode, major, minor)
+    }
+
+    fn apply_mknod_at_locked(
         &self,
         dir: impl Into<InodeRef>,
         name: &[u8],
@@ -5281,10 +5414,11 @@ impl Filesystem {
 
     /// [`apply_symlink`](Self::apply_symlink) of a path given as bytes, never decoded.
     pub(crate) fn apply_symlink_bytes(&self, target: &[u8], linkpath: &[u8]) -> Result<u32> {
+        let _write_guard = self.lock_write()?;
         self.refuse_write()?;
         self.check_symlink_target(target)?;
         let (parent, name) = self.resolve_new_parent(linkpath)?;
-        self.apply_symlink_at(parent, name, target)
+        self.apply_symlink_at_locked(parent, name, target)
     }
 
     fn check_symlink_target(&self, target: &[u8]) -> Result<()> {
@@ -5310,6 +5444,16 @@ impl Filesystem {
     /// [`apply_symlink`](Self::apply_symlink): entry `name` in directory
     /// `dir`, pointing at `target`. Both are bytes and need not be UTF-8.
     pub fn apply_symlink_at(
+        &self,
+        dir: impl Into<InodeRef>,
+        name: &[u8],
+        target: &[u8],
+    ) -> Result<u32> {
+        let _write_guard = self.lock_write()?;
+        self.apply_symlink_at_locked(dir, name, target)
+    }
+
+    fn apply_symlink_at_locked(
         &self,
         dir: impl Into<InodeRef>,
         name: &[u8],
@@ -5556,6 +5700,7 @@ impl Filesystem {
 
     /// [`apply_replace_file_content`](Self::apply_replace_file_content) of a path given as bytes, never decoded.
     pub(crate) fn apply_replace_file_content_bytes(&self, path: &[u8], data: &[u8]) -> Result<u64> {
+        let _write_guard = self.lock_write()?;
         self.refuse_write()?;
         let ino = self.resolve(path)?;
         let (inode, mut raw) = self.read_inode_verified(ino)?;
@@ -5989,13 +6134,24 @@ impl Filesystem {
 
     /// [`apply_pwrite`](Self::apply_pwrite) of a path given as bytes, never decoded.
     pub(crate) fn apply_pwrite_bytes(&self, path: &[u8], offset: u64, data: &[u8]) -> Result<u64> {
+        let _write_guard = self.lock_write()?;
         self.refuse_write()?;
         let ino = self.resolve(path)?;
-        self.apply_pwrite_ino(ino, offset, data)
+        self.apply_pwrite_ino_locked(ino, offset, data)
     }
 
     /// [`apply_pwrite`](Self::apply_pwrite) on the inode `r` names.
     pub fn apply_pwrite_ino(
+        &self,
+        r: impl Into<InodeRef>,
+        offset: u64,
+        data: &[u8],
+    ) -> Result<u64> {
+        let _write_guard = self.lock_write()?;
+        self.apply_pwrite_ino_locked(r, offset, data)
+    }
+
+    fn apply_pwrite_ino_locked(
         &self,
         r: impl Into<InodeRef>,
         offset: u64,
@@ -6049,7 +6205,7 @@ impl Filesystem {
                 let take = max_chunk.min(len - chunk_off);
                 let s = chunk_off as usize;
                 let e = (chunk_off + take) as usize;
-                self.apply_pwrite_ino(r, offset + chunk_off, &data[s..e])?;
+                self.apply_pwrite_ino_locked(r, offset + chunk_off, &data[s..e])?;
                 chunk_off += take;
             }
             let (after, _) = self.read_inode_verified(ino)?;
@@ -6750,14 +6906,25 @@ impl Filesystem {
 
     /// [`apply_mkdir`](Self::apply_mkdir) of a path given as bytes, never decoded.
     pub(crate) fn apply_mkdir_bytes(&self, path: &[u8], mode: u16) -> Result<u32> {
+        let _write_guard = self.lock_write()?;
         self.refuse_write()?;
         let (parent, name) = self.resolve_new_parent(path)?;
-        self.apply_mkdir_at(parent, name, mode)
+        self.apply_mkdir_at_locked(parent, name, mode)
     }
 
     /// [`apply_mkdir`](Self::apply_mkdir) of entry `name` in directory
     /// `dir`. `name` is bytes and need not be UTF-8.
     pub fn apply_mkdir_at(&self, dir: impl Into<InodeRef>, name: &[u8], mode: u16) -> Result<u32> {
+        let _write_guard = self.lock_write()?;
+        self.apply_mkdir_at_locked(dir, name, mode)
+    }
+
+    fn apply_mkdir_at_locked(
+        &self,
+        dir: impl Into<InodeRef>,
+        name: &[u8],
+        mode: u16,
+    ) -> Result<u32> {
         self.refuse_write()?;
         check_new_entry_name(name)?;
         let dir = dir.into();
@@ -6891,6 +7058,7 @@ impl Filesystem {
 
     /// [`apply_link`](Self::apply_link) of a path given as bytes, never decoded.
     pub(crate) fn apply_link_bytes(&self, src: &[u8], dst: &[u8]) -> Result<()> {
+        let _write_guard = self.lock_write()?;
         self.refuse_write()?;
         let (dst_parent_path, dst_name) = split_parent_and_base(dst)?;
         if dst_name.len() > 255 {
@@ -6903,12 +7071,22 @@ impl Filesystem {
             return Err(Error::IsADirectory);
         }
         let dst_parent = self.resolve_dir(dst_parent_path)?;
-        self.apply_link_at(src_ino, dst_parent, dst_name)
+        self.apply_link_at_locked(src_ino, dst_parent, dst_name)
     }
 
     /// [`apply_link`](Self::apply_link): a new entry `dst_name` in
     /// directory `dir` for the inode `target` names.
     pub fn apply_link_at(
+        &self,
+        target: impl Into<InodeRef>,
+        dir: impl Into<InodeRef>,
+        dst_name: &[u8],
+    ) -> Result<()> {
+        let _write_guard = self.lock_write()?;
+        self.apply_link_at_locked(target, dir, dst_name)
+    }
+
+    fn apply_link_at_locked(
         &self,
         target: impl Into<InodeRef>,
         dir: impl Into<InodeRef>,
@@ -7008,6 +7186,7 @@ impl Filesystem {
         dst: &[u8],
         replace_if_exists: bool,
     ) -> Result<()> {
+        let _write_guard = self.lock_write()?;
         // The verdict only: the volume is marked not clean once the rename
         // is known to write (#303), in `apply_rename_at`.
         self.write_refusal()?;
@@ -7018,7 +7197,7 @@ impl Filesystem {
         }
         let src_parent = self.resolve_dir(src_parent_path)?;
         let dst_parent = self.resolve_dir(dst_parent_path)?;
-        self.apply_rename_at(
+        self.apply_rename_at_locked(
             src_parent,
             src_name,
             dst_parent,
@@ -7032,6 +7211,18 @@ impl Filesystem {
     /// entry to itself succeeds and writes nothing; `.` and `..` cannot be
     /// renamed or replaced (`Error::InvalidArgument`).
     pub fn apply_rename_at(
+        &self,
+        src_dir: impl Into<InodeRef>,
+        src_name: &[u8],
+        dst_dir: impl Into<InodeRef>,
+        dst_name: &[u8],
+        replace_if_exists: bool,
+    ) -> Result<()> {
+        let _write_guard = self.lock_write()?;
+        self.apply_rename_at_locked(src_dir, src_name, dst_dir, dst_name, replace_if_exists)
+    }
+
+    fn apply_rename_at_locked(
         &self,
         src_dir: impl Into<InodeRef>,
         src_name: &[u8],
@@ -8104,15 +8295,21 @@ impl Filesystem {
 
     /// [`apply_rmdir`](Self::apply_rmdir) of a path given as bytes, never decoded.
     pub(crate) fn apply_rmdir_bytes(&self, path: &[u8]) -> Result<()> {
+        let _write_guard = self.lock_write()?;
         self.refuse_write()?;
         let (parent, name) = self.resolve_parent(path)?;
-        self.apply_rmdir_at(parent, name)
+        self.apply_rmdir_at_locked(parent, name)
     }
 
     /// [`apply_rmdir`](Self::apply_rmdir) of entry `name` in directory
     /// `dir`. `.` is refused with `Error::InvalidArgument` and `..` with
     /// `Error::DirectoryNotEmpty`, as rmdir(2) does.
     pub fn apply_rmdir_at(&self, dir: impl Into<InodeRef>, name: &[u8]) -> Result<()> {
+        let _write_guard = self.lock_write()?;
+        self.apply_rmdir_at_locked(dir, name)
+    }
+
+    fn apply_rmdir_at_locked(&self, dir: impl Into<InodeRef>, name: &[u8]) -> Result<()> {
         self.refuse_write()?;
         check_entry_name(name)?;
         // `.` is the directory itself: removing it freed the directory
@@ -8272,6 +8469,12 @@ pub(crate) fn next_links_count(
     }
     Ok(count)
 }
+
+#[cfg(test)]
+pub(crate) mod concurrent_writers;
+
+#[cfg(test)]
+mod write_serialization;
 
 #[cfg(test)]
 mod tests {
