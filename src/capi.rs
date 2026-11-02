@@ -34,6 +34,9 @@
 //! Memory ownership rules (from ntfsbridge precedent, documented in docs/ext4-rs-capi.md):
 //! - `fs_ext4_fs_t*` is owned by the caller. Freed via `fs_ext4_umount`
 //!   (use for both `mount`, `mount_with_callbacks`, and `mount_rw` handles).
+//! - Reads and high-level writes may share a mount: writes serialize while
+//!   readers remain independent of the write lock. Unmount, label changes,
+//!   cache refresh, journal replay and fsck require exclusive handle access.
 //! - `fs_ext4_dir_iter_t*` is owned by the caller. Freed via `fs_ext4_dir_close`.
 //! - `fs_ext4_dir_next` returns a pointer into the iterator's internal buffer;
 //!   valid until the next `fs_ext4_dir_next` or `fs_ext4_dir_close` call.
@@ -58,6 +61,9 @@ use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int, c_void};
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
+
+#[cfg(test)]
+mod concurrent_writers;
 
 // ===========================================================================
 // Thread-local last error
@@ -1624,8 +1630,11 @@ pub unsafe extern "C" fn fs_ext4_truncate(
             let path_str = shown(path_b);
             // The type guard (EISDIR for a directory, EINVAL for anything
             // else that is not a regular file) is in `apply_truncate_ino`.
-            let res = resolve_path(fs_ref, path_b)
-                .and_then(|ino| fs_ref.apply_truncate_ino(ino, new_size));
+            let res = (|| {
+                let _write_guard = fs_ref.lock_write()?;
+                let ino = resolve_path(fs_ref, path_b)?;
+                fs_ref.apply_truncate_ino_locked(ino, new_size)
+            })();
             match res {
                 Ok(()) => 0,
                 Err(e) => {
@@ -1679,6 +1688,13 @@ pub unsafe extern "C" fn fs_ext4_fallocate(
                 return -1;
             };
             let path_str = shown(path_b);
+            let _write_guard = match fs_ref.lock_write() {
+                Ok(guard) => guard,
+                Err(error) => {
+                    set_err_from(&error, &format!("fallocate {path_str}"));
+                    return -1;
+                }
+            };
             let ino = match resolve_path(fs_ref, path_b) {
                 Ok(n) => n,
                 Err(e) => {
@@ -1692,15 +1708,15 @@ pub unsafe extern "C" fn fs_ext4_fallocate(
             let is_zero = flags & FS_EXT4_FALLOC_FL_ZERO_RANGE != 0;
             let is_keep = flags & FS_EXT4_FALLOC_FL_KEEP_SIZE != 0;
             let result = if is_zero {
-                fs_ref.apply_fallocate_zero_range(ino, offset, len)
+                fs_ref.apply_fallocate_zero_range_locked(ino, offset, len)
             } else if is_punch {
                 if !is_keep {
                     set_err_msg("fallocate: PUNCH_HOLE requires KEEP_SIZE", EINVAL);
                     return -1;
                 }
-                fs_ref.apply_fallocate_punch_hole(ino, offset, len)
+                fs_ref.apply_fallocate_punch_hole_locked(ino, offset, len)
             } else if flags == FS_EXT4_FALLOC_FL_KEEP_SIZE {
-                fs_ref.apply_fallocate_keep_size(ino, offset, len)
+                fs_ref.apply_fallocate_keep_size_locked(ino, offset, len)
             } else {
                 set_err_msg(
                     "fallocate: unsupported flag combination (KEEP_SIZE / PUNCH_HOLE+KEEP_SIZE / ZERO_RANGE only)",

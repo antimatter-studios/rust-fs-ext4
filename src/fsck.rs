@@ -1050,6 +1050,7 @@ where
     // unjournaled, because the mount opens no journal writer on such a
     // volume (#119). `refuse_write` still answers a read-only device with
     // `ReadOnly`.
+    let _write_guard = if repair { Some(fs.lock_write()?) } else { None };
     if repair {
         fs.refuse_write()?;
     }
