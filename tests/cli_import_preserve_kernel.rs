@@ -183,7 +183,7 @@ fn preserve_times_refuses_a_time_the_inode_cannot_hold_for_that_item_alone() {
         .output()
         .unwrap();
     let report = stdout(&out);
-    assert_eq!(out.status.code(), Some(1), "{report}{}", stderr(&out));
+    assert_eq!(out.status.code(), Some(5), "{report}{}", stderr(&out));
     assert_eq!(json_field(&report, "refused"), "1", "{report}");
     assert_eq!(json_field(&report, "failed"), "0", "{report}");
     assert!(

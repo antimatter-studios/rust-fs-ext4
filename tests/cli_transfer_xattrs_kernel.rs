@@ -175,7 +175,7 @@ fn export_carries_what_the_kernel_set_and_refuses_a_namespace_the_host_cannot_ho
     let report = stdout(&out);
     assert_eq!(
         out.status.code(),
-        Some(if holds_trusted { 0 } else { 1 }),
+        Some(if holds_trusted { 0 } else { 5 }),
         "{report}{}",
         stderr(&out)
     );

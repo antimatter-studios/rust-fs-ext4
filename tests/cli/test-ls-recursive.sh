@@ -107,6 +107,10 @@ fs.ext4 --offset 1048576 "$SANDBOX/whole-disk.img" ls -R / >"$SANDBOX/offset.jso
 check "ls -R with --offset exits 0" test $? -eq 0
 check "ls -R with --offset lists the same tree" cmp -s "$SANDBOX/tree.json" "$SANDBOX/offset.json"
 
+fs.ext4 ls --help >"$SANDBOX/help.txt" 2>&1
+check "ls --help states the default depth" grep -q 'default: 64' "$SANDBOX/help.txt"
+check "ls --help states the default entry count" grep -q 'default: 100000' "$SANDBOX/help.txt"
+
 check "ls -R left the image as it was" cmp -s "$img" "$SANDBOX/before.img"
 
 finish

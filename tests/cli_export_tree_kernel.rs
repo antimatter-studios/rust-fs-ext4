@@ -84,7 +84,7 @@ fn recursive_export_matches_every_kernel_digest_and_reports_each_item() {
         .output()
         .unwrap();
     let report = stdout(&out);
-    assert_eq!(out.status.code(), Some(1), "{report}{}", stderr(&out));
+    assert_eq!(out.status.code(), Some(5), "{report}{}", stderr(&out));
     assert_eq!(
         json_field(&report, "completed"),
         (sums.len() + DEPTH + 1).to_string()
@@ -115,7 +115,7 @@ fn recursive_export_matches_every_kernel_digest_and_reports_each_item() {
         .output()
         .unwrap();
     let report = stdout(&again);
-    assert_eq!(again.status.code(), Some(1), "{report}{}", stderr(&again));
+    assert_eq!(again.status.code(), Some(5), "{report}{}", stderr(&again));
     assert!(
         item(&report, "/tree/big").contains("\"status\": \"refused\""),
         "{report}"
@@ -153,7 +153,7 @@ fn recursive_export_reports_a_damaged_file_and_keeps_exporting_the_tree() {
         .output()
         .unwrap();
     let report = stdout(&out);
-    assert_eq!(out.status.code(), Some(1), "{report}{}", stderr(&out));
+    assert_eq!(out.status.code(), Some(5), "{report}{}", stderr(&out));
     assert_eq!(json_field(&report, "failed"), "1", "{report}");
     assert_eq!(json_field(&report, "skipped"), "0", "{report}");
     assert_eq!(json_field(&report, "refused"), "0", "{report}");
@@ -319,7 +319,7 @@ fn recursive_export_preserves_kernel_links_and_times() {
         .output()
         .unwrap();
     let report = stdout(&out);
-    assert_eq!(out.status.code(), Some(1), "{report}{}", stderr(&out));
+    assert_eq!(out.status.code(), Some(5), "{report}{}", stderr(&out));
     for (name, _) in &tree.targets {
         let entry = item(&report, &format!("/tree/{name}"));
         assert!(entry.contains("--preserve=links"), "{name}: {entry}");
