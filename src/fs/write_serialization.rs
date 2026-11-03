@@ -47,9 +47,87 @@ fn a_write_lock_does_not_serialize_unrelated_mounts() {
     });
 }
 
+/// Put `ino` on the orphan chain the way an unlink of an open file does: its
+/// name gone, no links, and the superblock's chain head naming it.
+fn plant_unlinked_orphan(fs: &mut Filesystem, name: &[u8], ino: u32) {
+    let (root, _) = fs.read_inode_verified(2).unwrap();
+    let (inode, mut raw) = fs.read_inode_verified(ino).unwrap();
+    raw[0x1A..0x1C].copy_from_slice(&0u16.to_le_bytes());
+    raw[0x14..0x18].copy_from_slice(&0u32.to_le_bytes());
+    fs.finalize_inode_raw(ino, inode.generation, &mut raw)
+        .unwrap();
+    let mut buf = BlockBuffer::new(fs.sb.block_size());
+    fs.buffer_remove_dir_entry(&mut buf, 2, &root, name)
+        .unwrap();
+    fs.buffer_write_inode(&mut buf, ino, &raw).unwrap();
+    fs.buffer_patch_sb_last_orphan(&mut buf, ino).unwrap();
+    fs.commit_block_buffer(buf).unwrap();
+    fs.refresh_metadata().unwrap();
+}
+
+/// Writer A staged a create, so its copy of the superblock still names the
+/// orphan. Recovery then clears the chain head, and A's commit must not bring
+/// it back.
+fn create_during_orphan_recovery(flavor: FsFlavor) -> Arc<dyn BlockDevice> {
+    let dev = formatted(flavor, false);
+    let mut fs = Filesystem::mount(dev.clone()).unwrap();
+    fs.apply_create("/warm", 0o644).unwrap();
+    fs.apply_create("/stable", 0o644).unwrap();
+    fs.apply_replace_file_content("/stable", b"readers remain available")
+        .unwrap();
+    let orphan = fs.apply_create("/orphan", 0o644).unwrap();
+    plant_unlinked_orphan(&mut fs, b"orphan", orphan);
+    let planted = Superblock::read(dev.as_ref()).unwrap();
+    assert_eq!(planted.last_orphan, orphan);
+
+    let (created, recovered) = interleave(
+        &fs,
+        || fs.apply_create("/a", 0o644),
+        || fs.recover_orphans(),
+    );
+    let created = created.unwrap();
+    assert_eq!(recovered.unwrap(), 1);
+    drop(fs);
+
+    let after = Superblock::read(dev.as_ref()).unwrap();
+    assert_eq!(after.last_orphan, 0, "a stale superblock restored the head");
+    assert_eq!(
+        after.free_inodes_count, planted.free_inodes_count,
+        "one create and one reclaimed orphan must cancel out"
+    );
+    let reopened = Filesystem::mount(dev.clone()).unwrap();
+    assert_eq!(reopened.lookup_path_bytes(b"/a").unwrap(), created);
+    assert!(reopened.lookup_path_bytes(b"/orphan").is_err());
+    drop(reopened);
+    dev
+}
+
+#[test]
+fn a_concurrent_create_does_not_restore_the_orphan_head_without_journal() {
+    create_during_orphan_recovery(FsFlavor::Ext4);
+}
+
+#[test]
+fn a_concurrent_create_does_not_restore_the_orphan_head_with_journal() {
+    create_during_orphan_recovery(FsFlavor::Ext3);
+}
+
 mod needs_host {
     use super::*;
     use crate::block_io::FileDevice;
+
+    #[test]
+    fn create_during_orphan_recovery_is_clean_to_e2fsck() {
+        for flavor in [FsFlavor::Ext4, FsFlavor::Ext3] {
+            let dev = create_during_orphan_recovery(flavor);
+            let mut bytes = vec![0; dev.size_bytes() as usize];
+            dev.read_at(0, &mut bytes).unwrap();
+            let tag = format!("concurrent-orphan-head-{flavor:?}");
+            let path = fs_ext4_test_support::temp_path!("{tag}.img");
+            std::fs::write(&path, &bytes).unwrap();
+            fs_ext4_test_support::assert_e2fsck_clean(&path, &tag);
+        }
+    }
 
     fn journaled_ext4_cases(tag: &str) -> Vec<String> {
         let fixture = fs_ext4_test_support::fixture(env!("CARGO_MANIFEST_DIR"), "ext4-basic.img");
@@ -66,6 +144,10 @@ mod needs_host {
                 sb.feature_compat
             };
             raw[0x5c..0x60].copy_from_slice(&compat.to_le_bytes());
+            if case == "large-file" {
+                let flags = sb.feature_ro_compat & !features::RoCompat::LARGE_FILE.bits();
+                raw[0x64..0x68].copy_from_slice(&flags.to_le_bytes());
+            }
             if Checksummer::from_superblock(&sb).enabled {
                 let checksum = crate::checksum::linux_crc32c(!0, &raw[..0x3fc]);
                 raw[0x3fc..0x400].copy_from_slice(&checksum.to_le_bytes());

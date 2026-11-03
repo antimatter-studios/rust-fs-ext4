@@ -294,8 +294,39 @@ cases! {
     large_file_with_journal: Ext3, LargeFile;
 }
 
+fn activate_large_file(flavor: FsFlavor) -> Arc<MemDev> {
+    let dev = formatted(flavor, false);
+    assert_eq!(
+        Superblock::read(dev.as_ref()).unwrap().feature_ro_compat
+            & features::RoCompat::LARGE_FILE.bits(),
+        0
+    );
+    exercise(dev, flavor == FsFlavor::Ext3, Case::LargeFile)
+}
+
+#[test]
+fn concurrent_large_file_activation_without_journal() {
+    activate_large_file(FsFlavor::Ext4);
+}
+
+#[test]
+fn concurrent_large_file_activation_with_journal() {
+    activate_large_file(FsFlavor::Ext3);
+}
+
 mod needs_host {
     use super::*;
+
+    #[test]
+    fn concurrent_large_file_activation_is_clean_to_e2fsck() {
+        for flavor in [FsFlavor::Ext4, FsFlavor::Ext3] {
+            let dev = activate_large_file(flavor);
+            let tag = format!("concurrent-large-file-activation-{flavor:?}");
+            let path = fs_ext4_test_support::temp_path!("{tag}.img");
+            std::fs::write(&path, &*dev.0.lock().unwrap()).unwrap();
+            fs_ext4_test_support::assert_e2fsck_clean(&path, &tag);
+        }
+    }
 
     #[test]
     fn concurrent_writes_are_clean_to_e2fsck() {
