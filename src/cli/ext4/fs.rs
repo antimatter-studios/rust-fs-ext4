@@ -13,6 +13,7 @@ use std::io::Write;
 
 use clap::{value_parser, Arg, ArgAction, ArgMatches, Command as Cmd};
 
+use fs_core::cli::listing::{bound_reached, recursive_args, ListBounds};
 use fs_core::cli::{transfer, CliError, Format, Json, Outcome, Tool};
 use fs_ext4::dir::{DirEntry, DirEntryType};
 use fs_ext4::features::{Compat, Incompat, RoCompat};
@@ -77,29 +78,7 @@ fn command() -> Cmd {
         .subcommand(
             Cmd::new("ls")
                 .about("List a directory: name, type, size, mode, mtime (and a symlink's target)")
-                .arg(
-                    Arg::new("recursive")
-                        .long("recursive")
-                        .short('R')
-                        .action(ArgAction::SetTrue)
-                        .help("Walk the tree depth first, names sorted as bytes; never follow a symlink"),
-                )
-                .arg(
-                    Arg::new("max-depth")
-                        .long("max-depth")
-                        .value_name("N")
-                        .value_parser(value_parser!(u64))
-                        .requires("recursive")
-                        .help("How deep --recursive may go (default: 64); a directory's entries are depth 1"),
-                )
-                .arg(
-                    Arg::new("limit")
-                        .long("limit")
-                        .value_name("N")
-                        .value_parser(value_parser!(u64))
-                        .requires("recursive")
-                        .help("How many entries --recursive may list (default: 100000)"),
-                )
+                .args(recursive_args())
                 .arg(
                     Arg::new("path")
                         .value_name("PATH")
@@ -808,11 +787,6 @@ fn ls(fs: &Filesystem, path: &[u8]) -> Result<Outcome, CliError> {
     Ok(Outcome::report(Json::Arr(entries)).with_text(text))
 }
 
-/// How deep `ls --recursive` goes, and how many entries it lists, when the
-/// command line does not say.
-const MAX_DEPTH: u64 = 64;
-const LIMIT: u64 = 100_000;
-
 /// One `ls --recursive` entry: the `ls` entry, then its path from the root
 /// of the volume (with its exact bytes in `path_hex` when it is not UTF-8),
 /// its depth, and `revisited` for a directory already listed.
@@ -870,15 +844,12 @@ fn walk(
     ino: u32,
     inode: &Inode,
     start: Vec<u8>,
-    (max_depth, limit): (u64, u64),
+    ListBounds { max_depth, limit }: ListBounds,
     entries: &mut Vec<Json>,
 ) -> Result<(), CliError> {
-    let reached = |bound: &str, value: u64, at: &[u8]| {
-        CliError::failed(format!("{bound} {value} reached at {}", show(at)))
-    };
     if !inode.is_dir() {
         if limit == 0 {
-            return Err(reached("--limit", limit, &start));
+            return Err(bound_reached("--limit", limit, &show(&start)));
         }
         entries.push(recursive_entry(fs, &start, 0, ino, inode, false));
         return Ok(());
@@ -898,10 +869,10 @@ fn walk(
         path.extend_from_slice(&child.name);
         let depth = *parent_depth + 1;
         if entries.len() as u64 >= limit {
-            return Err(reached("--limit", limit, &path));
+            return Err(bound_reached("--limit", limit, &show(&path)));
         }
         if depth > max_depth {
-            return Err(reached("--max-depth", max_depth, &path));
+            return Err(bound_reached("--max-depth", max_depth, &show(&path)));
         }
         let inode = fs
             .stat_ino(child.inode)
@@ -939,12 +910,7 @@ fn ls_recursive(
         .lookup_path_bytes(path)
         .map_err(|e| read_error(path, e))?;
     let inode = fs.stat_ino(ino).map_err(|e| driver_error(path, e))?;
-    let bounds = (
-        sub.get_one::<u64>("max-depth")
-            .copied()
-            .unwrap_or(MAX_DEPTH),
-        sub.get_one::<u64>("limit").copied().unwrap_or(LIMIT),
-    );
+    let bounds = ListBounds::from_matches(sub);
     let mut start = Vec::new();
     for component in path.split(|b| *b == b'/').filter(|c| !c.is_empty()) {
         start.push(b'/');

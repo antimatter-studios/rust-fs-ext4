@@ -196,7 +196,7 @@ fn recursive_import_reports_each_failure_and_refusal_and_keeps_going() {
         .output()
         .unwrap();
     let report = stdout(&out);
-    assert_eq!(out.status.code(), Some(1), "{report}{}", stderr(&out));
+    assert_eq!(out.status.code(), Some(5), "{report}{}", stderr(&out));
     assert_eq!(json_field(&report, "merged_directories"), "2", "{report}");
     assert!(item(&report, "/tree/keep").contains("\"status\": \"failed\""));
     assert!(item(&report, "/tree/sym").contains("\"status\": \"refused\""));
@@ -229,7 +229,7 @@ fn recursive_import_reports_each_failure_and_refusal_and_keeps_going() {
     );
     assert!(!listing.contains(".dj-import-"), "{listing}");
 
-    // Sparse preservation is refused per file and publishes nothing.
+    // Sparse preservation is refused per file and publishes no file.
     let out = tool("fs.ext4")
         .args([
             &img,
@@ -242,7 +242,7 @@ fn recursive_import_reports_each_failure_and_refusal_and_keeps_going() {
         .output()
         .unwrap();
     let report = stdout(&out);
-    assert_eq!(out.status.code(), Some(1), "{report}{}", stderr(&out));
+    assert_eq!(out.status.code(), Some(5), "{report}{}", stderr(&out));
     let refused = item(&report, "/sparse/a");
     assert!(refused.contains("\"status\": \"refused\""), "{report}");
     assert!(refused.contains("sparse"), "{report}");
