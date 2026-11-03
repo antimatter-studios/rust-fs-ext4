@@ -306,7 +306,12 @@ vars:
   # v0.4.0: concurrent `vm.sh up` calls of one machine wait for the boot
   # under way instead of racing it, a halt that hangs is forced, and the
   # SSH forward port is picked at boot when the configured one is taken.
-  LINUX_HARNESS_REF: v0.4.0
+  # v0.5.3: nothing in a Mac-hosted guest writes to the shares. Before it the
+  # forwarder's receiver could empty a file the suite had just written, which
+  # failed a mount of a fresh fixture copy at random (#611, harness #84).
+  # tests/scripts/test-harness-pin-keeps-guest-off-shares.sh holds the floor.
+  # v0.5.4: VM-free checks and session interrupts work under macOS system Bash.
+  LINUX_HARNESS_REF: v0.5.4
 
 # The harness's consumer tasks, as `chore vm:<task>`. OPTIONAL because the
 # harness is a sibling that `chore siblings` itself checks out: without

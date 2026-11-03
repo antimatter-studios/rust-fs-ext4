@@ -13,7 +13,7 @@
 //! variants → `to_errno()` mapping in error.rs.
 
 use fs_ext4::capi::*;
-use std::ffi::CString;
+use std::ffi::{CStr, CString};
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
@@ -33,12 +33,25 @@ fn scratch(label: &str) -> PathBuf {
     dst
 }
 
+/// Mount read-write, or fail naming why the driver refused the image.
+///
+/// A bare `assert!(!fs_h.is_null())` once failed in the guest suite with
+/// nothing to say why (#611).
+fn mount_rw(img: &CString) -> *mut fs_ext4_fs_t {
+    let fs_h = unsafe { fs_ext4_mount_rw(img.as_ptr()) };
+    if fs_h.is_null() {
+        let errno = fs_ext4_last_errno();
+        let message = unsafe { CStr::from_ptr(fs_ext4_last_error()) }.to_string_lossy();
+        panic!("fs_ext4_mount_rw({img:?}) returned null: errno {errno}: {message}");
+    }
+    fs_h
+}
+
 #[test]
 fn create_on_existing_file_sets_eexist() {
     let img = scratch("create_eexist");
     let img_c = CString::new(img.to_str().unwrap()).unwrap();
-    let fs_h = unsafe { fs_ext4_mount_rw(img_c.as_ptr()) };
-    assert!(!fs_h.is_null());
+    let fs_h = mount_rw(&img_c);
 
     let existing = CString::new("/test.txt").unwrap();
     let ino = unsafe { fs_ext4_create(fs_h, existing.as_ptr(), 0o644) };
@@ -53,8 +66,7 @@ fn create_on_existing_file_sets_eexist() {
 fn mkdir_on_existing_dir_sets_eexist() {
     let img = scratch("mkdir_eexist");
     let img_c = CString::new(img.to_str().unwrap()).unwrap();
-    let fs_h = unsafe { fs_ext4_mount_rw(img_c.as_ptr()) };
-    assert!(!fs_h.is_null());
+    let fs_h = mount_rw(&img_c);
 
     let existing = CString::new("/subdir").unwrap();
     let ino = unsafe { fs_ext4_mkdir(fs_h, existing.as_ptr(), 0o755) };
@@ -70,8 +82,7 @@ fn rmdir_on_nonempty_dir_sets_enotempty() {
     // /subdir in ext4-basic.img has entries beyond . and ..
     let img = scratch("rmdir_notempty");
     let img_c = CString::new(img.to_str().unwrap()).unwrap();
-    let fs_h = unsafe { fs_ext4_mount_rw(img_c.as_ptr()) };
-    assert!(!fs_h.is_null());
+    let fs_h = mount_rw(&img_c);
 
     let dir = CString::new("/subdir").unwrap();
     let rc = unsafe { fs_ext4_rmdir(fs_h, dir.as_ptr()) };
@@ -86,8 +97,7 @@ fn rmdir_on_nonempty_dir_sets_enotempty() {
 fn rmdir_on_regular_file_sets_enotdir() {
     let img = scratch("rmdir_file");
     let img_c = CString::new(img.to_str().unwrap()).unwrap();
-    let fs_h = unsafe { fs_ext4_mount_rw(img_c.as_ptr()) };
-    assert!(!fs_h.is_null());
+    let fs_h = mount_rw(&img_c);
 
     let file = CString::new("/test.txt").unwrap();
     let rc = unsafe { fs_ext4_rmdir(fs_h, file.as_ptr()) };
@@ -102,8 +112,7 @@ fn rmdir_on_regular_file_sets_enotdir() {
 fn rename_missing_source_sets_enoent() {
     let img = scratch("rename_enoent");
     let img_c = CString::new(img.to_str().unwrap()).unwrap();
-    let fs_h = unsafe { fs_ext4_mount_rw(img_c.as_ptr()) };
-    assert!(!fs_h.is_null());
+    let fs_h = mount_rw(&img_c);
 
     let src = CString::new("/does-not-exist.txt").unwrap();
     let dst = CString::new("/whatever.txt").unwrap();
