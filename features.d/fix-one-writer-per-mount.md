@@ -1,0 +1,2 @@
+## Writing
+| Activation of `large_file` when a regular file grows beyond 2 GiB - 1 | Supported: the flag and inode commit together, including concurrent creates on one mount | Unreleased (#610) | #606 | `fs::concurrent_writers::concurrent_large_file_activation_without_journal`, `fs::concurrent_writers::concurrent_large_file_activation_with_journal`, `fs::concurrent_writers::needs_host::concurrent_large_file_activation_is_clean_to_e2fsck` |

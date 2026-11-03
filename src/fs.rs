@@ -3300,6 +3300,12 @@ impl Filesystem {
         ino: u32,
         inode_raw: &[u8],
     ) -> Result<()> {
+        if self.sb.feature_ro_compat & features::RoCompat::LARGE_FILE.bits() == 0 {
+            let inode = Inode::parse(inode_raw)?;
+            if inode.is_file() && inode.size > i32::MAX as u64 {
+                self.buffer_enable_large_file(buf)?;
+            }
+        }
         let (block, offset) = bgd::locate_inode(&self.sb, &self.groups, ino)?;
         let it_buf = buf.get_mut(self, block)?;
         let off = offset as usize;
@@ -3846,6 +3852,22 @@ impl Filesystem {
         if self.csum.enabled {
             let csum = crate::checksum::linux_crc32c(!0, &sb[..0x3FC]);
             sb[0x3FC..0x400].copy_from_slice(&csum.to_le_bytes());
+        }
+        Ok(())
+    }
+
+    fn buffer_enable_large_file(&self, buf: &mut BlockBuffer) -> Result<()> {
+        let bs = u64::from(self.sb.block_size());
+        let sb_offset = crate::superblock::SUPERBLOCK_OFFSET;
+        let block = buf.get_mut(self, sb_offset / bs)?;
+        let off = (sb_offset % bs) as usize;
+        let sb = &mut block[off..off + 1024];
+        let flags = u32::from_le_bytes(sb[0x64..0x68].try_into().unwrap());
+        sb[0x64..0x68]
+            .copy_from_slice(&(flags | features::RoCompat::LARGE_FILE.bits()).to_le_bytes());
+        if self.csum.enabled {
+            let checksum = crate::checksum::linux_crc32c(!0, &sb[..0x3FC]);
+            sb[0x3FC..0x400].copy_from_slice(&checksum.to_le_bytes());
         }
         Ok(())
     }
@@ -8475,6 +8497,9 @@ pub(crate) mod concurrent_writers;
 
 #[cfg(test)]
 mod write_serialization;
+
+#[cfg(test)]
+mod large_file_activation;
 
 #[cfg(test)]
 mod tests {
