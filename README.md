@@ -674,6 +674,13 @@ of the host, so an image under `/tmp` or `$RUNNER_TEMP` would not exist
 for the tool asked to read it. `FS_EXT4_TEST_TMPDIR` supplies an exact
 directory instead, and is refused if it is outside the repository.
 
+For the in-guest suite, `scripts/guest-scratch.sh` binds a fresh directory
+on the guest's disk over `./tmp` and unmounts it when the tests finish.
+Both host platforms therefore exercise the same Linux file operations,
+including hard-link publication, nanosecond timestamps and FIFO refusal,
+without depending on the host share's semantics. Native host-oracle tiers
+still use the shared directory so the guest can read their images.
+
 ### Git hooks
 
 One-time setup per clone, so every commit runs the same `cargo fmt` and
