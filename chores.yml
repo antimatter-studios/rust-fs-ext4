@@ -315,7 +315,10 @@ vars:
   # v0.5.4: VM-free checks and session interrupts work under macOS system Bash.
   # v0.5.5 lets a host admit more than one VM (FLTH_SLOT_COUNT). v0.5.6 gives
   # back what a guest deletes and says what stopped a lost guest.
-  LINUX_HARNESS_REF: v0.5.6
+  # v0.5.8: a signal to a session stops everything its command started, within
+  # five seconds, before test.sh removes the scratch directory (#617, harness
+  # #117), and leaves the shares of a VM that stays up (harness #130).
+  LINUX_HARNESS_REF: v0.5.8
 
 # The harness's consumer tasks, as `chore vm:<task>`. OPTIONAL because the
 # harness is a sibling that `chore siblings` itself checks out: without
