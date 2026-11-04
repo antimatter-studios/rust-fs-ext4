@@ -239,6 +239,11 @@ jobs:
         # The quick profile's lint: test and test-arm64 lint too, but run
         # only in the full profile.
         run: chore lint
+      - name: A signal to scripts/test.sh alone stops the run
+        # Here because the shell tier runs only in the full profile, after every
+        # test tier, and some of its guards need fixtures. This one needs neither,
+        # and every tier starts its tests through the wrapper it holds.
+        run: bash tests/scripts/test-term-stops-run.sh
       - name: Keep the tier logs
         # A quiet tier writes its detail to tmp/logs/<tier>.log and prints a
         # verdict; without this the detail dies with the runner and the only
