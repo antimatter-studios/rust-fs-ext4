@@ -24,7 +24,7 @@
 //! spelled in `ci.yml` at all: the `unit` job runs `chore test:unit`,
 //! and it is `chores.yml`'s `test:unit` task that carries
 //! `EXPECT_OVERFLOW_CHECKS=1` and the `cargo test` (through
-//! `scripts/test.sh`, which ends in `cargo test --features cli "$@"`). The guard FOLLOWS
+//! `scripts/test.sh`, which runs `cargo test --features cli "$@"`). The guard FOLLOWS
 //! THAT INDIRECTION rather than accepting the task's name: a `chore
 //! <task>` line in a gating step is resolved in `chores.yml`, through any
 //! `task:` items, and the commands found there are held to the same rules
@@ -107,7 +107,7 @@ fn read_or_panic(path: &Path) -> String {
 /// harness's `vm.sh session` when the harness is there), so every argument
 /// it is given -- `--release`, `-r` -- is cargo's, and the rules above
 /// apply to it word for word. `chores.yml` runs the suite through it.
-/// That the script still ends that way is pinned by
+/// That the script still does that is pinned by
 /// `scripts_test_sh_is_still_cargo_test_with_its_arguments`: if it
 /// stopped passing its arguments through, reading it as `cargo test`
 /// would be a lie this guard tells.
@@ -2711,23 +2711,27 @@ tasks:
     }
 
     /// `scripts/test.sh` is read as `cargo test`, which is only true while
-    /// it ends by handing cargo every argument it was given. It may run
-    /// cargo inside the harness's `vm.sh session`, which runs the command
-    /// it is given as it is, arguments and status included; that prefix,
-    /// spelled exactly so, is the only thing allowed in front of cargo.
+    /// it has one line that runs cargo, handing it every argument it was
+    /// given. It may run cargo inside the harness's `vm.sh session`, which
+    /// runs the command it is given as it is, arguments and status included;
+    /// that prefix, spelled exactly so, is the only thing allowed in front of
+    /// cargo. The `&` is what lets a signal reach the wrapper while cargo runs,
+    /// and tests/scripts/test-term-stops-run.sh holds the wrapper to returning
+    /// cargo's status.
     #[test]
     fn scripts_test_sh_is_still_cargo_test_with_its_arguments() {
         const SESSION: &str = "${session[@]+\"${session[@]}\"} ";
         let script = super::read_or_panic(&super::manifest_dir().join(super::TEST_WRAPPER));
-        let last = script
+        let runs_cargo: Vec<&str> = script
             .lines()
             .map(str::trim)
-            .rfind(|line| !line.is_empty() && !line.starts_with('#'))
-            .map(|line| line.strip_prefix(SESSION).unwrap_or(line));
+            .filter(|line| !line.starts_with('#') && line.contains("cargo "))
+            .map(|line| line.strip_prefix(SESSION).unwrap_or(line))
+            .collect();
         assert_eq!(
-            last,
-            Some("cargo test --features cli \"$@\""),
-            "{} no longer ends in `cargo test --features cli \"$@\"`, so \
+            runs_cargo,
+            ["cargo test --features cli \"$@\" &"],
+            "{} no longer runs only `cargo test --features cli \"$@\"`, so \
              checking_debug_runs must stop reading it as `cargo test`",
             super::TEST_WRAPPER
         );

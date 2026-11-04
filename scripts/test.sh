@@ -24,7 +24,59 @@ cleanup() {
         rmdir "$RUN_DIR"
     fi
 }
-trap cleanup EXIT HUP INT TERM
+trap cleanup EXIT
+
+# A SIGNAL STOPS THE RUN. Until the command exists there is nothing to pass it
+# to, so it is only recorded, and the command is not started. Once it does, it
+# goes to the command's process alone: with a session that is the session,
+# which passes it on and then brings the VM down, and whose teardown a signal to
+# its whole process group would kill. stop_run deals with the rest of the group.
+CHILD_PID=""
+STOP_SIGNAL=""
+STOP_STATUS=""
+note_signal() {
+    STOP_SIGNAL="$1"
+    STOP_STATUS=$((128 + $2))
+    if [[ -n "$CHILD_PID" ]]; then
+        kill -s "$1" "$CHILD_PID" 2>/dev/null || true
+    fi
+}
+trap 'note_signal HUP 1' HUP
+trap 'note_signal INT 2' INT
+trap 'note_signal TERM 15' TERM
+
+# gone_within SECONDS TARGET: kill's TARGET, a process or a -group, has no
+# process left in it, waiting up to SECONDS.
+gone_within() {
+    local limit=$((SECONDS + $1))
+    while kill -0 -- "$2" 2>/dev/null; do
+        ((SECONDS < limit)) || return 1
+        sleep 0.2
+    done
+}
+
+# stop_run: end everything the command started, before the scratch directory
+# goes. The command gets its signal again after five seconds, because one that
+# reaches a forked child before its exec lands in the handler it inherited from
+# this shell, and is lost.
+#
+# THE LIMIT ON THE COMMAND IS LONG BECAUSE IT COVERS A SESSION'S TEARDOWN: killing
+# a session halfway through that leaves the VM up and the machine-wide slot taken,
+# so only a process that is stuck should ever reach it. The harness ends what a
+# session's command started within five seconds, and what is left in this group
+# gets the same: TERM whichever signal began this, because a job a shell script
+# started in the background ignores INT, and then KILL.
+# FS_EXT4_TEST_STOP_SECONDS changes the limit.
+stop_run() {
+    gone_within 5 "$CHILD_PID" || kill -s "$STOP_SIGNAL" "$CHILD_PID" 2>/dev/null || true
+    gone_within "${FS_EXT4_TEST_STOP_SECONDS:-300}" "$CHILD_PID" || true
+    gone_within 0 "-$CHILD_PID" && return 0
+    kill -s TERM -- "-$CHILD_PID" 2>/dev/null || true
+    gone_within 5 "-$CHILD_PID" && return 0
+    echo "test.sh: killing what TERM did not stop" >&2
+    kill -s KILL -- "-$CHILD_PID" 2>/dev/null || true
+    gone_within 5 "-$CHILD_PID" || echo "test.sh: process group $CHILD_PID is still running" >&2
+}
 
 if [[ -n "${FS_EXT4_TEST_TMPDIR:-}" ]]; then
     case "$FS_EXT4_TEST_TMPDIR" in
@@ -73,4 +125,24 @@ HARNESS_VM="$REPO/../fs-linux-test-harness/scripts/vm.sh"
 #
 # The `+` form because an empty array is an unbound variable to bash
 # before 4.4, which is what macOS ships.
-${session[@]+"${session[@]}"} cargo test --features cli "$@"
+#
+# IN THE BACKGROUND, IN A PROCESS GROUP OF ITS OWN. Bash runs a trap only once its
+# foreground child has ended, so a foreground command would hear of a signal
+# only when the whole suite had finished. The group is what holds everything the
+# command started. Job control is also why the command keeps this script's
+# standard input, and why Bash 3.2 does not start it with INT ignored.
+[[ -z "$STOP_STATUS" ]] || exit "$STOP_STATUS"
+set -m
+${session[@]+"${session[@]}"} cargo test --features cli "$@" &
+CHILD_PID=$!
+set +m
+# One that landed after the check above and before the command had a name.
+if [[ -z "$STOP_STATUS" ]]; then
+    set +e
+    wait "$CHILD_PID"
+    STATUS=$?
+    set -e
+    [[ -n "$STOP_STATUS" ]] || exit "$STATUS"
+fi
+stop_run
+exit "$STOP_STATUS"
