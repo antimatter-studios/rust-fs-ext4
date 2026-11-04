@@ -244,6 +244,10 @@ jobs:
         # test tier, and some of its guards need fixtures. This one needs neither,
         # and every tier starts its tests through the wrapper it holds.
         run: bash tests/scripts/test-term-stops-run.sh
+      - name: chore staticlib copies the archive from where cargo built it
+        # Here for the same reason: it needs no fixture and no sibling, and it
+        # builds a stand-in crate in seconds.
+        run: bash tests/scripts/test-staticlib-target-dir.sh
       - name: Keep the tier logs
         # A quiet tier writes its detail to tmp/logs/<tier>.log and prints a
         # verdict; without this the detail dies with the runner and the only
