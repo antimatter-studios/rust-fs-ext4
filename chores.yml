@@ -882,7 +882,14 @@ tasks:
       # ships dependency versions CI never tested.
       - 'cargo build --locked --release --target {{.TRIPLE}}'
       - 'mkdir -p "{{.OUT}}/include"'
-      - 'cp target/{{.TRIPLE}}/release/lib{{.LIBNAME}}.a "{{.OUT}}/lib{{.LIBNAME}}.a"'
+      # From where cargo built it, which only cargo can say: ./target,
+      # CARGO_TARGET_DIR (which may be relative), or build.target-dir in a
+      # config file. `cargo metadata` gives an absolute path for all of them.
+      # A path it cannot give leaves the cp failing rather than guessing.
+      # tests/scripts/test-staticlib-target-dir.sh holds this (#624).
+      - |
+        target_dir="$(cargo metadata --no-deps --format-version 1 | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')"
+        cp "$target_dir/{{.TRIPLE}}/release/lib{{.LIBNAME}}.a" "{{.OUT}}/lib{{.LIBNAME}}.a"
       - 'cp include/{{.LIBNAME}}.h "{{.OUT}}/include/{{.LIBNAME}}.h"'
       # Shipping fs_core.h is ours: the header we emit #includes it, so a
       # consumer handed only fs_ext4.h cannot compile.
