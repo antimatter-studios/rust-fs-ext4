@@ -318,7 +318,12 @@ vars:
   # v0.5.8: a signal to a session stops everything its command started, within
   # five seconds, before test.sh removes the scratch directory (#617, harness
   # #117), and leaves the shares of a VM that stays up (harness #130).
-  LINUX_HARNESS_REF: v0.5.8
+  # v0.6.1: the VM-free suite runs no real `sync` on the host (harness #191), so
+  # this repository's script guards over the stub engine stop flushing the
+  # machine's disks, and suites can share one guest through FLTH_SHARED_ROOT
+  # (harness #153). A macOS host now needs vagrant-notify-forwarder-christhomas
+  # 0.7.7 or newer, which `chore vm:host:check` says (harness #164).
+  LINUX_HARNESS_REF: v0.6.1
 
 # The harness's consumer tasks, as `chore vm:<task>`. OPTIONAL because the
 # harness is a sibling that `chore siblings` itself checks out: without
