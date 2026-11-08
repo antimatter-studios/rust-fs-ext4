@@ -668,6 +668,29 @@ fn finalize_bgd_checksum(
     bgd[0x1E..0x20].copy_from_slice(&bgd_csum.to_le_bytes());
 }
 
+/// The fewest data blocks a short last group must have room for, past its
+/// own metadata, to be part of the volume.
+///
+/// A device whose size is not a whole number of groups ends in a short
+/// group. `mke2fs` leaves it off -- the volume is then a little smaller
+/// than the device, and the superblock's block count says so -- when it
+/// cannot hold its bitmaps, its inode table, any superblock backup and
+/// descriptor table copy, and 50 blocks of data besides.
+/// `tests/mkfs_short_last_group_oracle.rs` holds the threshold to `mke2fs`
+/// either side of it.
+const MIN_LAST_GROUP_DATA_BLOCKS: u64 = 50;
+
+/// Blocks at the start of group `g` before its bitmaps: a superblock backup
+/// and a copy of the `gdt_blocks`-block descriptor table in the groups
+/// that carry one, nothing in the rest.
+fn group_meta_blocks(g: u64, gdt_blocks: u32) -> u64 {
+    if group_has_super(g) {
+        1 + u64::from(gdt_blocks)
+    } else {
+        0
+    }
+}
+
 /// Format an ext4 volume as one or more block groups. Superblock + GDT
 /// backups follow the classic RO_COMPAT_SPARSE_SUPER rule (groups 0, 1, and
 /// powers of 3/5/7); every group gets its own block and inode bitmaps plus an
@@ -687,13 +710,38 @@ fn format_block_groups(
     let log_block_size = (block_size.trailing_zeros() as i32 - 10) as u32;
     let blocks_per_group: u32 = blocks_per_group_for(block_size);
     let bpg = blocks_per_group as u64;
-    let blocks_count: u64 = size_bytes / bs;
-    let group_count: u64 = blocks_count.div_ceil(bpg);
-    let gdt_blocks: u32 = (group_count * desc_size as u64).div_ceil(bs) as u32;
-
-    let inodes_per_group =
-        inodes_per_group_for(inodes_requested, group_count, block_size, inode_size)?;
-    let inode_table_blocks: u32 = (inodes_per_group as u64 * inode_size as u64).div_ceil(bs) as u32;
+    // The volume is the device's whole groups, and its last short group
+    // only when that group can hold its own metadata and
+    // MIN_LAST_GROUP_DATA_BLOCKS of data besides. A group left off takes
+    // the inodes spread over it with it, which changes every group's
+    // inode table, so the layout is worked out again until the last group
+    // stays. Each pass leaves one group fewer, and a full group always
+    // holds its metadata, so this ends.
+    let mut blocks_count: u64 = size_bytes / bs;
+    let (group_count, gdt_blocks, inodes_per_group, inode_table_blocks) = loop {
+        let group_count: u64 = blocks_count.div_ceil(bpg);
+        let gdt_blocks: u32 = (group_count * desc_size as u64).div_ceil(bs) as u32;
+        let inodes_per_group =
+            inodes_per_group_for(inodes_requested, group_count, block_size, inode_size)?;
+        let inode_table_blocks: u32 =
+            (inodes_per_group as u64 * inode_size as u64).div_ceil(bs) as u32;
+        let last = group_count - 1;
+        let last_len = blocks_count - last * bpg;
+        let last_needs = group_meta_blocks(last, gdt_blocks)
+            + 2
+            + u64::from(inode_table_blocks)
+            + MIN_LAST_GROUP_DATA_BLOCKS;
+        if last > 0 && last_len < last_needs {
+            blocks_count = last * bpg;
+            continue;
+        }
+        break (
+            group_count,
+            gdt_blocks,
+            inodes_per_group,
+            inode_table_blocks,
+        );
+    };
 
     if bpg <= 4 + gdt_blocks as u64 + inode_table_blocks as u64 {
         return Err(Error::InvalidArgument(
@@ -721,12 +769,7 @@ fn format_block_groups(
     let layout = |g: u64| -> Result<(u64, u64, u64, u64, u64)> {
         let gstart = g * bpg;
         let glen = bpg.min(blocks_count - gstart);
-        let group_meta = if group_has_super(g) {
-            1 + gdt_blocks as u64
-        } else {
-            0
-        };
-        let bb_block = gstart + group_meta;
+        let bb_block = gstart + group_meta_blocks(g, gdt_blocks);
         let ib_block = bb_block + 1;
         let it_block = ib_block + 1;
         let data_start = it_block + inode_table_blocks as u64;

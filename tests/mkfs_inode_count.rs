@@ -227,10 +227,12 @@ fn an_inode_table_larger_than_its_group_is_refused() {
 }
 
 #[test]
-fn a_short_final_group_too_small_for_its_table_is_refused_before_writing() {
+fn inodes_that_need_the_short_group_left_off_are_refused_before_writing() {
     // A full group and a 600-block one: 40000 inodes over two groups is a
-    // 1250-block table per group, which the full group holds and the last
-    // cannot. Nothing may be written, the first group's metadata included.
+    // 1250-block table per group, which the last cannot hold, so it is
+    // left off the volume (tests/mkfs_short_last_group.rs). One group
+    // cannot track 40000 inodes in a 32768-bit bitmap. Nothing may be
+    // written, the first group's metadata included.
     refused(
         "short_last",
         FsFlavor::Ext4,
