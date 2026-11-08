@@ -3,7 +3,7 @@
 //! The format documentation's superblock table describes the flag as "this
 //! filesystem has been used to store a file greater than 2 GiB": a regular
 //! file whose `i_size` does not fit in 31 bits. `e2fsck` refuses a volume
-//! holding such a file without it. Two things have to hold here:
+//! holding such a file without it. Three things have to hold here:
 //!
 //! - A fresh volume carries the flag, as `mke2fs` makes one by default
 //!   (`tests/large_file_oracle.rs` compares against `mke2fs` itself).

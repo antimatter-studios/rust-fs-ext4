@@ -56,7 +56,14 @@ fn matches_mke2fs(tag: &str, flavor: FsFlavor, block_size: u32, size: u64, reque
     assert_e2fsck_clean(&ours, tag);
 
     let theirs = scratch(tag, "mke2fs", size);
+    // This crate's ext4 volumes have no journal, and on the smallest of
+    // these a journal would not fit beside the inode table.
+    let no_journal: &[&str] = match flavor {
+        FsFlavor::Ext4 => &["-O", "^has_journal"],
+        FsFlavor::Ext2 | FsFlavor::Ext3 => &[],
+    };
     let made = oracle("mke2fs")
+        .args(no_journal)
         .args(["-q", "-F", "-t", kind, "-I", inode_size, "-b"])
         .arg(block_size.to_string())
         .arg("-N")
@@ -95,12 +102,12 @@ fn one_kib_blocks() {
 
 #[test]
 fn ext2_one_group() {
-    matches_mke2fs("ext2_1g", FsFlavor::Ext2, 4096, 32 << 20, 1000);
+    matches_mke2fs("ext2_32m", FsFlavor::Ext2, 4096, 32 << 20, 1000);
 }
 
 #[test]
 fn ext3_one_group() {
-    matches_mke2fs("ext3_1g", FsFlavor::Ext3, 4096, 32 << 20, 1000);
+    matches_mke2fs("ext3_32m", FsFlavor::Ext3, 4096, 32 << 20, 1000);
 }
 
 /// Up to whole table blocks, then down to whole bitmap bytes: fewer than

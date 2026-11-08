@@ -114,8 +114,8 @@ fn a_requested_count_is_spread_over_the_groups_and_rounded_up() {
     // whole number of 256-byte inodes per 4 KiB block (16): 2512.
     formats_with("two_groups", FsFlavor::Ext4, 4096, 256 << 20, 5000, 2512, 2);
     // One group of 128-byte inodes, 32 to a block: 1000 becomes 1024.
-    formats_with("ext2_1g", FsFlavor::Ext2, 4096, 32 << 20, 1000, 1024, 1);
-    formats_with("ext3_1g", FsFlavor::Ext3, 4096, 32 << 20, 1000, 1024, 1);
+    formats_with("ext2_32m", FsFlavor::Ext2, 4096, 32 << 20, 1000, 1024, 1);
+    formats_with("ext3_32m", FsFlavor::Ext3, 4096, 32 << 20, 1000, 1024, 1);
     // 1 KiB blocks hold four 256-byte inodes and a bitmap byte covers
     // eight: up to whole table blocks, then down to whole bitmap bytes.
     formats_with("one_kib", FsFlavor::Ext4, 1024, 8 << 20, 100, 96, 1);
