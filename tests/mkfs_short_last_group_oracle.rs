@@ -59,8 +59,8 @@ fn matches_mke2fs(tag: &str, blocks: u64, inodes: u32) {
     {
         let dev = FileDevice::open_rw(&ours).expect("open_rw");
         let opts = FormatOptions {
-            flavor: FsFlavor::Ext4,
             inodes_count: Some(inodes),
+            ..FormatOptions::new(FsFlavor::Ext4)
         };
         mkfs::format_filesystem_with_options(&dev, None, None, size, BS as u32, &opts)
             .unwrap_or_else(|e| panic!("[{tag}] format: {e:?}"));
