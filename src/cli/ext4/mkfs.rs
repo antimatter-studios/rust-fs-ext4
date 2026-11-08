@@ -91,8 +91,9 @@ fn command() -> Cmd {
                 .value_name("COUNT")
                 .help(
                     "Number of inodes, at least 1, as for the standard formatter's -N. \
-                     Spread over the block groups and rounded up to whole inode-table \
-                     blocks. Default: 8192 per group.",
+                     Spread over the block groups and rounded to whole inode-table \
+                     blocks and bitmap bytes, so it can come out a little higher or \
+                     lower. Default: 8192 per group.",
                 )
                 .value_parser(parse_inodes),
         )
