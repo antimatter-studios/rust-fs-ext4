@@ -958,7 +958,7 @@ fn assert_unconditional_or_skipped_for_documentation(job: &Yaml, name: &str, wor
                     | Some("needs.changes.outputs.profile == 'full' && needs.changes.outputs.code == 'true'")
             ),
             "{workflow} jobs.{name} may be skipped only for a change to documentation alone, \
-             or for the quick profile that scripts/ci-plan.sh plans for a pull request"
+             or for the documentation-only fixture/VM skip"
         );
         assert!(
             needs_of(job).iter().any(|n| n == "changes"),
