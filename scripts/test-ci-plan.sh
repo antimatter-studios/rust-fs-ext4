@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # The CI profile's plan and verdict, graded as a truth table.
 #
-# scripts/ci-plan.sh says which profile an event runs: a pull request runs
-# the quick one, unless its title starts "red:", and every other event the
-# full one. scripts/ci-ok.sh is the
+# scripts/ci-plan.sh says which profile an event runs: every event uses the
+# full profile. scripts/ci-ok.sh is the
 # ci-ok verdict: it accepts a skipped job only where that plan skipped it,
 # and refuses a missing or invalid plan, a missing job, and any failure or
 # cancellation. Each row is pinned here so a profile cannot quietly drop a
@@ -68,23 +67,16 @@ expect() {
   fi
 }
 
-# only a pull request runs the quick profile
-got="$(bash "$here/ci-plan.sh" pull_request)" && [[ "$got" == quick ]] && ok || fail "pull_request planned '$got', want quick"
-for event in merge_group push workflow_dispatch workflow_call schedule release "" pull_request_target; do
+# every event runs the full profile
+for event in pull_request merge_group push workflow_dispatch workflow_call schedule release "" pull_request_target; do
   got="$(bash "$here/ci-plan.sh" "$event")" && [[ "$got" == full ]] && ok ||
     fail "event '$event' planned '$got', must run the full profile"
 done
 
-# a red: pull request runs the full profile: its run is the red evidence, so a
-# kernel, VM or fixture test it adds must run there to fail. GitHub's
-# startsWith, which keeps the run uncancelled, ignores case; so does the plan.
-for title in "red: a kernel test fails" "red:" "Red: a capital" "RED: shouting"; do
+# a pull request title never changes the profile
+for title in "" "fix: ordinary" "red: a kernel test" "RED: uppercase"; do
   got="$(bash "$here/ci-plan.sh" pull_request "$title")" && [[ "$got" == full ]] && ok ||
     fail "pull_request titled '$title' planned '$got', want full"
-done
-for title in "" "fix: red: later" " red: a leading space" "redo: not red" "red a missing colon"; do
-  got="$(bash "$here/ci-plan.sh" pull_request "$title")" && [[ "$got" == quick ]] && ok ||
-    fail "pull_request titled '$title' planned '$got', want quick"
 done
 for event in merge_group push workflow_dispatch; do
   got="$(bash "$here/ci-plan.sh" "$event" "fix: not red")" && [[ "$got" == full ]] && ok ||
@@ -106,11 +98,9 @@ for job in wasm cli; do
   expect fail "documentation-only full run with $job skipped" full false full false "$job" skipped
 done
 
-# a quick run never accepts a skipped quick job
+# a full run never accepts a skipped quick-tier job
 for job in "${QUICK[@]}"; do
-  for profile in quick full; do
-    expect fail "$profile run with $job skipped" "$profile" true "$profile" true "$job" skipped
-  done
+  expect fail "full run with $job skipped" full true full true "$job" skipped
 done
 
 # a failed, cancelled or missing job fails every profile

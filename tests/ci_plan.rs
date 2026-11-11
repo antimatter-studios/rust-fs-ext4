@@ -1,10 +1,7 @@
 //! The CI profile's plan and verdict, as a truth table.
 //!
-//! `scripts/ci-plan.sh` says which profile an event runs: a pull request
-//! runs the quick one (unit, lint, semver, msrv, provenance) unless its
-//! title starts `red:`, and every
-//! other event, the merge queue, a push, a tag, a manual dispatch, a
-//! workflow_call and any event not known here, runs the full one.
+//! `scripts/ci-plan.sh` says which profile an event runs: every pull request
+//! and every other event uses the full profile, regardless of PR title.
 //! `scripts/ci-ok.sh` is the `ci-ok` verdict: it accepts a skipped job
 //! only where that plan skipped it, and refuses a missing or invalid
 //! plan, a missing job, and any failure or cancellation.
@@ -98,23 +95,18 @@ fn assert_guard_grades(rows: &[&str]) {
 }
 
 #[test]
-fn only_a_pull_request_runs_the_quick_profile() {
+fn every_pull_request_runs_the_full_profile() {
     assert_guard_grades(&[
-        "ci-plan.sh\" pull_request)\" && [[ \"$got\" == quick ]]",
-        "for event in merge_group push workflow_dispatch workflow_call schedule release \"\" pull_request_target; do",
+        "for event in pull_request merge_group push workflow_dispatch workflow_call schedule release \"\" pull_request_target; do",
         "[[ \"$got\" == full ]]",
     ]);
 }
 
-/// A `red:` pull request's run is its red evidence, so it runs the full
-/// profile: a kernel, VM or fixture test it adds runs there and fails.
 #[test]
-fn a_red_pull_request_runs_the_full_profile() {
+fn pull_request_titles_never_change_the_profile() {
     assert_guard_grades(&[
-        "for title in \"red: a kernel test fails\" \"red:\" \"Red: a capital\" \"RED: shouting\"; do",
+        "for title in \"\" \"fix: ordinary\" \"red: a kernel test\" \"RED: uppercase\"; do",
         "ci-plan.sh\" pull_request \"$title\")\" && [[ \"$got\" == full ]]",
-        "for title in \"\" \"fix: red: later\" \" red: a leading space\" \"redo: not red\" \"red a missing colon\"; do",
-        "ci-plan.sh\" pull_request \"$title\")\" && [[ \"$got\" == quick ]]",
     ]);
 }
 
@@ -158,14 +150,14 @@ fn a_full_run_that_skips_a_full_only_job_fails() {
 }
 
 #[test]
-fn a_quick_run_never_accepts_a_skipped_quick_job() {
+fn a_full_run_never_accepts_a_skipped_quick_job() {
     let text = guard();
     assert_eq!(
         list(&text, "\nQUICK=(", ')'),
         names(&["changes", "unit", "semver", "msrv", "provenance"])
     );
     assert_guard_grades(&[
-        "for job in \"${QUICK[@]}\"; do\n  for profile in quick full; do\n    expect fail \"$profile run with $job skipped\" \"$profile\" true \"$profile\" true \"$job\" skipped",
+        "for job in \"${QUICK[@]}\"; do\n  expect fail \"full run with $job skipped\" full true full true \"$job\" skipped",
     ]);
 }
 
