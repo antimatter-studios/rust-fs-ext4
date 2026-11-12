@@ -246,6 +246,10 @@ jobs:
         # test tier. This guard needs no fixture and no VM, and the script it
         # holds is what runs the suite in the guest.
         run: bash tests/scripts/test-guest-scratch-term.sh
+      - name: chore staticlib copies the archive from where cargo built it
+        # Here for the same reason: it needs no fixture and no sibling, and it
+        # builds a stand-in crate in seconds.
+        run: bash tests/scripts/test-staticlib-target-dir.sh
       - name: Keep the tier logs
         # A quiet tier writes its detail to tmp/logs/<tier>.log and prints a
         # verdict; without this the detail dies with the runner and the only
