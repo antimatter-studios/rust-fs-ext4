@@ -8,7 +8,10 @@ mod lwext4;
 mod oracle;
 pub mod verdict;
 
-pub use kernel::{guest_kernel_report, guest_kernel_try_write, guest_kernel_write, sha256_hex};
+pub use kernel::{
+    guest_kernel_report, guest_kernel_stopped, guest_kernel_try_write, guest_kernel_write,
+    sha256_hex, Stopped,
+};
 pub use lwext4::{
     lwext4_refusal, lwext4_report, lwext4_write, Report, PATCH as LWEXT4_PATCH, PIN as LWEXT4_PIN,
 };
