@@ -820,13 +820,15 @@ tasks:
 
   test:scripts:
     desc: The shell tests (tests/scripts/*.sh), every one by glob
+    # BUDGET: the new staticlib target-dir test measured 52 lines and 2974
+    # bytes in PR #625's full run (Actions run 43135623146).
     # By glob, so a test added later needs no edit here -- a guard that
     # has to be registered somewhere else is a guard that gets silently
     # skipped.
     cmds:
       - |
         set -eu
-        bash ../rust-fs-core/scripts/tier.sh test:scripts scripts 50 3000 -- bash -c '
+        bash ../rust-fs-core/scripts/tier.sh test:scripts scripts 52 3000 -- bash -c '
           set -eu
           for t in tests/scripts/*.sh; do
             echo "== $t"
@@ -887,7 +889,14 @@ tasks:
       # ships dependency versions CI never tested.
       - 'cargo build --locked --release --target {{.TRIPLE}}'
       - 'mkdir -p "{{.OUT}}/include"'
-      - 'cp target/{{.TRIPLE}}/release/lib{{.LIBNAME}}.a "{{.OUT}}/lib{{.LIBNAME}}.a"'
+      # From where cargo built it, which only cargo can say: ./target,
+      # CARGO_TARGET_DIR (which may be relative), or build.target-dir in a
+      # config file. `cargo metadata` gives an absolute path for all of them.
+      # A path it cannot give leaves the cp failing rather than guessing.
+      # tests/scripts/test-staticlib-target-dir.sh holds this (#624).
+      - |
+        target_dir="$(cargo metadata --no-deps --format-version 1 | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')"
+        cp "$target_dir/{{.TRIPLE}}/release/lib{{.LIBNAME}}.a" "{{.OUT}}/lib{{.LIBNAME}}.a"
       - 'cp include/{{.LIBNAME}}.h "{{.OUT}}/include/{{.LIBNAME}}.h"'
       # Shipping fs_core.h is ours: the header we emit #includes it, so a
       # consumer handed only fs_ext4.h cannot compile.
