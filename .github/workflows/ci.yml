@@ -137,6 +137,7 @@ jobs:
       code: ${{ steps.c.outputs.code }}
       # Full for every event (scripts/ci-plan.sh).
       profile: ${{ steps.plan.outputs.profile }}
+      runners: ${{ steps.runners.outputs.runners || '{}' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -191,10 +192,54 @@ jobs:
           fi
           echo "code=$code ($EVENT${range:+ $range})"
           echo "code=$code" >> "$GITHUB_OUTPUT"
+      - name: Pick runners
+        id: runners
+        env:
+          ORG: ${{ github.repository_owner }}
+          PROFILE: ${{ steps.plan.outputs.profile }}
+          ACTOR: ${{ github.triggering_actor }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          SENDER: ${{ github.event.sender.login }}
+          GH_ACTOR: ${{ github.actor }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          JOBS: unit semver msrv provenance
+        run: |
+          set -euo pipefail
+          jobs="$JOBS"
+          if [ "$PROFILE" = full ]; then jobs="$jobs wasm cli"; fi
+          ours=true
+          for who in "$ACTOR" "$GH_ACTOR" "$SENDER" "$AUTHOR"; do
+            [ -z "$who" ] || [ "$who" = christhomas ] || ours=false
+          done
+          pick() {
+            $ours || { echo ubuntu-24.04; return; }
+            runner=$(curl -fsS --max-time 10 --get https://runner-gate.antimatter-studios.com/pick \
+              --data-urlencode "org=$ORG" \
+              --data-urlencode prefer=antimatter-vps-linux-x64 \
+              --data-urlencode fallback=ubuntu-24.04 \
+              --data-urlencode "actor=$ACTOR" \
+              --data-urlencode "author=$AUTHOR" \
+              --data-urlencode "run=$RUN_ID" \
+              --data-urlencode "attempt=$RUN_ATTEMPT" \
+              --data-urlencode "job=$1") || runner=ubuntu-24.04
+            case "$runner" in
+              antimatter-vps-linux-x64|ubuntu-24.04) echo "$runner" ;;
+              *) echo ubuntu-24.04 ;;
+            esac
+          }
+          runners='{}'
+          for job in $jobs; do
+            runners=$(jq -c --arg job "$job" --arg runner "$(pick "$job")" \
+              '. + {($job): $runner}' <<<"$runners")
+          done
+          echo "$runners" | jq . | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "runners=$runners" >> "$GITHUB_OUTPUT"
 
   unit:
     name: unit (no tools, no fixtures)
-    runs-on: ubuntu-24.04
+    needs: changes
+    runs-on: ${{ fromJSON(needs.changes.outputs.runners || '{}')['unit'] || 'ubuntu-24.04' }}
     steps:
       - uses: actions/checkout@v4
       - name: Install chore
@@ -475,7 +520,7 @@ jobs:
     name: wasm32 (browser build, tests under Node)
     needs: changes
     if: needs.changes.outputs.profile == 'full'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ fromJSON(needs.changes.outputs.runners || '{}')['wasm'] || 'ubuntu-24.04' }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -518,7 +563,8 @@ jobs:
     # version on crates.io, refusing a break the version in Cargo.toml does
     # not declare (#120). No fixtures, no VM -- only the registry.
     name: semver (public API against crates.io)
-    runs-on: ubuntu-24.04
+    needs: changes
+    runs-on: ${{ fromJSON(needs.changes.outputs.runners || '{}')['semver'] || 'ubuntu-24.04' }}
     timeout-minutes: 30
     env:
       # The version ../rust-fs-core/scripts/semver-check.sh expects. A prebuilt binary,
@@ -563,13 +609,16 @@ jobs:
 
   msrv:
     name: msrv (Cargo.toml rust-version)
-    runs-on: ubuntu-24.04
+    needs: changes
+    runs-on: ${{ fromJSON(needs.changes.outputs.runners || '{}')['msrv'] || 'ubuntu-24.04' }}
     steps:
       - uses: actions/checkout@v4
       - name: Install chore
         run: scripts/ci-install-chore.sh
       - name: chore siblings
         run: chore siblings
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
       - name: Cache cargo
         uses: actions/cache@v4
         with:
@@ -588,7 +637,7 @@ jobs:
     name: cli (the installed tools, on PATH)
     needs: changes
     if: needs.changes.outputs.profile == 'full'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ fromJSON(needs.changes.outputs.runners || '{}')['cli'] || 'ubuntu-24.04' }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -645,7 +694,8 @@ jobs:
 
   provenance:
     name: provenance (no kernel or e2fsprogs internals named)
-    runs-on: ubuntu-24.04
+    needs: changes
+    runs-on: ${{ fromJSON(needs.changes.outputs.runners || '{}')['provenance'] || 'ubuntu-24.04' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
