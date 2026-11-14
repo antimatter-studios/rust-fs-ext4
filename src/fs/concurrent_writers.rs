@@ -73,11 +73,12 @@ pub(crate) fn formatted(flavor: FsFlavor, large_file: bool) -> Arc<MemDev> {
         flavor,
     )
     .unwrap();
-    if large_file {
+    // mkfs sets large_file; a volume without it is made by clearing it.
+    if !large_file {
         let mut sb = Superblock::read(dev.as_ref()).unwrap().raw;
         let flags = u32::from_le_bytes(sb[0x64..0x68].try_into().unwrap());
         sb[0x64..0x68]
-            .copy_from_slice(&(flags | features::RoCompat::LARGE_FILE.bits()).to_le_bytes());
+            .copy_from_slice(&(flags & !features::RoCompat::LARGE_FILE.bits()).to_le_bytes());
         if flavor == FsFlavor::Ext4 {
             let checksum = crate::checksum::linux_crc32c(!0, &sb[..0x3fc]);
             sb[0x3fc..0x400].copy_from_slice(&checksum.to_le_bytes());
