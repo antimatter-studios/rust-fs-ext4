@@ -1178,6 +1178,109 @@ fn ci_runs_on_a_pull_request_against_any_base() {
 }
 
 #[test]
+fn eligible_linux_jobs_use_one_autobalancer_pick_each_and_special_jobs_stay_hosted() {
+    let path = workflow_path("ci.yml");
+    let text = read_or_panic(&path);
+    let document = load_document(&text, &path);
+    let changes = job(&document, "changes", &path);
+    let outputs = field(changes, "outputs").expect("jobs.changes declares outputs");
+    assert_eq!(
+        field(outputs, "runners").and_then(Yaml::as_str),
+        Some("${{ steps.runners.outputs.runners || '{}' }}"),
+        "the runner map must be exposed to dependent jobs"
+    );
+    assert_eq!(
+        field(changes, "runs-on").and_then(Yaml::as_str),
+        Some("ubuntu-24.04"),
+        "the picker/bootstrap job must remain on GitHub-hosted runners"
+    );
+    let steps = steps_of(changes, "changes");
+    let picker = steps.last().expect("the picker is the final changes step");
+    assert_eq!(
+        field(picker, "name").and_then(Yaml::as_str),
+        Some("Pick runners")
+    );
+    assert_eq!(field(picker, "id").and_then(Yaml::as_str), Some("runners"));
+    let picker_env = field(picker, "env").expect("the picker carries event context through env");
+    for (name, value) in [
+        ("ACTOR", "${{ github.triggering_actor }}"),
+        ("AUTHOR", "${{ github.event.pull_request.user.login }}"),
+        ("SENDER", "${{ github.event.sender.login }}"),
+        ("GH_ACTOR", "${{ github.actor }}"),
+        ("RUN_ID", "${{ github.run_id }}"),
+        ("RUN_ATTEMPT", "${{ github.run_attempt }}"),
+        ("JOBS", "unit semver msrv provenance"),
+    ] {
+        assert_eq!(
+            field(picker_env, name).and_then(Yaml::as_str),
+            Some(value),
+            "the runner picker env {name} must carry the intended value"
+        );
+    }
+    let pick_script = run_of(picker);
+    for required in [
+        "runner-gate.antimatter-studios.com/pick",
+        "--max-time 10",
+        "run=$RUN_ID",
+        "attempt=$RUN_ATTEMPT",
+        "job=$1",
+        "wasm cli",
+        "antimatter-vps-linux-x64|ubuntu-24.04",
+        "GITHUB_STEP_SUMMARY",
+    ] {
+        assert!(
+            pick_script.contains(required),
+            "the runner picker is missing {required:?}"
+        );
+    }
+
+    for (name, key) in [
+        ("unit", "unit"),
+        ("wasm", "wasm"),
+        ("semver", "semver"),
+        ("msrv", "msrv"),
+        ("cli", "cli"),
+        ("provenance", "provenance"),
+    ] {
+        let gated = job(&document, name, &path);
+        assert!(
+            needs_of(gated).iter().any(|need| need == "changes"),
+            "jobs.{name} must depend on the job that reserves its runner"
+        );
+        let expected = format!(
+            "${{{{ fromJSON(needs.changes.outputs.runners || '{{}}')['{key}'] || 'ubuntu-24.04' }}}}"
+        );
+        assert_eq!(
+            field(gated, "runs-on").and_then(Yaml::as_str),
+            Some(expected.as_str()),
+            "jobs.{name} must use only its own gate reservation and fall back to GitHub"
+        );
+    }
+
+    let msrv = job(&document, "msrv", &path);
+    assert!(
+        steps_of(msrv, "msrv").iter().any(|step| {
+            field(step, "uses").and_then(Yaml::as_str) == Some("dtolnay/rust-toolchain@stable")
+        }),
+        "jobs.msrv must install rustup before checking the declared minimum toolchain"
+    );
+
+    for (name, runner) in [
+        ("fixtures", "ubuntu-24.04"),
+        ("test", "ubuntu-24.04"),
+        ("test-arm64", "ubuntu-24.04-arm"),
+        ("suite-in-vm", "ubuntu-24.04"),
+        ("ci-ok", "ubuntu-latest"),
+    ] {
+        assert_eq!(
+            field(job(&document, name, &path), "runs-on").and_then(Yaml::as_str),
+            Some(runner),
+            "jobs.{name} must remain on its required hosted runner"
+        );
+    }
+}
+
+#[test]
 fn the_pr_gate_builds_fixtures_once_in_the_harness_vm_and_tests_both_architectures_through_chore() {
     let path = workflow_path("ci.yml");
     let text = read_or_panic(&path);
