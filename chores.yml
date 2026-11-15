@@ -303,8 +303,8 @@ vars:
   FS_CORE_REF: v0.4.3
   LINUX_HARNESS_URL: https://github.com/antimatter-studios/fs-linux-test-harness.git
   # v0.3.0 is the release with `vm.sh session`, which the test runner runs
-  # cargo through so a run gives the VM and the machine-wide slot back
-  # however it ends; v0.2.0 answers it with "unknown command".
+  # cargo through so a run ends however its command ends; v0.2.0 answers it
+  # with "unknown command".
   # v0.4.0: concurrent `vm.sh up` calls of one machine wait for the boot
   # under way instead of racing it, a halt that hangs is forced, and the
   # SSH forward port is picked at boot when the configured one is taken.
@@ -313,17 +313,25 @@ vars:
   # failed a mount of a fresh fixture copy at random (#611, harness #84).
   # tests/scripts/test-harness-pin-keeps-guest-off-shares.sh holds the floor.
   # v0.5.4: VM-free checks and session interrupts work under macOS system Bash.
-  # v0.5.5 lets a host admit more than one VM (FLTH_SLOT_COUNT). v0.5.6 gives
-  # back what a guest deletes and says what stopped a lost guest.
+  # v0.5.6 gives back what a guest deletes and says what stopped a lost guest.
   # v0.5.8: a signal to a session stops everything its command started, within
   # five seconds, before test.sh removes the scratch directory (#617, harness
   # #117), and leaves the shares of a VM that stays up (harness #130).
   # v0.6.1: the VM-free suite runs no real `sync` on the host (harness #191), so
   # this repository's script guards over the stub engine stop flushing the
-  # machine's disks, and suites can share one guest through FLTH_SHARED_ROOT
-  # (harness #153). A macOS host now needs vagrant-notify-forwarder-christhomas
-  # 0.7.7 or newer, which `chore vm:host:check` says (harness #164).
-  LINUX_HARNESS_REF: v0.6.1
+  # machine's disks (harness #153). A macOS host now needs
+  # vagrant-notify-forwarder-christhomas 0.7.7 or newer, which `chore
+  # vm:host:check` says (harness #164).
+  # v0.7.1 (v0.7.0 is the break): every consumer on a host uses ONE shared
+  # guest, `machines/shared-<guest>/`. There is no private VM and no
+  # machine-wide limit on VMs, and nothing replaces the machinery that
+  # enforced one. FLTH_SHARED_ROOT defaults
+  # to the directory holding the main checkout, a worktree included. A
+  # session's end, `vm:test` and `vm:guest-test` leave the guest up for the
+  # next run; the `[vm]` sizes and deadline are read and ignored, the host
+  # sets FLTH_SHARED_MEMORY, FLTH_SHARED_CPUS, FLTH_SHARED_DISK and
+  # FLTH_SHARED_DEADLINE.
+  LINUX_HARNESS_REF: v0.7.1
 
 # The harness's consumer tasks, as `chore vm:<task>`. OPTIONAL because the
 # harness is a sibling that `chore siblings` itself checks out: without
@@ -487,7 +495,7 @@ tasks:
       - test-disks/ext4-largedir.img
       - test-disks/ext4-manyfiles.img
       - test-disks/ext4-whole-disk.img
-    # A hung boot must not hold the VM and the machine-wide slot for ever.
+    # A hung boot must not hold up the shared guest for ever.
     timeout: 60m
     on_timeout:
       - cmd: '../fs-linux-test-harness/scripts/vm.sh down || ../fs-linux-test-harness/scripts/vm.sh destroy'
@@ -566,10 +574,10 @@ tasks:
     # process brings the VM up (idempotent, milliseconds when it is
     # already running) and every later call rides one shared SSH
     # connection. scripts/test.sh runs cargo inside a harness session
-    # (`vm.sh session`), so the VM comes down and the machine-wide slot is
-    # released when the tier ends, however it ends and however it was
-    # started — one boot for the tier. The `after_all` reaper is the net
-    # for a run that never reached scripts/test.sh.
+    # (`vm.sh session`), so the run is one session on the shared guest, which
+    # ends when the tier ends however it ends and however it was started, and
+    # the guest stays up for the next run. The `after_all` reaper stops only a
+    # boot that did not finish.
     cmds:
       - scripts/tools.sh --check
       - '../rust-fs-core/scripts/tier.sh test:oracle oracle 3800 295000 -- scripts/test.sh --locked --release $(scripts/test-targets.sh oracle) -- --show-output'
@@ -677,7 +685,7 @@ tasks:
     # scripts/guest-suite.sh, through the harness's [test] guest_command.
     # The toolchain and the build directory live on the VM's own disk, so
     # the first run pays a full build and later runs are incremental.
-    # FLTH_KEEP_VM=1 keeps the VM up for the next one.
+    # The guest stays up afterwards, for the next run.
     timeout: 120m
     on_timeout:
       - cmd: '../fs-linux-test-harness/scripts/vm.sh down || ../fs-linux-test-harness/scripts/vm.sh destroy'

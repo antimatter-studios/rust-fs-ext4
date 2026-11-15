@@ -364,8 +364,8 @@ spawns one itself, drives the VM itself, or mounts anything on the host.
 The VM boots once per run (the first oracle call), every later call rides
 one shared SSH connection (~0.1 s per tool invocation), and
 `scripts/test.sh` runs the suite inside a harness session (`vm.sh
-session`), so the VM comes down and the machine-wide slot is released when
-the run ends, however it was started.
+session`), so the run is one session on the shared guest, which ends with the
+run however it was started and leaves the guest up for the next one.
 
 **We run the Linux tests on Linux.** On a Linux host `chore test` runs
 them here; on macOS it runs `chore test:vm`, which builds and runs the
@@ -491,8 +491,9 @@ Independent tools can:
   VM, whose tooling `scripts/vm-setup.sh` installs. For anything else in
   the guest: `chore vm:run -- <command>`, `chore vm:exec -- <command>` (the
   fast path, for a VM that is already up), `chore vm:put <file>` (lands in
-  `/share`), `chore vm:down`. One VM runs at a time across every repository
-  on the machine; `chore vm:slot:status` says who has it.
+  `/share`), `chore vm:down` (stops it only when nobody is using it). Every repository on
+  the machine uses one shared guest; `FLTH_SHARED_ROOT` defaults to the
+  directory holding the main checkout, so it is not set.
 - `tests/lwext4_cross_validate.rs` + `tests/lwext4/report.c` — A THIRD
   IMPLEMENTATION. lwext4 (BSD-2-Clause, pure C) is built in the same guest
   by `scripts/vm-setup.sh` at a pinned commit, and the two read each

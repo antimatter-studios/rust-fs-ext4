@@ -682,6 +682,32 @@ fn parse_chores(text: &str) -> std::collections::BTreeMap<String, ChoreTask> {
             },
         );
     }
+
+    if let Some(includes) = documents
+        .first()
+        .and_then(|document| field(document, "includes"))
+        .and_then(Yaml::as_mapping)
+    {
+        for (namespace, include) in includes {
+            let (Some(namespace), Some(taskfile)) = (
+                namespace.as_str(),
+                field(include, "taskfile").and_then(Yaml::as_str),
+            ) else {
+                continue;
+            };
+            let path = manifest_dir().join(taskfile);
+            let included = parse_chores(&read_or_panic(&path));
+            for (name, mut task) in included {
+                for command in &mut task.cmds {
+                    if let ChoreCmd::Task { name, .. } = command {
+                        *name = format!("{namespace}:{name}");
+                    }
+                }
+                tasks.insert(format!("{namespace}:{name}"), task);
+            }
+        }
+    }
+
     tasks
 }
 
