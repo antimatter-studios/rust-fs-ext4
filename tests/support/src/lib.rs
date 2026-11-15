@@ -21,8 +21,9 @@ pub use verdict::{Judge, Judged, Verdict};
 use std::ffi::OsStr;
 use std::fmt;
 use std::fs;
-use std::io;
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -199,6 +200,126 @@ pub fn fixture(manifest_dir: &str, name: &str) -> String {
          Tests never skip on a missing fixture."
     );
     path
+}
+
+const IMAGE_COMPARE_BUFFER_SIZE: usize = 1024 * 1024;
+static IMAGE_SNAPSHOT_ID: AtomicU64 = AtomicU64::new(0);
+
+#[track_caller]
+pub fn snapshot_file(path: impl AsRef<Path>) -> io::Result<PathBuf> {
+    let snapshot = PathBuf::from(temp_path!(
+        "image-snapshot-{}-{}.img",
+        std::process::id(),
+        IMAGE_SNAPSHOT_ID.fetch_add(1, Ordering::Relaxed)
+    ));
+    if let Err(error) = copy_file_sparse(path, &snapshot) {
+        let _ = fs::remove_file(&snapshot);
+        return Err(error);
+    }
+    Ok(snapshot)
+}
+
+pub fn copy_file_sparse(source: impl AsRef<Path>, destination: impl AsRef<Path>) -> io::Result<()> {
+    let mut source = fs::File::open(source)?;
+    let length = source.metadata()?.len();
+    let mut destination = fs::File::create(destination)?;
+    let mut buffer = vec![0; IMAGE_COMPARE_BUFFER_SIZE];
+    let mut offset = 0u64;
+    loop {
+        let count = source.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        let chunk = &buffer[..count];
+        if chunk.iter().any(|byte| *byte != 0) {
+            destination.seek(SeekFrom::Start(offset))?;
+            destination.write_all(chunk)?;
+        }
+        offset += count as u64;
+    }
+    destination.set_len(length)
+}
+
+pub fn first_different_offset(
+    left: impl AsRef<Path>,
+    right: impl AsRef<Path>,
+) -> io::Result<Option<u64>> {
+    let mut left = fs::File::open(left)?;
+    let mut right = fs::File::open(right)?;
+    let left_len = left.metadata()?.len();
+    let right_len = right.metadata()?.len();
+    let compare_len = left_len.min(right_len);
+    let mut left_buffer = vec![0; IMAGE_COMPARE_BUFFER_SIZE];
+    let mut right_buffer = vec![0; IMAGE_COMPARE_BUFFER_SIZE];
+    let mut offset = 0u64;
+    while offset < compare_len {
+        let count = (compare_len - offset).min(IMAGE_COMPARE_BUFFER_SIZE as u64) as usize;
+        left.read_exact(&mut left_buffer[..count])?;
+        right.read_exact(&mut right_buffer[..count])?;
+        if let Some(difference) = left_buffer[..count]
+            .iter()
+            .zip(&right_buffer[..count])
+            .position(|(left, right)| left != right)
+        {
+            return Ok(Some(offset + difference as u64));
+        }
+        offset += count as u64;
+    }
+    Ok((left_len != right_len).then_some(compare_len))
+}
+
+#[track_caller]
+pub fn assert_files_equal(left: impl AsRef<Path>, right: impl AsRef<Path>) {
+    let left_path = left.as_ref();
+    let right_path = right.as_ref();
+    match first_different_offset(left_path, right_path) {
+        Ok(None) => {}
+        Ok(Some(offset)) => panic!(
+            "{} differs from {} at byte offset {offset}",
+            left_path.display(),
+            right_path.display()
+        ),
+        Err(error) => panic!(
+            "cannot compare {} and {}: {error}",
+            left_path.display(),
+            right_path.display()
+        ),
+    }
+}
+
+#[track_caller]
+pub fn read_small_file(path: impl AsRef<Path>) -> io::Result<Vec<u8>> {
+    let path = path.as_ref();
+    let length = fs::metadata(path)?.len();
+    if length > IMAGE_COMPARE_BUFFER_SIZE as u64 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "{} is {length} bytes; read_small_file is limited to 1 MiB",
+                path.display()
+            ),
+        ));
+    }
+    fs::read(path)
+}
+
+#[track_caller]
+pub fn read_file_range(path: impl AsRef<Path>, offset: u64, length: usize) -> io::Result<Vec<u8>> {
+    let path = path.as_ref();
+    let mut file = fs::File::open(path)?;
+    let end = offset
+        .checked_add(length as u64)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "file range overflows u64"))?;
+    if end > file.metadata()?.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            format!("range {offset}..{end} exceeds {}", path.display()),
+        ));
+    }
+    file.seek(SeekFrom::Start(offset))?;
+    let mut bytes = vec![0; length];
+    file.read_exact(&mut bytes)?;
+    Ok(bytes)
 }
 
 /// `e2fsck -fn` on `image` must examine it and find nothing, or the test

@@ -150,7 +150,7 @@ fn a_symlink_loop_mid_path_is_refused_as_the_kernel_refuses_it() {
         stderr(&out)
     );
     let kernel = stdout(&out);
-    let image = std::fs::read(&img).expect("read the image");
+    let image = fs_ext4_test_support::read_small_file(&img).expect("read the image");
 
     let mut lines = kernel.lines();
     let deepest = lines
@@ -184,7 +184,7 @@ fn a_symlink_loop_mid_path_is_refused_as_the_kernel_refuses_it() {
         assert!(got.stdout.is_empty(), "{what}; stdout: {}", stdout(&got));
         assert!(err.contains("too many levels of symbolic links"), "{what}");
         assert!(
-            std::fs::read(&img).expect("read the image") == image,
+            fs_ext4_test_support::read_small_file(&img).expect("read the image") == image,
             "rm {path} was refused and still changed the image"
         );
         tried.push(path);

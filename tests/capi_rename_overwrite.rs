@@ -36,7 +36,7 @@ fn scratch_image(tag: &str) -> PathBuf {
         "fs_ext4_capi_rename_overwrite_{tag}_{}_{n}.img",
         std::process::id()
     ));
-    let bytes = fs::read(SRC_IMAGE).expect("read src image");
+    let bytes = fs_ext4_test_support::read_small_file(SRC_IMAGE).expect("read src image");
     let mut out = fs::File::create(&dst).expect("create dst image");
     out.write_all(&bytes).expect("write dst image");
     out.flush().expect("flush");

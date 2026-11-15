@@ -6,7 +6,6 @@
 
 use fs_ext4::capi::*;
 use std::ffi::{CStr, CString};
-use std::fs;
 use std::os::raw::c_void;
 
 const IMAGE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/test-disks/ext4-basic.img");
@@ -37,7 +36,7 @@ extern "C" fn read_from_vec(
 
 #[test]
 fn truncate_on_callback_mount_refused_cleanly() {
-    let bytes = fs::read(IMAGE).expect("read image");
+    let bytes = fs_ext4_test_support::read_small_file(IMAGE).expect("read image");
     let cfg = fs_ext4_blockdev_cfg_t {
         read: Some(read_from_vec),
         context: &bytes as *const Vec<u8> as *mut c_void,
@@ -77,7 +76,7 @@ fn truncate_on_callback_mount_refused_cleanly() {
 
 #[test]
 fn unlink_on_callback_mount_refused_cleanly() {
-    let bytes = fs::read(IMAGE).expect("read image");
+    let bytes = fs_ext4_test_support::read_small_file(IMAGE).expect("read image");
     let cfg = fs_ext4_blockdev_cfg_t {
         read: Some(read_from_vec),
         context: &bytes as *const Vec<u8> as *mut c_void,

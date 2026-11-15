@@ -93,7 +93,10 @@ fn read_writes_the_bytes_the_kernel_wrote() {
     let dest = image_path("read-o");
     let out = ok(tool("fs.ext4").args([&img, "read", "/test.txt", "-o", &dest]));
     assert!(out.stdout.is_empty());
-    assert_eq!(std::fs::read(&dest).unwrap(), b"hello from ext4\n");
+    assert_eq!(
+        fs_ext4_test_support::read_small_file(&dest).unwrap(),
+        b"hello from ext4\n"
+    );
 }
 
 #[test]
@@ -228,7 +231,7 @@ fn every_fixture_answers_info_and_ls() {
 
 #[test]
 fn a_truncated_image_fails_with_a_structured_error_and_no_output() {
-    let bytes = std::fs::read(basic()).unwrap();
+    let bytes = fs_ext4_test_support::read_small_file(basic()).unwrap();
     let cut = image_path("truncated");
     std::fs::write(&cut, &bytes[..512]).unwrap();
     for verb in [vec!["ls", "/"], vec!["read", "/test.txt"], vec!["info"]] {

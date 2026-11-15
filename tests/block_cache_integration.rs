@@ -13,7 +13,6 @@
 use fs_ext4::block_io::BlockDevice;
 use fs_ext4::error::Result;
 use fs_ext4::Filesystem;
-use std::fs;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -24,7 +23,7 @@ struct CountingFile {
 
 impl CountingFile {
     fn from_file(path: &str) -> Arc<Self> {
-        let bytes = fs::read(path).expect("read image");
+        let bytes = fs_ext4_test_support::read_small_file(path).expect("read image");
         Arc::new(Self {
             bytes: Mutex::new(bytes),
             reads: AtomicU64::new(0),

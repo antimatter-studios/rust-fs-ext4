@@ -10,7 +10,7 @@ mod cli_support;
 use cli_support::*;
 use fs_ext4::block_io::FileDevice;
 use fs_ext4::fs::Filesystem;
-use std::sync::Arc;
+use std::{io::Write, sync::Arc};
 
 const SIZE: u64 = 32 << 20;
 const UUID: &str = "deadbeef-cafe-1234-5678-0123456789ab";
@@ -18,6 +18,17 @@ const UUID: &str = "deadbeef-cafe-1234-5678-0123456789ab";
 fn mount(path: &str) -> Filesystem {
     let dev = FileDevice::open(path).expect("open image");
     Filesystem::mount(Arc::new(dev)).expect("mount")
+}
+
+fn write_repeated(path: &str, byte: u8, length: u64) {
+    let mut file = std::fs::File::create(path).expect("create patterned file");
+    let chunk = vec![byte; 1024 * 1024];
+    let mut remaining = length;
+    while remaining > 0 {
+        let count = remaining.min(chunk.len() as u64) as usize;
+        file.write_all(&chunk[..count]).expect("write pattern");
+        remaining -= count as u64;
+    }
 }
 
 #[test]
@@ -84,10 +95,10 @@ fn size_is_idempotent_on_an_existing_file() {
 #[test]
 fn dry_run_does_not_modify_the_file() {
     let img = image_path("dry");
-    let pattern = vec![0xA5u8; SIZE as usize];
-    std::fs::write(&img, &pattern).unwrap();
+    write_repeated(&img, 0xA5, SIZE);
+    let before = fs_ext4_test_support::snapshot_file(&img).unwrap();
     let out = ok(tool("mkfs.ext4").args(["-n", &img]));
-    assert_eq!(std::fs::read(&img).unwrap(), pattern);
+    fs_ext4_test_support::assert_files_equal(&img, &before);
     assert_eq!(json_field(&stdout(&out), "formatted"), "false");
     assert_eq!(json_field(&stdout(&out), "dry_run"), "true");
 }
@@ -117,8 +128,8 @@ fn dash_c_does_not_swallow_the_device_path() {
 #[test]
 fn a_bad_block_size_is_refused_before_the_device_is_opened() {
     let img = image_path("badbs");
-    let pattern = vec![0xAAu8; SIZE as usize];
-    std::fs::write(&img, &pattern).unwrap();
+    write_repeated(&img, 0xAA, SIZE);
+    let before = fs_ext4_test_support::snapshot_file(&img).unwrap();
     let out = tool("mkfs.ext4")
         .args(["-b", "3000", &img])
         .output()
@@ -127,7 +138,7 @@ fn a_bad_block_size_is_refused_before_the_device_is_opened() {
     let err = stderr(&out);
     assert!(err.contains("block size must be a power of two"), "{err}");
     assert!(!err.contains("formatting"), "{err}");
-    assert_eq!(std::fs::read(&img).unwrap(), pattern);
+    fs_ext4_test_support::assert_files_equal(&img, &before);
 }
 
 #[test]

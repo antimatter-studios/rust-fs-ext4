@@ -31,7 +31,8 @@ fn scratch() -> PathBuf {
         std::process::id()
     ));
     let mut out = fs::File::create(&dst).unwrap();
-    out.write_all(&fs::read(SRC).unwrap()).unwrap();
+    out.write_all(&fs_ext4_test_support::read_small_file(SRC).unwrap())
+        .unwrap();
     dst
 }
 

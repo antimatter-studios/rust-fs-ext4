@@ -73,7 +73,7 @@ impl fs_ext4::block_io::BlockDevice for MemDev {
 /// the superblock checksum restored, so the volume is well-formed and
 /// differs from the original only in the feature mask.
 fn fixture_with_ro_compat(bits: u32) -> Arc<MemDev> {
-    let mut bytes = std::fs::read(IMAGE).expect("read the fixture");
+    let mut bytes = fs_ext4_test_support::read_small_file(IMAGE).expect("read the fixture");
     let existing = u32::from_le_bytes(bytes[RO_COMPAT_AT..RO_COMPAT_AT + 4].try_into().unwrap());
     let updated = existing | bits;
     bytes[RO_COMPAT_AT..RO_COMPAT_AT + 4].copy_from_slice(&updated.to_le_bytes());
@@ -155,7 +155,7 @@ fn an_unmaintained_ro_compat_bit_refuses_a_write() {
 /// being refused.
 #[test]
 fn a_default_volume_still_writes() {
-    let bytes = std::fs::read(IMAGE).expect("read the fixture");
+    let bytes = fs_ext4_test_support::read_small_file(IMAGE).expect("read the fixture");
     let fs = Filesystem::mount(MemDev::arc(bytes)).expect("mount");
     fs.apply_create("/guard_smoke.txt", 0o644)
         .expect("an ordinary volume must still accept a create");
@@ -208,7 +208,7 @@ const VALID_FS: u16 = 0x0001;
 /// volume claiming to have been put away properly.
 #[test]
 fn write_inode_raw_marks_the_volume_not_clean() {
-    let dev = MemDev::arc(std::fs::read(IMAGE).expect("read the fixture"));
+    let dev = MemDev::arc(fs_ext4_test_support::read_small_file(IMAGE).expect("read the fixture"));
     assert_ne!(on_disk_state(&dev) & VALID_FS, 0, "fixture: clean");
     let fs = Filesystem::mount(dev.clone()).expect("mount");
     let raw = fs.read_inode_raw(2).expect("read the root inode");

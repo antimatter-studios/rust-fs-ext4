@@ -46,7 +46,8 @@ fn dump(image: &str, path: &str) -> Vec<u8> {
         .args(["-R", &format!("dump {path} {dumped}"), image])
         .judged()
         .clean("debugfs dump");
-    let got = std::fs::read(&dumped).unwrap_or_else(|e| panic!("debugfs dump: {e}"));
+    let got = fs_ext4_test_support::read_small_file(&dumped)
+        .unwrap_or_else(|e| panic!("debugfs dump: {e}"));
     let _ = std::fs::remove_file(&dumped);
     got
 }

@@ -51,7 +51,7 @@ fn a_non_64bit_volume_with_a_64_byte_desc_size_field_reads_its_real_descriptors(
         .collect();
     assert!(before.len() > 1, "fixture: several groups");
 
-    let mut bytes = std::fs::read(&img).unwrap();
+    let mut bytes = fs_ext4_test_support::read_small_file(&img).unwrap();
     bytes[1024 + 0xFE..1024 + 0x100].copy_from_slice(&64u16.to_le_bytes());
     std::fs::write(&img, &bytes).unwrap();
 

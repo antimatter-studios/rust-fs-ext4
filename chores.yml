@@ -951,6 +951,7 @@ tasks:
       - bash ../rust-fs-core/scripts/family-check.sh
       - bash ../rust-fs-core/scripts/ci-gate.sh
       - scripts/check-provenance.sh
+      - bash tests/scripts/test-no-whole-image-reads.sh
       - cargo fmt --all --check
       # `--features cli`: the command-line tools' target requires it, and
       # clippy silently leaves out a target whose features are off.

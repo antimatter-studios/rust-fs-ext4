@@ -30,7 +30,7 @@ fn scratch_image() -> PathBuf {
         "fs_ext4_capi_rename_{}_{n}.img",
         std::process::id()
     ));
-    let bytes = std::fs::read(src_image()).expect("read src image");
+    let bytes = fs_ext4_test_support::read_small_file(src_image()).expect("read src image");
     let mut out = std::fs::File::create(&dst).expect("create dst image");
     out.write_all(&bytes).expect("write dst image");
     out.flush().expect("flush");

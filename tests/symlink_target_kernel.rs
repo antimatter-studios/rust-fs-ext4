@@ -82,7 +82,7 @@ fn compare_with_kernel(block_size: usize) {
             let target = "x".repeat(len);
             for prefix in ["inode", "path"] {
                 let name = format!("{prefix}-{len}");
-                let before = std::fs::read(&img).unwrap();
+                let before = fs_ext4_test_support::read_small_file(&img).unwrap();
                 let result = if prefix == "inode" {
                     fs.apply_symlink_at(2, name.as_bytes(), target.as_bytes())
                 } else {
@@ -97,7 +97,7 @@ fn compare_with_kernel(block_size: usize) {
                         "{prefix}, block size {block_size}, length {len}: {result:?}"
                     );
                     assert!(
-                        before == std::fs::read(&img).unwrap(),
+                        before == fs_ext4_test_support::read_small_file(&img).unwrap(),
                         "refusal wrote to image"
                     );
                     assert!(matches!(
@@ -113,7 +113,7 @@ fn compare_with_kernel(block_size: usize) {
     for len in lengths {
         let target = "x".repeat(len);
         let name = format!("/cli-{len}");
-        let before = std::fs::read(&img).unwrap();
+        let before = fs_ext4_test_support::read_small_file(&img).unwrap();
         let out = tool("fs.ext4")
             .args([&img, "ln", "-s", &target, &name])
             .output()
@@ -125,7 +125,7 @@ fn compare_with_kernel(block_size: usize) {
             assert!(stderr(&out).contains("name too long"), "{}", stderr(&out));
             assert!(out.stdout.is_empty());
             assert!(
-                before == std::fs::read(&img).unwrap(),
+                before == fs_ext4_test_support::read_small_file(&img).unwrap(),
                 "CLI refusal wrote to image"
             );
         }

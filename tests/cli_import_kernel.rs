@@ -43,13 +43,13 @@ fn imports_match_kernel_digests_and_publish_only_complete_files() {
     }
     let src = image_path("replacement");
     std::fs::write(&src, b"replacement").unwrap();
-    let before = std::fs::read(&img).unwrap();
+    let before = fs_ext4_test_support::read_small_file(&img).unwrap();
     let refused = tool("fs.ext4")
         .args([&img, "import", &src, "/f1"])
         .output()
         .unwrap();
     assert_eq!(refused.status.code(), Some(1), "{}", stderr(&refused));
-    assert_eq!(std::fs::read(&img).unwrap(), before);
+    assert_eq!(fs_ext4_test_support::read_small_file(&img).unwrap(), before);
     let report = stdout(&ok(tool("fs.ext4").args([
         &img,
         "import",
@@ -80,7 +80,7 @@ fn imports_match_kernel_digests_and_publish_only_complete_files() {
     );
     assert!(readback.status.success(), "{}", stderr(&readback));
     assert_eq!(stdout(&readback), "replacementstdin bytes");
-    let before = std::fs::read(&img).unwrap();
+    let before = fs_ext4_test_support::read_small_file(&img).unwrap();
     let alias = image_path("image-alias");
     std::fs::hard_link(&img, &alias).unwrap();
     for source in [&img, &alias] {
@@ -90,7 +90,7 @@ fn imports_match_kernel_digests_and_publish_only_complete_files() {
             .unwrap();
         assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
         assert!(stderr(&out).contains("aliases"));
-        assert_eq!(std::fs::read(&img).unwrap(), before);
+        assert_eq!(fs_ext4_test_support::read_small_file(&img).unwrap(), before);
     }
     assert_e2fsck_clean(&img, "complete verified imports");
 }

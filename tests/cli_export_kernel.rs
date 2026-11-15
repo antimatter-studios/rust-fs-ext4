@@ -36,7 +36,7 @@ fn kernel_image(tag: &str) -> (String, String) {
 #[test]
 fn export_matches_kernel_digests_and_shared_publication_rules() {
     let (img, sums) = kernel_image("export-kernel");
-    let before = std::fs::read(&img).unwrap();
+    let before = fs_ext4_test_support::read_small_file(&img).unwrap();
     for (name, size) in [("empty", 0), ("big", 3_145_729)] {
         let want = sums
             .lines()
@@ -49,7 +49,7 @@ fn export_matches_kernel_digests_and_shared_publication_rules() {
         assert_eq!(json_field(&report, "bytes"), size.to_string());
         assert_eq!(json_field(&report, "sha256"), want);
         assert_eq!(json_field(&report, "replaced"), "false");
-        let bytes = std::fs::read(&dest).unwrap();
+        let bytes = fs_ext4_test_support::read_small_file(&dest).unwrap();
         assert_eq!(bytes.len(), size);
         assert_eq!(sha256_hex(&bytes), want);
 
@@ -63,7 +63,10 @@ fn export_matches_kernel_digests_and_shared_publication_rules() {
             .output()
             .unwrap();
         assert_eq!(refused.status.code(), Some(1), "{}", stderr(&refused));
-        assert_eq!(std::fs::read(&dest).unwrap(), b"keep me");
+        assert_eq!(
+            fs_ext4_test_support::read_small_file(&dest).unwrap(),
+            b"keep me"
+        );
         let replaced = stdout(&ok(tool("fs.ext4").args([
             &img,
             "export",
@@ -72,7 +75,10 @@ fn export_matches_kernel_digests_and_shared_publication_rules() {
             &dest,
         ])));
         assert_eq!(json_field(&replaced, "replaced"), "true");
-        assert_eq!(sha256_hex(&std::fs::read(&dest).unwrap()), want);
+        assert_eq!(
+            sha256_hex(&fs_ext4_test_support::read_small_file(&dest).unwrap()),
+            want
+        );
     }
 
     for path in ["/dir", "/link", "/pipe", "/missing"] {
@@ -110,7 +116,7 @@ fn export_matches_kernel_digests_and_shared_publication_rules() {
     let original = ok(tool("fs.ext4").args([&img, "read", "/big"]));
     assert_eq!(offset.stdout, original.stdout);
     assert_eq!(
-        std::fs::read(&img).unwrap(),
+        fs_ext4_test_support::read_small_file(&img).unwrap(),
         before,
         "export wrote the source"
     );
@@ -139,7 +145,10 @@ fn unreadable_export_never_publishes_or_replaces_a_destination() {
         .output()
         .unwrap();
     assert_eq!(failed.status.code(), Some(1), "{}", stderr(&failed));
-    assert_eq!(std::fs::read(&dest).unwrap(), b"original destination");
+    assert_eq!(
+        fs_ext4_test_support::read_small_file(&dest).unwrap(),
+        b"original destination"
+    );
     let dest_path = Path::new(&dest);
     let stem = format!(".{}.", dest_path.file_name().unwrap().to_string_lossy());
     for entry in std::fs::read_dir(dest_path.parent().unwrap()).unwrap() {

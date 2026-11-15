@@ -5,7 +5,6 @@
 
 use fs_ext4::capi::*;
 use std::ffi::{CStr, CString};
-use std::fs;
 use std::os::raw::c_void;
 
 const IMAGE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/test-disks/ext4-basic.img");
@@ -58,7 +57,7 @@ fn last_err() -> String {
 
 #[test]
 fn create_on_ro_mount_refused_with_erofs() {
-    let bytes = fs::read(IMAGE).unwrap();
+    let bytes = fs_ext4_test_support::read_small_file(IMAGE).unwrap();
     let fs_h = mount_ro(&bytes);
     let p = CString::new("/new.txt").unwrap();
     let ino = unsafe { fs_ext4_create(fs_h, p.as_ptr(), 0o644) };
@@ -70,7 +69,7 @@ fn create_on_ro_mount_refused_with_erofs() {
 
 #[test]
 fn mkdir_on_ro_mount_refused() {
-    let bytes = fs::read(IMAGE).unwrap();
+    let bytes = fs_ext4_test_support::read_small_file(IMAGE).unwrap();
     let fs_h = mount_ro(&bytes);
     let p = CString::new("/newdir").unwrap();
     let ino = unsafe { fs_ext4_mkdir(fs_h, p.as_ptr(), 0o755) };
@@ -81,7 +80,7 @@ fn mkdir_on_ro_mount_refused() {
 
 #[test]
 fn rmdir_on_ro_mount_refused() {
-    let bytes = fs::read(IMAGE).unwrap();
+    let bytes = fs_ext4_test_support::read_small_file(IMAGE).unwrap();
     let fs_h = mount_ro(&bytes);
     let p = CString::new("/subdir").unwrap();
     let rc = unsafe { fs_ext4_rmdir(fs_h, p.as_ptr()) };
@@ -92,7 +91,7 @@ fn rmdir_on_ro_mount_refused() {
 
 #[test]
 fn rename_on_ro_mount_refused() {
-    let bytes = fs::read(IMAGE).unwrap();
+    let bytes = fs_ext4_test_support::read_small_file(IMAGE).unwrap();
     let fs_h = mount_ro(&bytes);
     let src = CString::new("/test.txt").unwrap();
     let dst = CString::new("/renamed.txt").unwrap();
@@ -104,7 +103,7 @@ fn rename_on_ro_mount_refused() {
 
 #[test]
 fn write_file_on_ro_mount_refused_and_data_intact() {
-    let bytes = fs::read(IMAGE).unwrap();
+    let bytes = fs_ext4_test_support::read_small_file(IMAGE).unwrap();
     let fs_h = mount_ro(&bytes);
     let p = CString::new("/test.txt").unwrap();
     let payload = b"nope";

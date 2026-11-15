@@ -45,7 +45,8 @@ impl BlockDevice for MemDev {
 
 fn image() -> Arc<MemDev> {
     let path = fs_ext4_test_support::fixture(env!("CARGO_MANIFEST_DIR"), "ext4-inline.img");
-    let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+    let bytes =
+        fs_ext4_test_support::read_small_file(&path).unwrap_or_else(|e| panic!("read {path}: {e}"));
     Arc::new(MemDev(Mutex::new(bytes)))
 }
 

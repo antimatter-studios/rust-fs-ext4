@@ -48,7 +48,7 @@ fn scratch() -> PathBuf {
     ));
     let mut out = fs::File::create(&dst).unwrap();
     out.write_all(
-        &fs::read(fs_ext4_test_support::fixture(
+        &fs_ext4_test_support::read_small_file(fs_ext4_test_support::fixture(
             env!("CARGO_MANIFEST_DIR"),
             "ext4-basic.img",
         ))

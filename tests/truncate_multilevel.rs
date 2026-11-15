@@ -1,25 +1,14 @@
 //! Real ext4 trees must support the same shrink/unlink lifecycle as inline trees.
-use fs_ext4::{block_io::FileDevice, extent::ExtentHeader, Filesystem};
-use std::{path::PathBuf, sync::Arc};
-
-struct Memory(std::sync::Mutex<Vec<u8>>);
-impl fs_ext4::block_io::BlockDevice for Memory {
-    fn size_bytes(&self) -> u64 {
-        self.0.lock().unwrap().len() as u64
-    }
-    fn is_writable(&self) -> bool {
-        true
-    }
-    fn read_at(&self, offset: u64, out: &mut [u8]) -> fs_ext4::Result<()> {
-        out.copy_from_slice(&self.0.lock().unwrap()[offset as usize..offset as usize + out.len()]);
-        Ok(())
-    }
-    fn write_at(&self, offset: u64, bytes: &[u8]) -> fs_ext4::Result<()> {
-        self.0.lock().unwrap()[offset as usize..offset as usize + bytes.len()]
-            .copy_from_slice(bytes);
-        Ok(())
-    }
-}
+use fs_ext4::{
+    block_io::{BlockDevice, FileDevice},
+    extent::ExtentHeader,
+    Filesystem,
+};
+use std::{
+    io::{Read, Seek, SeekFrom, Write},
+    path::PathBuf,
+    sync::Arc,
+};
 
 /// A scratch copy of the deep-extents fixture. A missing fixture fails the
 /// test, naming the task that builds it; it never skips.
@@ -47,10 +36,17 @@ fn oracle(path: &std::path::Path) {
 /// write call on a mount marks the volume not clean (and a drop puts it
 /// back), so a refused or no-op call is allowed to have touched those
 /// bytes and nothing else.
-fn outside_state(mut image: Vec<u8>) -> Vec<u8> {
-    image[1024 + 0x3A..1024 + 0x3C].fill(0);
-    image[1024 + 0x3FC..1024 + 0x400].fill(0);
-    image
+fn outside_state(image: &std::path::Path) -> PathBuf {
+    let snapshot = fs_ext4_test_support::snapshot_file(image).unwrap();
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&snapshot)
+        .unwrap();
+    file.seek(SeekFrom::Start(1024 + 0x3A)).unwrap();
+    file.write_all(&[0; 2]).unwrap();
+    file.seek(SeekFrom::Start(1024 + 0x3FC)).unwrap();
+    file.write_all(&[0; 4]).unwrap();
+    snapshot
 }
 #[test]
 fn equal_size_deep_truncate_leaves_image_unchanged() {
@@ -62,14 +58,13 @@ fn equal_size_deep_truncate_leaves_image_unchanged() {
     let ino = inode(&fs, "/sparse.bin");
     let (before, _) = fs.read_inode_verified(ino).unwrap();
     assert!(ExtentHeader::parse(&before.block).unwrap().depth > 0);
-    let bytes = std::fs::read(&path).unwrap();
+    let bytes = fs_ext4_test_support::snapshot_file(&path).unwrap();
+    let outside_before = outside_state(&path);
     fs.apply_truncate_shrink(ino, before.size).unwrap();
-    assert_eq!(
-        outside_state(std::fs::read(&path).unwrap()),
-        outside_state(bytes.clone())
-    );
+    let outside_after = outside_state(&path);
+    fs_ext4_test_support::assert_files_equal(&outside_after, &outside_before);
     drop(fs);
-    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    fs_ext4_test_support::assert_files_equal(&path, &bytes);
     oracle(&path);
     std::fs::remove_file(path).unwrap();
 }
@@ -99,7 +94,7 @@ fn deep_shrink_and_unlink_free_tree_blocks() {
 #[test]
 fn depth_two_shrink_preserves_bytes_and_reclaims_every_tree_node() {
     let path = scratch("depth2");
-    let device = Arc::new(Memory(std::sync::Mutex::new(std::fs::read(&path).unwrap())));
+    let device = Arc::new(FileDevice::open_rw(path.to_str().unwrap()).unwrap());
     let fs = Filesystem::mount(device.clone()).unwrap();
     let ino = fs.apply_create("/fragmented", 0o600).unwrap();
     for n in 0..1500u64 {
@@ -119,10 +114,8 @@ fn depth_two_shrink_preserves_bytes_and_reclaims_every_tree_node() {
     let mut tail = [1; 1024];
     fs_ext4::file_io::read(&fs, &grown, target, 1024, &mut tail).unwrap();
     assert_eq!(tail, [0; 1024]);
-    std::fs::write(&path, &*device.0.lock().unwrap()).unwrap();
     oracle(&path);
     fs.apply_unlink("/fragmented").unwrap();
-    std::fs::write(&path, &*device.0.lock().unwrap()).unwrap();
     oracle(&path);
     drop(fs);
     std::fs::remove_file(path).unwrap();
@@ -131,8 +124,8 @@ fn depth_two_shrink_preserves_bytes_and_reclaims_every_tree_node() {
 #[test]
 fn densely_written_fragmented_file_finishes_and_can_be_removed() {
     let path = scratch("dense-fragmented");
-    let memory = Arc::new(Memory(std::sync::Mutex::new(std::fs::read(&path).unwrap())));
-    let fs = Filesystem::mount(memory.clone()).unwrap();
+    let device = Arc::new(FileDevice::open_rw(path.to_str().unwrap()).unwrap());
+    let fs = Filesystem::mount(device.clone()).unwrap();
     let ino = fs.apply_create("/efisp.fat", 0o600).unwrap();
     fs.apply_create("/unrelated", 0o600).unwrap();
     for n in 0..80u64 {
@@ -143,16 +136,15 @@ fn densely_written_fragmented_file_finishes_and_can_be_removed() {
     }
     let (file, _) = fs.read_inode_verified(ino).unwrap();
     assert!(ExtentHeader::parse(&file.block).unwrap().depth > 0);
-    let before = memory.0.lock().unwrap().clone();
+    let before = fs_ext4_test_support::snapshot_file(&path).unwrap();
     fs.apply_truncate_shrink(ino, file.size).unwrap();
-    assert_eq!(*memory.0.lock().unwrap(), before);
+    fs_ext4_test_support::assert_files_equal(&path, &before);
     fs.apply_unlink("/efisp.fat").unwrap();
     let (unrelated, _) = fs.read_inode_verified(inode(&fs, "/unrelated")).unwrap();
     assert_eq!(
         fs_ext4::file_io::read_all(&fs, &unrelated).unwrap(),
         vec![0x5a; 80 * 4096]
     );
-    std::fs::write(&path, &*memory.0.lock().unwrap()).unwrap();
     oracle(&path);
     std::fs::remove_file(path).unwrap();
 }
@@ -160,7 +152,7 @@ fn densely_written_fragmented_file_finishes_and_can_be_removed() {
 #[test]
 fn invalid_deep_checksum_refuses_shrink_and_unlink_without_writing() {
     let path = scratch("corrupt");
-    let device = Arc::new(Memory(std::sync::Mutex::new(std::fs::read(&path).unwrap())));
+    let device = Arc::new(FileDevice::open_rw(path.to_str().unwrap()).unwrap());
     let fs = Filesystem::mount(device.clone()).unwrap();
     let ino = inode(&fs, "/sparse.bin");
     let (entry, _) = fs.read_inode_verified(ino).unwrap();
@@ -168,47 +160,58 @@ fn invalid_deep_checksum_refuses_shrink_and_unlink_without_writing() {
         .unwrap()
         .leaf_block;
     drop(fs);
-    device.0.lock().unwrap()[child as usize * 4096 + 4095] ^= 1;
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&path)
+        .unwrap();
+    file.seek(SeekFrom::Start(child * 4096 + 4095)).unwrap();
+    let mut byte = [0];
+    file.read_exact(&mut byte).unwrap();
+    byte[0] ^= 1;
+    file.write_all(&byte).unwrap();
     let fs = Filesystem::mount(device.clone()).unwrap();
-    let before = device.0.lock().unwrap().clone();
-    let now = || device.0.lock().unwrap().clone();
+    let before = fs_ext4_test_support::snapshot_file(&path).unwrap();
     assert!(matches!(
         fs.apply_truncate_shrink(ino, 0),
         Err(fs_ext4::Error::BadChecksum { .. })
     ));
-    assert_eq!(outside_state(now()), outside_state(before.clone()));
+    let after_shrink = outside_state(&path);
+    let outside_before = outside_state(&before);
+    fs_ext4_test_support::assert_files_equal(&after_shrink, &outside_before);
     let unlinked = fs.apply_unlink("/sparse.bin");
     assert!(
         matches!(unlinked, Err(fs_ext4::Error::BadChecksum { .. })),
         "{unlinked:?}"
     );
-    assert_eq!(outside_state(now()), outside_state(before.clone()));
+    let after_unlink = outside_state(&path);
+    fs_ext4_test_support::assert_files_equal(&after_unlink, &outside_before);
     drop(fs);
-    assert_eq!(now(), before, "the drop puts s_state back as it was");
+    fs_ext4_test_support::assert_files_equal(&path, &before);
     std::fs::remove_file(path).unwrap();
 }
 
 struct Interrupted {
-    memory: Arc<Memory>,
+    device: Arc<dyn BlockDevice>,
     writes: std::sync::atomic::AtomicUsize,
     budget: std::sync::atomic::AtomicUsize,
 }
 impl fs_ext4::block_io::BlockDevice for Interrupted {
     fn size_bytes(&self) -> u64 {
-        self.memory.size_bytes()
+        self.device.size_bytes()
     }
     fn is_writable(&self) -> bool {
         true
     }
     fn read_at(&self, offset: u64, out: &mut [u8]) -> fs_ext4::Result<()> {
-        self.memory.read_at(offset, out)
+        self.device.read_at(offset, out)
     }
     fn write_at(&self, offset: u64, bytes: &[u8]) -> fs_ext4::Result<()> {
         use std::sync::atomic::Ordering::Relaxed;
         if self.writes.fetch_add(1, Relaxed) >= self.budget.load(Relaxed) {
             return Err(std::io::Error::other("injected interruption").into());
         }
-        self.memory.write_at(offset, bytes)
+        self.device.write_at(offset, bytes)
     }
 }
 
@@ -216,7 +219,7 @@ impl fs_ext4::block_io::BlockDevice for Interrupted {
 fn deep_shrink_interrupted_at_each_write_recovers_original_or_complete() {
     use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
     let path = scratch("interrupt");
-    let baseline = std::fs::read(&path).unwrap();
+    let source = path.clone();
     let mut writes = usize::MAX;
     // The first successful pass discovers the real transaction write count.
     // Then cut every write boundary and check the independent ext4 oracle.
@@ -224,9 +227,14 @@ fn deep_shrink_interrupted_at_each_write_recovers_original_or_complete() {
         if budget != usize::MAX && budget > writes {
             break;
         }
-        let memory = Arc::new(Memory(std::sync::Mutex::new(baseline.clone())));
+        let image = PathBuf::from(fs_ext4_test_support::temp_path!(
+            "ext4-deep-interrupt-{budget}-{}.img",
+            std::process::id()
+        ));
+        fs_ext4_test_support::copy_file_sparse(&source, &image).unwrap();
+        let device = Arc::new(FileDevice::open_rw(image.to_str().unwrap()).unwrap());
         let fault = Arc::new(Interrupted {
-            memory: memory.clone(),
+            device: device.clone(),
             writes: AtomicUsize::new(0),
             budget: AtomicUsize::new(usize::MAX),
         });
@@ -244,15 +252,15 @@ fn deep_shrink_interrupted_at_each_write_recovers_original_or_complete() {
             assert!(result.is_err());
         }
         drop(fs);
-        let recovered = Filesystem::mount(memory.clone()).unwrap();
+        let recovered = Filesystem::mount(device.clone()).unwrap();
         let (after, _) = recovered.read_inode_verified(ino).unwrap();
         assert!(
             after.size == old.size || after.size == 65_537,
             "torn inode at write {budget}"
         );
         drop(recovered);
-        std::fs::write(&path, &*memory.0.lock().unwrap()).unwrap();
-        oracle(&path);
+        oracle(&image);
+        std::fs::remove_file(image).unwrap();
     }
     std::fs::remove_file(path).unwrap();
 }

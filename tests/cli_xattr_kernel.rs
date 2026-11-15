@@ -282,7 +282,7 @@ fn fs_ext4_xattr_lists_and_reads_what_the_kernel_set() {
         "the guest reported each path:\n{report}"
     );
     assert_every_place_is_used(img);
-    let before = std::fs::read(img).unwrap();
+    let before = fs_ext4_test_support::read_small_file(img).unwrap();
     let value_file = image_path("xattr-value");
     let mut namespaces = Vec::new();
 
@@ -339,7 +339,7 @@ fn fs_ext4_xattr_lists_and_reads_what_the_kernel_set() {
                 .args(["-o", &value_file]));
             assert!(to_file.stdout.is_empty(), "{}", what(&shown));
             assert_eq!(
-                std::fs::read(&value_file).unwrap(),
+                fs_ext4_test_support::read_small_file(&value_file).unwrap(),
                 *value,
                 "{}",
                 what(&shown)
@@ -404,7 +404,7 @@ fn fs_ext4_xattr_lists_and_reads_what_the_kernel_set() {
     assert_eq!(offset.stdout, b"\0\xff\n\0\xff");
 
     assert!(
-        std::fs::read(img).unwrap() == before,
+        fs_ext4_test_support::read_small_file(img).unwrap() == before,
         "fs.ext4 xattr changed the image"
     );
 }

@@ -11,7 +11,6 @@
 
 use fs_ext4::capi::*;
 use std::ffi::CString;
-use std::fs;
 use std::os::raw::{c_int, c_void};
 use std::sync::{Arc, Mutex};
 
@@ -84,7 +83,8 @@ extern "C" fn flush_cb(ctx: *mut c_void) -> c_int {
 
 fn fresh_dev() -> Arc<DevCtx> {
     let path = fs_ext4_test_support::fixture(env!("CARGO_MANIFEST_DIR"), IMAGE);
-    let bytes = fs::read(&path).unwrap_or_else(|e| panic!("read fixture image {path}: {e}"));
+    let bytes = fs_ext4_test_support::read_small_file(&path)
+        .unwrap_or_else(|e| panic!("read fixture image {path}: {e}"));
     Arc::new(DevCtx {
         bytes: Mutex::new(bytes),
         writes: Mutex::new(0),

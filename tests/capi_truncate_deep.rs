@@ -19,7 +19,7 @@ fn scratch() -> PathBuf {
         "fs_ext4_capi_truncate_deep_{}_{n}.img",
         std::process::id()
     ));
-    let bytes = fs::read(&src).expect("read src");
+    let bytes = fs_ext4_test_support::read_small_file(&src).expect("read src");
     let mut out = fs::File::create(&dst).expect("create");
     out.write_all(&bytes).expect("write");
     out.flush().expect("flush");

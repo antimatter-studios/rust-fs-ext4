@@ -182,7 +182,7 @@ find . -mindepth 1 -printf '/%P\0%y\0%s\0%i\0'
         oracle("debugfs")
             .args(["-w", "-R", request, &damaged])
             .output();
-        let before = std::fs::read(&damaged).unwrap();
+        let before = fs_ext4_test_support::read_small_file(&damaged).unwrap();
         let out = bounded(&damaged);
         assert!(
             out.status.success(),
@@ -217,7 +217,7 @@ find . -mindepth 1 -printf '/%P\0%y\0%s\0%i\0'
             "{fault}: everything else is listed once"
         );
         assert_eq!(
-            std::fs::read(&damaged).unwrap(),
+            fs_ext4_test_support::read_small_file(&damaged).unwrap(),
             before,
             "{fault}: read-only"
         );
@@ -228,7 +228,7 @@ find . -mindepth 1 -printf '/%P\0%y\0%s\0%i\0'
     let unreadable = image_path("ls-recursive-unreadable");
     std::fs::copy(&img, &unreadable).unwrap();
     destroy_extent_header(&unreadable, a);
-    let before = std::fs::read(&unreadable).unwrap();
+    let before = fs_ext4_test_support::read_small_file(&unreadable).unwrap();
     let out = bounded(&unreadable);
     assert_eq!(out.status.code(), Some(1), "{out:?}");
     assert_eq!(json_field(&stderr(&out), "code"), "1", "{}", stderr(&out));
@@ -243,7 +243,11 @@ find . -mindepth 1 -printf '/%P\0%y\0%s\0%i\0'
         ["/a"],
         "the entries before the stop stay on stdout"
     );
-    assert_eq!(std::fs::read(&unreadable).unwrap(), before, "read-only");
+    assert_eq!(
+        fs_ext4_test_support::read_small_file(&unreadable).unwrap(),
+        before,
+        "read-only"
+    );
 }
 
 fn show(bytes: &[u8]) -> String {

@@ -331,7 +331,7 @@ fn a_flipped_data_byte_fails_the_comparison_and_not_e2fsck() {
                 .expect("logical block 300 is mapped");
         extent.map(300) * u64::from(fs.sb.block_size()) + 17
     };
-    let mut bytes = std::fs::read(&written.image).expect("read image");
+    let mut bytes = fs_ext4_test_support::read_small_file(&written.image).expect("read image");
     bytes[offset as usize] ^= 0xff;
     std::fs::write(&written.image, &bytes).expect("write image");
 

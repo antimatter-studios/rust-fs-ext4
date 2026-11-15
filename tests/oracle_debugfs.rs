@@ -184,7 +184,8 @@ fn debugfs_dump(image: &Path, path: &str, scratch: &Scratch) -> Vec<u8> {
     let out = scratch.path("dumped.bin");
     let _ = std::fs::remove_file(&out);
     debugfs(image, &format!("dump {path} {}", out.display()));
-    std::fs::read(&out).unwrap_or_else(|e| panic!("debugfs dump {path} wrote nothing: {e}"))
+    fs_ext4_test_support::read_small_file(&out)
+        .unwrap_or_else(|e| panic!("debugfs dump {path} wrote nothing: {e}"))
 }
 
 /// `mke2fs -d <seed>`: a 64 MiB ext4 image with a journal and

@@ -303,7 +303,7 @@ fn mv_refuses_what_the_kernel_refuses() {
         stderr(&out)
     );
     let kernel = stdout(&out);
-    let image = std::fs::read(&img).expect("read the image");
+    let image = fs_ext4_test_support::read_small_file(&img).expect("read the image");
 
     let mut tried = Vec::new();
     for line in kernel.lines() {
@@ -330,7 +330,7 @@ fn mv_refuses_what_the_kernel_refuses() {
         assert!(err.contains(&format!("\"code\": {code}")), "{what}");
         assert!(err.contains(want), "{what}; expected {want:?}");
         assert!(
-            std::fs::read(&img).expect("read the image") == image,
+            fs_ext4_test_support::read_small_file(&img).expect("read the image") == image,
             "{what}: refused, and still changed the image"
         );
         tried.push(index);

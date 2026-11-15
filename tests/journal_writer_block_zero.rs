@@ -46,7 +46,7 @@ fn image_with_journal_at(name: &str, start: Option<u64>) -> std::path::PathBuf {
         let (block, offset) = bgd::locate_inode(&fs.sb, &fs.groups, ino).unwrap();
         (block, offset as u64, u64::from(fs.sb.block_size()))
     };
-    let mut bytes = std::fs::read(&img).unwrap();
+    let mut bytes = fs_ext4_test_support::read_small_file(&img).unwrap();
     // i_block at 0x28: a 12-byte extent header (magic, entries, max,
     // depth), then extents of ee_block(4) ee_len(2) ee_start_hi(2)
     // ee_start_lo(4). mkfs lays the journal out as several extents; the

@@ -66,7 +66,8 @@ fn dev_from(bytes: Vec<u8>) -> Arc<DevCtx> {
 
 fn fixture_bytes() -> Vec<u8> {
     let path = fs_ext4_test_support::fixture(env!("CARGO_MANIFEST_DIR"), IMAGE);
-    std::fs::read(&path).unwrap_or_else(|e| panic!("read fixture {path}: {e}"))
+    fs_ext4_test_support::read_small_file(&path)
+        .unwrap_or_else(|e| panic!("read fixture {path}: {e}"))
 }
 
 fn cfg(dev: &Arc<DevCtx>) -> fs_ext4_blockdev_cfg_t {

@@ -26,7 +26,7 @@ fn scratch(tag: &str) -> PathBuf {
         "fs_ext4_capi_utimens_{tag}_{}_{n}.img",
         std::process::id()
     ));
-    let bytes = fs::read(SRC).expect("read src");
+    let bytes = fs_ext4_test_support::read_small_file(SRC).expect("read src");
     let mut out = fs::File::create(&dst).expect("create");
     out.write_all(&bytes).expect("write");
     out.flush().expect("flush");

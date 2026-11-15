@@ -35,7 +35,7 @@ fn last_err() -> String {
 /// Make a tmp copy of ext4-basic.img, apply `mutate` to the bytes, write
 /// it back out, and return the tmp path (caller is responsible for drop).
 fn corrupted_copy(label: &str, mutate: impl FnOnce(&mut Vec<u8>)) -> PathBuf {
-    let mut bytes = fs::read(good_image()).expect("read source image");
+    let mut bytes = fs_ext4_test_support::read_small_file(good_image()).expect("read source image");
     mutate(&mut bytes);
     let mut p = fs_ext4_test_support::temp_dir().to_path_buf();
     p.push(format!(
@@ -254,7 +254,7 @@ fn mount_callback(bytes: &Vec<u8>) -> *mut fs_ext4_fs_t {
 
 #[test]
 fn callback_mount_succeeds_on_good_image() {
-    let bytes = fs::read(good_image()).unwrap();
+    let bytes = fs_ext4_test_support::read_small_file(good_image()).unwrap();
     let fs = mount_callback(&bytes);
     assert!(!fs.is_null(), "callback mount failed: {}", last_err());
     assert_eq!(fs_ext4_last_errno(), 0);
@@ -263,7 +263,7 @@ fn callback_mount_succeeds_on_good_image() {
 
 #[test]
 fn callback_mount_rejects_corrupted_bytes_cleanly() {
-    let mut bytes = fs::read(good_image()).unwrap();
+    let mut bytes = fs_ext4_test_support::read_small_file(good_image()).unwrap();
     // Kill the superblock magic (offset 1024 + 56).
     bytes[1024 + 56] = 0;
     bytes[1024 + 57] = 0;

@@ -143,7 +143,7 @@ fn make(tag: &str, block_size: u32, blocks_per_group: u32, mib: u64, features: &
 /// Every group's descriptor location and head size, against `dumpe2fs`.
 fn compare(tag: &str, image: &str) {
     let groups = dumpe2fs(image);
-    let bytes = std::fs::read(image).unwrap();
+    let bytes = fs_ext4_test_support::read_small_file(image).unwrap();
     let sb = Superblock::read(&FileDevice::open(image).unwrap()).unwrap();
     assert_eq!(groups.len() as u64, sb.block_group_count(), "[{tag}]");
     assert!(groups.len() >= 30, "[{tag}] only {} groups", groups.len());

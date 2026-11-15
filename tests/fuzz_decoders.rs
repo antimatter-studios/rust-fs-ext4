@@ -42,8 +42,9 @@
 //! established. The `journal` target takes the superblock on its own as
 //! well, but the interesting path is the one a mount takes.
 
-use std::io::Write;
-use std::path::PathBuf;
+use std::fs::{self, File, OpenOptions};
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
@@ -143,24 +144,33 @@ fn targets() -> Vec<Target> {
 
 // ---------------------------------------------------------------- corpus
 
-fn seeds(corpus: &str) -> Vec<(String, Vec<u8>)> {
+fn seed_paths(corpus: &str) -> Vec<(String, PathBuf)> {
     let dir = corpus_root().join(corpus);
-    let mut out: Vec<(String, Vec<u8>)> = std::fs::read_dir(&dir)
+    let mut out: Vec<(String, PathBuf)> = fs::read_dir(&dir)
         .unwrap_or_else(|e| panic!("reading the corpus directory {}: {e}", dir.display()))
         .map(|entry| {
             let path = entry.expect("corpus directory entry").path();
-            let bytes = std::fs::read(&path)
-                .unwrap_or_else(|e| panic!("reading the seed {}: {e}", path.display()));
             let name = path
                 .file_name()
                 .expect("seed file name")
                 .to_string_lossy()
                 .into_owned();
-            (name, bytes)
+            (name, path)
         })
         .collect();
     out.sort_by(|a, b| a.0.cmp(&b.0));
     out
+}
+
+fn seeds(corpus: &str) -> Vec<(String, Vec<u8>)> {
+    seed_paths(corpus)
+        .into_iter()
+        .map(|(name, path)| {
+            let bytes = fs_ext4_test_support::read_small_file(&path)
+                .unwrap_or_else(|e| panic!("reading the seed {}: {e}", path.display()));
+            (name, bytes)
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------- mutation
@@ -268,6 +278,101 @@ fn mutate(seed: &[u8], rng: &mut Rng) -> Vec<u8> {
     out
 }
 
+fn read_at(file: &mut File, offset: u64, buffer: &mut [u8]) -> std::io::Result<()> {
+    file.seek(SeekFrom::Start(offset))?;
+    file.read_exact(buffer)
+}
+
+fn write_at(file: &mut File, offset: u64, buffer: &[u8]) -> std::io::Result<()> {
+    file.seek(SeekFrom::Start(offset))?;
+    file.write_all(buffer)
+}
+
+fn mutate_image(seed: &Path, destination: &Path, rng: &mut Rng) -> std::io::Result<()> {
+    fs_ext4_test_support::copy_file_sparse(seed, destination)?;
+    let mut file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(destination)?;
+    let length = file.metadata()?.len() as usize;
+    if length == 0 {
+        return Ok(());
+    }
+    let metadata_end = length.min(8192);
+    let region = if rng.next() & 1 == 0 {
+        metadata_end
+    } else {
+        length
+    };
+
+    match rng.below(5) {
+        0 => {
+            for _ in 0..=rng.below(8) {
+                let at = rng.below(region);
+                let mut byte = [0];
+                read_at(&mut file, at as u64, &mut byte)?;
+                byte[0] ^= 1u8 << rng.below(8);
+                write_at(&mut file, at as u64, &byte)?;
+            }
+        }
+        1 => {
+            let at = rng.below(region);
+            let count = 1 + rng.below(16.min(length - at));
+            let fill = if rng.next() & 1 == 0 { 0x00 } else { 0xff };
+            write_at(&mut file, at as u64, &vec![fill; count])?;
+        }
+        2 => {
+            let width = [2usize, 4, 8][rng.below(3)];
+            let at = rng.below(region.saturating_sub(width) + 1) & !(width - 1);
+            if at + width <= length {
+                let value: u64 = match rng.below(4) {
+                    0 => 0,
+                    1 => 1,
+                    2 => u64::MAX,
+                    _ => rng.next(),
+                };
+                write_at(&mut file, at as u64, &value.to_le_bytes()[..width])?;
+            }
+        }
+        3 => {
+            if length >= 8 {
+                let a = rng.below(region / 4) * 4;
+                let b = rng.below(region / 4) * 4;
+                if a + 4 <= length && b + 4 <= length {
+                    let mut left = [0; 4];
+                    let mut right = [0; 4];
+                    read_at(&mut file, a as u64, &mut left)?;
+                    read_at(&mut file, b as u64, &mut right)?;
+                    write_at(&mut file, a as u64, &right)?;
+                    write_at(&mut file, b as u64, &left)?;
+                }
+            }
+        }
+        _ => {
+            if length >= 4 {
+                let at = rng.below(region / 4) * 4;
+                if at + 4 <= length {
+                    let mut bytes = [0; 4];
+                    read_at(&mut file, at as u64, &mut bytes)?;
+                    let word = u32::from_le_bytes(bytes);
+                    let delta = [1i64, -1, 2, -2, 255, -255][rng.below(6)];
+                    let changed = (i64::from(word).wrapping_add(delta)) as u32;
+                    write_at(&mut file, at as u64, &changed.to_le_bytes())?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn walk_image_file(path: &Path) {
+    let device: Arc<dyn fs_ext4::block_io::BlockDevice> = Arc::new(
+        fs_ext4::block_io::FileDevice::open(path.to_str().expect("UTF-8 image path"))
+            .expect("open mutated image"),
+    );
+    walk_device(device);
+}
+
 /// The case in flight, readable even if the lock was poisoned by the
 /// panic we are trying to describe.
 fn describe(current: &Arc<Mutex<String>>) -> String {
@@ -283,7 +388,7 @@ fn describe(current: &Arc<Mutex<String>>) -> String {
 fn every_target_has_a_corpus() {
     for target in targets() {
         assert!(
-            !seeds(target.corpus).is_empty(),
+            !seed_paths(target.corpus).is_empty(),
             "the target {} reads fuzz/corpus/{}, which holds no seeds -- a target with an \
              empty corpus runs no cases and would pass in silence. Rebuild it with \
              scripts/make-fuzz-corpus.sh",
@@ -303,7 +408,7 @@ fn every_target_has_a_corpus() {
 /// nothing.
 #[test]
 fn every_committed_filesystem_mounts_and_reads_its_root() {
-    let images = seeds("image");
+    let images = seed_paths("image");
     assert_eq!(
         images.len(),
         4,
@@ -311,9 +416,10 @@ fn every_committed_filesystem_mounts_and_reads_its_root() {
         images.len()
     );
 
-    for (name, bytes) in images {
-        let dev: std::sync::Arc<dyn fs_ext4::block_io::BlockDevice> =
-            std::sync::Arc::new(Bytes(bytes));
+    for (name, path) in images {
+        let dev: std::sync::Arc<dyn fs_ext4::block_io::BlockDevice> = std::sync::Arc::new(
+            fs_ext4::block_io::FileDevice::open(path.to_str().unwrap()).unwrap(),
+        );
         let fs = fs_ext4::Filesystem::mount(dev)
             .unwrap_or_else(|e| panic!("{name}: a filesystem mke2fs wrote would not mount: {e}"));
 
@@ -355,6 +461,29 @@ fn deterministic_mutations_of_real_structures_are_survived() {
     let worker_current = Arc::clone(&current);
     let worker = std::thread::spawn(move || {
         for target in targets() {
+            if target.corpus == "image" {
+                for (seed_name, seed_path) in seed_paths(target.corpus) {
+                    for start in 0..SEEDS {
+                        let mut rng = Rng::new(start);
+                        for case in 0..target.cases {
+                            *worker_current.lock().expect("progress lock") = format!(
+                                "{} / {seed_name} / seed {start} / case {case}",
+                                target.name
+                            );
+                            let destination = fs_ext4_test_support::temp_dir().join(format!(
+                                "fuzz-image-{}-{start}-{case}.img",
+                                std::process::id()
+                            ));
+                            mutate_image(&seed_path, &destination, &mut rng)
+                                .unwrap_or_else(|e| panic!("mutate {}: {e}", seed_path.display()));
+                            walk_image_file(&destination);
+                            fs::remove_file(&destination).expect("remove mutated image");
+                            worker_cases.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                }
+                continue;
+            }
             for (seed_name, bytes) in seeds(target.corpus) {
                 for start in 0..SEEDS {
                     let mut rng = Rng::new(start);

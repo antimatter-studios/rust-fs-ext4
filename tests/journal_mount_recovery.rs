@@ -129,7 +129,7 @@ impl Fixture {
             })
             .collect();
 
-        let mut image = fs::read(&pending).unwrap();
+        let mut image = fs_ext4_test_support::read_small_file(&pending).unwrap();
         let incompat = le(&image, 1024 + 0x60) | RECOVER;
         image[1024 + 0x60..1024 + 0x64].copy_from_slice(&incompat.to_le_bytes());
         let mut jsb = image[journal[0] * BLOCK..(journal[0] + 1) * BLOCK].to_vec();
@@ -211,7 +211,7 @@ impl Fixture {
     }
 
     fn assert_recovered(&self, path: &Path) {
-        let image = fs::read(path).unwrap();
+        let image = fs_ext4_test_support::read_small_file(path).unwrap();
         let offset = self.inode_block * BLOCK + self.inode_offset;
         assert_eq!(
             u16::from_le_bytes(image[offset..offset + 2].try_into().unwrap()),
@@ -299,12 +299,12 @@ fn committed_plain_journal_matches_linux_and_refreshes_mount_metadata() {
         mounted.finish().expect("explicit clean finish");
         fixture.assert_recovered(&library);
         fixture.linux_check(&library);
-        let after_first_finish = fs::read(&library).unwrap();
+        let after_first_finish = fs_ext4_test_support::read_small_file(&library).unwrap();
         checked_mount(&library)
             .finish()
             .expect("repeat checked mount and finish");
         assert_eq!(
-            fs::read(&library).unwrap(),
+            fs_ext4_test_support::read_small_file(&library).unwrap(),
             after_first_finish,
             "repeat recovery must be byte-stable"
         );
@@ -318,9 +318,21 @@ fn live_flush_and_fresh_read_keep_recovery_marker_until_finish() {
     let mut mounted = checked_mount(&path);
     mounted.apply_pwrite("/oracle", 0, b"first").unwrap();
     mounted.flush().unwrap();
-    assert_ne!(le(&fs::read(&path).unwrap(), 1024 + 0x60) & RECOVER, 0);
+    assert_ne!(
+        le(
+            &fs_ext4_test_support::read_small_file(&path).unwrap(),
+            1024 + 0x60
+        ) & RECOVER,
+        0
+    );
     mounted.fresh_read().unwrap();
-    assert_ne!(le(&fs::read(&path).unwrap(), 1024 + 0x60) & RECOVER, 0);
+    assert_ne!(
+        le(
+            &fs_ext4_test_support::read_small_file(&path).unwrap(),
+            1024 + 0x60
+        ) & RECOVER,
+        0
+    );
     mounted.apply_pwrite("/oracle", 0, b"second").unwrap();
     mounted.fresh_read().unwrap();
     mounted.finish().unwrap();

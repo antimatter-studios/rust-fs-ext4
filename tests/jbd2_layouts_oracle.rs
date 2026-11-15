@@ -57,7 +57,7 @@ fn journal_block(image: &str, n: u32) -> u64 {
 }
 
 fn read_at(image: &str, block: u64) -> Vec<u8> {
-    let bytes = std::fs::read(image).unwrap();
+    let bytes = fs_ext4_test_support::read_small_file(image).unwrap();
     let at = (block * BS) as usize;
     bytes[at..at + BS as usize].to_vec()
 }
@@ -196,7 +196,7 @@ fn checksum_declarations_are_accepted_and_refused_as_the_kernel_and_e2fsck_do() 
         let image = volume(&tag, 16, "metadata_csum");
         let at = journal_block(&image, 0) * BS;
 
-        let mut bytes = std::fs::read(&image).unwrap();
+        let mut bytes = fs_ext4_test_support::read_small_file(&image).unwrap();
         let sb = &mut bytes[at as usize..at as usize + 1024];
         sb[0x24..0x28].copy_from_slice(&compat.to_be_bytes());
         sb[0x28..0x2C].copy_from_slice(&incompat.to_be_bytes());

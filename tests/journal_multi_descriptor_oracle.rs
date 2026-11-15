@@ -137,7 +137,8 @@ fn a_write_past_one_descriptor_is_read_back_by_debugfs() {
         &["-R", &format!("dump /big.bin {dumped}"), &image],
     );
     assert_eq!(code, Some(0), "{log}");
-    let got = std::fs::read(&dumped).unwrap_or_else(|e| panic!("debugfs dump: {e}: {log}"));
+    let got = fs_ext4_test_support::read_small_file(&dumped)
+        .unwrap_or_else(|e| panic!("debugfs dump: {e}: {log}"));
     assert!(got == payload, "debugfs read back different bytes");
     let _ = std::fs::remove_file(&dumped);
     let _ = std::fs::remove_file(&image);
