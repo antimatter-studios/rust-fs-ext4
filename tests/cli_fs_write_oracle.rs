@@ -7,10 +7,13 @@ mod cli_support;
 
 use cli_support::*;
 use fs_ext4_test_support::{assert_e2fsck_clean, oracle};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static DUMP_ID: AtomicU64 = AtomicU64::new(0);
 
 /// `path` as debugfs reads it, dumped to a file beside the image.
 fn debugfs_dump(image: &str, path: &str) -> Vec<u8> {
-    let dumped = format!("{image}.dump");
+    let dumped = format!("{image}.{}.dump", DUMP_ID.fetch_add(1, Ordering::Relaxed));
     let _ = std::fs::remove_file(&dumped);
     oracle("debugfs")
         .args(["-R", &format!("dump {path} {dumped}"), image])

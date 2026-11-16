@@ -682,6 +682,46 @@ fn parse_chores(text: &str) -> std::collections::BTreeMap<String, ChoreTask> {
             },
         );
     }
+
+    if let Some(includes) = documents
+        .first()
+        .and_then(|document| field(document, "includes"))
+        .and_then(Yaml::as_mapping)
+    {
+        for (namespace, include) in includes {
+            let (Some(namespace), Some(taskfile)) = (
+                namespace.as_str(),
+                field(include, "taskfile").and_then(Yaml::as_str),
+            ) else {
+                continue;
+            };
+            let path = manifest_dir().join(taskfile);
+            if field(include, "optional")
+                .and_then(Yaml::as_bool)
+                .unwrap_or(false)
+                && !path.is_file()
+            {
+                tasks.insert(
+                    format!("{namespace}:*"),
+                    ChoreTask {
+                        keys: Vec::new(),
+                        cmds: Vec::new(),
+                    },
+                );
+                continue;
+            }
+            let included = parse_chores(&read_or_panic(&path));
+            for (name, mut task) in included {
+                for command in &mut task.cmds {
+                    if let ChoreCmd::Task { name, .. } = command {
+                        *name = format!("{namespace}:{name}");
+                    }
+                }
+                tasks.insert(format!("{namespace}:{name}"), task);
+            }
+        }
+    }
+
     tasks
 }
 
@@ -776,6 +816,11 @@ fn chore_checking_debug_runs(
         return Vec::new();
     }
     let Some(body) = tasks.get(task) else {
+        if let Some((namespace, _)) = task.split_once(':') {
+            if tasks.contains_key(&format!("{namespace}:*")) {
+                return Vec::new();
+            }
+        }
         let mut via = path.join(" -> ");
         if via.is_empty() {
             via.push_str("a workflow step");
@@ -2811,6 +2856,28 @@ tasks:
         let chores = format!("{CHORES}  a:\n    cmds:\n      - task: b\n      - task: test:unit\n  b:\n    cmds:\n      - task: a\n");
         let workflow = WORKFLOW.replace("run: chore test:unit", "run: chore a");
         assert_eq!(gating(&workflow, &chores).len(), 1);
+    }
+
+    #[test]
+    fn a_missing_optional_include_does_not_hide_local_tasks() {
+        let chores = "\
+version: '3'
+includes:
+  vm:
+    taskfile: ../missing-optional-taskfile/vm.chores.yml
+    optional: true
+  external:
+    taskfile: ../missing-optional-taskfile/chores.yml
+    optional: true
+tasks:
+  local:
+    cmds:
+      - 'EXPECT_OVERFLOW_CHECKS=1 cargo test --lib'
+";
+        let tasks = super::parse_chores(chores);
+        assert!(tasks.contains_key("local"));
+        assert!(!tasks.contains_key("external:local"));
+        assert!(super::chore_checking_debug_runs(&tasks, "vm:down", &mut Vec::new()).is_empty());
     }
 
     /// `scripts/test.sh` is read as `cargo test`, which is only true while
