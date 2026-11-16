@@ -103,6 +103,28 @@ if [[ "${1:-}" == "--print-temp-dir" ]]; then
     exit 0
 fi
 
+for argument in "$@"; do
+    case "$argument" in
+        --)
+            break
+            ;;
+        --release|-r|--profile=release)
+            echo "test.sh: release-profile tests are disabled; use the test profile" >&2
+            exit 2
+            ;;
+        --profile)
+            echo "test.sh: explicit Cargo profiles are disabled; use the test profile" >&2
+            exit 2
+            ;;
+        -*)
+            if [[ "$argument" =~ ^-[[:alpha:]]*r[[:alpha:]]*$ ]]; then
+                echo "test.sh: release-profile tests are disabled; use the test profile" >&2
+                exit 2
+            fi
+            ;;
+    esac
+done
+
 # THE RUN IS A SESSION ON THE SHARED GUEST. An oracle or kernel test brings the
 # harness guest up from inside its own process; every repository on the machine
 # uses that one guest. A run that reached cargo outside a session (this script

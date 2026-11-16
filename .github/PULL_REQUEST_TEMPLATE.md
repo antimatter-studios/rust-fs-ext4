@@ -27,9 +27,9 @@
 
 ## Testing
 
-<!-- New tests added? Existing tests that exercise the change? Manual reproduction steps if no automated coverage exists. `cargo test --release` output snippet is fine. -->
+<!-- New tests added? Existing tests that exercise the change? Manual reproduction steps if no automated coverage exists. `cargo test` output snippet is fine. -->
 
-- [ ] `cargo test --release` passes locally
+- [ ] `cargo test` passes locally
 - [ ] `cargo clippy` clean (or pre-existing lints only)
 - [ ] New tests cover the new code path (or "N/A" with rationale)
 

@@ -2,8 +2,17 @@
 fn the_guest_suite_runs_unchanged_tests_with_guest_local_scratch() {
     let runner = include_str!("../scripts/guest-suite.sh");
     assert!(
-        runner.contains("bash scripts/guest-scratch.sh scripts/test.sh --locked --release \"$@\""),
+        runner.contains("bash scripts/guest-scratch.sh scripts/test.sh --locked \"$@\""),
         "the guest suite must isolate scratch from the repository share before running the original tests"
+    );
+}
+
+#[test]
+fn the_guest_suite_uses_the_test_profile() {
+    let runner = include_str!("../scripts/guest-suite.sh");
+    assert!(
+        runner.contains("bash scripts/guest-scratch.sh scripts/test.sh --locked \"$@\""),
+        "the guest suite must use the test profile rather than release LTO"
     );
 }
 

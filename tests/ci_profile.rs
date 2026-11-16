@@ -1,4 +1,4 @@
-//! The debug run that lets the PR gate see an overflow guards itself.
+//! The overflow-checked run that lets the PR gate see an overflow guards itself.
 //!
 //! `overflow-checks` is on in debug and off in release, so a defect
 //! whose only symptom is an arithmetic overflow panic cannot be
@@ -96,7 +96,7 @@ fn read_or_panic(path: &Path) -> String {
 /// - it is a YAML comment. Load-bearing here, not defensive: `ci.yml`
 ///   quotes the debug command verbatim in the comment above the step
 ///   that runs it;
-/// - it is an inline trailing comment on an otherwise-`--release` line;
+/// - it is an inline trailing comment on an otherwise release-profile line;
 /// - it passes `--release`, or names a profile explicitly.
 ///
 /// And the run must carry `EXPECT_OVERFLOW_CHECKS=1` -- a debug step
@@ -1546,10 +1546,12 @@ fn the_pr_gate_builds_fixtures_once_in_the_harness_vm_and_tests_both_architectur
         commands.iter().any(|c| {
             let as_cargo = c.replace(TEST_WRAPPER, "cargo test");
             as_cargo.contains("cargo test")
-                && as_cargo.contains("--release")
+                && !as_cargo.contains("--release")
+                && !as_cargo.contains("--profile")
+                && !selects_release_by_short_flag(&as_cargo)
                 && !as_cargo.contains("test-targets.sh")
         }),
-        "chores.yml `test:native` must run the whole suite in the release profile; it runs \
+        "chores.yml `test:native` must run the whole suite in the test profile; it runs \
          {commands:?}"
     );
     assert!(
@@ -1563,6 +1565,36 @@ fn the_pr_gate_builds_fixtures_once_in_the_harness_vm_and_tests_both_architectur
         "chores.yml `lint` must run `cargo clippy --locked --workspace --all-targets --features cli \
          -- -D warnings`: without the feature the command-line tools are not linted at all"
     );
+}
+
+#[test]
+fn test_tiers_use_the_test_profile_without_changing_shipped_release_settings() {
+    let manifest = read_or_panic(&manifest_dir().join("Cargo.toml"));
+    let release = manifest
+        .split("[profile.release]")
+        .nth(1)
+        .and_then(|after| after.split("\n[").next())
+        .expect("Cargo.toml must keep the shipped release profile");
+    assert!(release.contains("lto = true"));
+    assert!(release.contains("codegen-units = 1"));
+
+    let test = manifest
+        .split("[profile.test]")
+        .nth(1)
+        .and_then(|after| after.split("\n[").next())
+        .expect("Cargo.toml must define its test profile");
+    assert!(test.contains("opt-level = 1"));
+
+    let chores = read_or_panic(&manifest_dir().join("chores.yml"));
+    for line in chores
+        .lines()
+        .filter(|line| line.contains("scripts/test.sh"))
+    {
+        assert!(
+            !line.contains("--release") && !line.contains("--profile"),
+            "test tier selects a non-test profile: {line}"
+        );
+    }
 }
 
 /// THE SHIPPING GATE runs the same chore tasks as the pull-request gate,

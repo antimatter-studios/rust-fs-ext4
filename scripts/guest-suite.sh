@@ -62,5 +62,5 @@ command -v cargo >/dev/null ||
 
 echo "== in-guest suite: $(uname -srm), $(cargo --version)"
 started=$(date +%s)
-bash scripts/guest-scratch.sh scripts/test.sh --locked --release "$@"
+bash scripts/guest-scratch.sh scripts/test.sh --locked "$@"
 echo "== in-guest suite: $(( $(date +%s) - started ))s"
