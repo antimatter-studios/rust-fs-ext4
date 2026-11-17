@@ -4,14 +4,15 @@
 //! A caller that calls fs_ext4_truncate on a callback mount should
 //! get an error, not silent corruption.
 
+use fs_ext4::block_io::{BlockDevice, FileDevice};
 use fs_ext4::capi::*;
 use std::ffi::{CStr, CString};
-use std::fs;
 use std::os::raw::c_void;
+use std::sync::Arc;
 
 const IMAGE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/test-disks/ext4-basic.img");
 
-extern "C" fn read_from_vec(
+extern "C" fn read_from_file(
     ctx: *mut c_void,
     buf: *mut c_void,
     offset: u64,
@@ -20,34 +21,32 @@ extern "C" fn read_from_vec(
     if ctx.is_null() || buf.is_null() {
         return 1;
     }
-    let bytes = unsafe { &*(ctx as *const Vec<u8>) };
-    let end = (offset as usize).checked_add(length as usize);
-    if end.is_none_or(|e| e > bytes.len()) {
+    let device = unsafe { &*(ctx as *const FileDevice) };
+    let Ok(length) = usize::try_from(length) else {
         return 2;
-    }
-    unsafe {
-        std::ptr::copy_nonoverlapping(
-            bytes.as_ptr().add(offset as usize),
-            buf as *mut u8,
-            length as usize,
-        );
-    }
-    0
+    };
+    let bytes = unsafe { std::slice::from_raw_parts_mut(buf as *mut u8, length) };
+    device.read_at(offset, bytes).map_or(2, |_| 0)
 }
 
-#[test]
-fn truncate_on_callback_mount_refused_cleanly() {
-    let bytes = fs::read(IMAGE).expect("read image");
+fn mount_read_only() -> (*mut fs_ext4_fs_t, Arc<FileDevice>) {
+    let device = Arc::new(FileDevice::open(IMAGE).expect("open image"));
     let cfg = fs_ext4_blockdev_cfg_t {
-        read: Some(read_from_vec),
-        context: &bytes as *const Vec<u8> as *mut c_void,
-        size_bytes: bytes.len() as u64,
+        read: Some(read_from_file),
+        context: Arc::as_ptr(&device) as *mut c_void,
+        size_bytes: device.size_bytes(),
         block_size: 512,
         write: None,
         flush: None,
     };
-    let fs_h = unsafe { fs_ext4_mount_with_callbacks(&cfg) };
-    assert!(!fs_h.is_null(), "callback mount");
+    let fs = unsafe { fs_ext4_mount_with_callbacks(&cfg) };
+    assert!(!fs.is_null(), "callback mount");
+    (fs, device)
+}
+
+#[test]
+fn truncate_on_callback_mount_refused_cleanly() {
+    let (fs_h, _device) = mount_read_only();
 
     let path = CString::new("/test.txt").unwrap();
     let rc = unsafe { fs_ext4_truncate(fs_h, path.as_ptr(), 0) };
@@ -77,17 +76,7 @@ fn truncate_on_callback_mount_refused_cleanly() {
 
 #[test]
 fn unlink_on_callback_mount_refused_cleanly() {
-    let bytes = fs::read(IMAGE).expect("read image");
-    let cfg = fs_ext4_blockdev_cfg_t {
-        read: Some(read_from_vec),
-        context: &bytes as *const Vec<u8> as *mut c_void,
-        size_bytes: bytes.len() as u64,
-        block_size: 512,
-        write: None,
-        flush: None,
-    };
-    let fs_h = unsafe { fs_ext4_mount_with_callbacks(&cfg) };
-    assert!(!fs_h.is_null());
+    let (fs_h, _device) = mount_read_only();
 
     let path = CString::new("/test.txt").unwrap();
     let rc = unsafe { fs_ext4_unlink(fs_h, path.as_ptr()) };

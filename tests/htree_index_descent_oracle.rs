@@ -26,7 +26,6 @@ use fs_ext4::fs::Filesystem;
 use fs_ext4::htree;
 use fs_ext4::inode::{Inode, InodeFlags};
 use fs_ext4_test_support::oracle;
-use std::os::unix::ffi::OsStrExt;
 use std::sync::Arc;
 
 fn names() -> Vec<Vec<u8>> {
@@ -54,12 +53,7 @@ fn run(hash_alg: &str, s_flags: u32) {
     let debugfs = "debugfs";
     let tag = format!("{hash_alg}_{s_flags}");
     let root = fs_ext4_test_support::temp_path!("fs_ext4_htree_src_{tag}_{}", std::process::id());
-    let bigdir = std::path::Path::new(&root).join("bigdir");
-    std::fs::create_dir_all(&bigdir).unwrap();
     let names = names();
-    for name in &names {
-        std::fs::write(bigdir.join(std::ffi::OsStr::from_bytes(name)), b"").unwrap();
-    }
     let image = format!("{root}.img");
     std::fs::File::create(&image)
         .and_then(|f| f.set_len(64 * 1024 * 1024))
@@ -76,11 +70,19 @@ fn run(hash_alg: &str, s_flags: u32) {
             ),
         )
     };
-    let call = oracle(mkfs)
-        .args(["-q", "-F", "-b", "1024", "-d"])
-        .arg(&root)
-        .arg(&image);
+    let call = oracle(mkfs).args(["-q", "-F", "-b", "1024"]).arg(&image);
     let (code, log) = ok(call, "mkfs.ext4");
+    assert_eq!(code, Some(0), "{log}");
+    let commands = format!("{root}.debugfs");
+    let mut script = b"mkdir /bigdir\n".to_vec();
+    for name in &names {
+        script.extend_from_slice(b"write /dev/null /bigdir/");
+        script.extend_from_slice(name);
+        script.push(b'\n');
+    }
+    std::fs::write(&commands, script).unwrap();
+    let call = oracle(debugfs).args(["-w", "-f", &commands, &image]);
+    let (code, log) = ok(call, "debugfs populate");
     assert_eq!(code, Some(0), "{log}");
     for request in [
         format!("ssv def_hash_version {hash_alg}"),
@@ -148,8 +150,8 @@ fn run(hash_alg: &str, s_flags: u32) {
         names.len(),
         &wrong[..wrong.len().min(5)]
     );
-    let _ = std::fs::remove_dir_all(&root);
     let _ = std::fs::remove_file(&image);
+    let _ = std::fs::remove_file(&commands);
 }
 
 #[test]

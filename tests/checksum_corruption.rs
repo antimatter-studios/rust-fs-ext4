@@ -17,16 +17,12 @@ const SRC_IMAGE: &str = "ext4-basic.img";
 
 fn copy_image_to_temp(tag: &str) -> std::path::PathBuf {
     let src_path = fs_ext4_test_support::fixture(env!("CARGO_MANIFEST_DIR"), SRC_IMAGE);
-    let mut src = std::fs::File::open(&src_path).unwrap_or_else(|e| panic!("open {src_path}: {e}"));
     let tmp_path = fs_ext4_test_support::temp_dir().join(format!(
         "ext4rs-corrupt-{}-{}.img",
         std::process::id(),
         tag
     ));
-    let mut dst = std::fs::File::create(&tmp_path).expect("create temp image");
-    let mut buf = Vec::new();
-    src.read_to_end(&mut buf).expect("read src");
-    dst.write_all(&buf).expect("write dst");
+    fs_ext4_test_support::copy_file_sparse(&src_path, &tmp_path).expect("copy image");
     tmp_path
 }
 

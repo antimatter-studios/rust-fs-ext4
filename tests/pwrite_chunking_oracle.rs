@@ -56,16 +56,25 @@ fn journal_sequence(fs: &Filesystem) -> u32 {
     u32::from_be_bytes(seq)
 }
 
-fn dump(image: &str, path: &str) -> Vec<u8> {
+fn dump(image: &str, path: &str) -> std::path::PathBuf {
     let dumped = format!("{image}.{}.dump", path.trim_matches('/').replace('/', "_"));
     let _ = std::fs::remove_file(&dumped);
     fs_ext4_test_support::oracle("debugfs")
         .args(["-R", &format!("dump {path} {dumped}"), image])
         .judged()
         .clean("debugfs dump");
-    let got = std::fs::read(&dumped).unwrap_or_else(|e| panic!("debugfs dump: {e}"));
-    let _ = std::fs::remove_file(&dumped);
-    got
+    std::path::PathBuf::from(dumped)
+}
+
+fn assert_dump_matches(image: &str, path: &str, expected: &[u8]) {
+    let dumped = dump(image, path);
+    let difference = fs_ext4_test_support::first_different_offset_from_bytes(expected, &dumped)
+        .unwrap_or_else(|error| panic!("debugfs dump {path}: {error}"));
+    assert_eq!(
+        difference, None,
+        "debugfs read back different bytes for {path}"
+    );
+    let _ = std::fs::remove_file(dumped);
 }
 
 #[test]
@@ -113,13 +122,7 @@ fn large_pwrites_cut_to_the_journal_read_back_through_debugfs() {
     }
 
     fs_ext4_test_support::assert_e2fsck_clean(&image, "e2fsck -fn");
-    assert!(
-        dump(&image, "/two.bin") == two,
-        "debugfs read back different bytes for /two.bin"
-    );
-    assert!(
-        dump(&image, "/twelve.bin") == twelve,
-        "debugfs read back different bytes for /twelve.bin"
-    );
+    assert_dump_matches(&image, "/two.bin", &two);
+    assert_dump_matches(&image, "/twelve.bin", &twelve);
     let _ = std::fs::remove_file(&image);
 }

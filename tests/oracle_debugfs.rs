@@ -179,15 +179,22 @@ fn e2fsck_clean(image: &Path) {
     );
 }
 
-/// Dump `path` out of the image with debugfs and return its bytes.
-fn debugfs_dump(image: &Path, path: &str, scratch: &Scratch) -> Vec<u8> {
+/// Dump `path` out of the image with debugfs and return the dump's path.
+fn debugfs_dump(image: &Path, path: &str, scratch: &Scratch) -> PathBuf {
     static DUMP_N: AtomicU32 = AtomicU32::new(0);
     let out = scratch.path(&format!(
         "dump-{}.bin",
         DUMP_N.fetch_add(1, Ordering::Relaxed)
     ));
     debugfs(image, &format!("dump {path} {}", out.display()));
-    std::fs::read(&out).unwrap_or_else(|e| panic!("debugfs dump {path} wrote nothing: {e}"))
+    assert!(out.is_file(), "debugfs dump {path} wrote no file");
+    out
+}
+
+fn assert_dump_identical(label: &str, expected: &[u8], actual: &Path) {
+    let difference = fs_ext4_test_support::first_different_offset_from_bytes(expected, actual)
+        .unwrap_or_else(|error| panic!("{label}: cannot compare dump: {error}"));
+    assert_eq!(difference, None, "{label}: files differ at byte offset");
 }
 
 /// `mke2fs -d <seed>`: a 64 MiB ext4 image with a journal and
@@ -332,13 +339,13 @@ fn driver_writes_are_read_back_identically_by_debugfs() {
 
     // Content: dump + compare.
     let dumped = debugfs_dump(&image, "/written/big.bin", &scratch);
-    assert_identical("debugfs dump /written/big.bin", &expected, &dumped);
+    assert_dump_identical("debugfs dump /written/big.bin", &expected, &dumped);
     eprintln!(
         "[oracle] debugfs dump /written/big.bin: {} bytes, identical to what the driver wrote",
-        dumped.len()
+        std::fs::metadata(&dumped).unwrap().len()
     );
     let small = debugfs_dump(&image, "/written/small.txt", &scratch);
-    assert_identical(
+    assert_dump_identical(
         "debugfs dump /written/small.txt",
         b"written by fs-ext4\n",
         &small,
@@ -467,7 +474,7 @@ fn mke2fs_placed_files_are_read_identically_by_the_driver() {
 
     // And debugfs agrees with its own writer, so the comparison above is
     // against the bytes that are really on disk.
-    assert_identical(
+    assert_dump_identical(
         "debugfs dump /dir/big.bin",
         &big,
         &debugfs_dump(&image, "/dir/big.bin", &scratch),
@@ -528,10 +535,10 @@ fn c_abi_writes_are_read_back_identically_by_debugfs() {
     let mut expected = head[..tail_offset as usize].to_vec();
     expected.extend_from_slice(&tail);
     let dumped = debugfs_dump(&image, "/capi.bin", &scratch);
-    assert_identical("debugfs dump /capi.bin", &expected, &dumped);
+    assert_dump_identical("debugfs dump /capi.bin", &expected, &dumped);
     eprintln!(
         "[oracle] debugfs dump /capi.bin: {} bytes identical (C ABI)",
-        dumped.len()
+        std::fs::metadata(&dumped).unwrap().len()
     );
     let stat = debugfs(&image, "stat /capi.bin");
     assert_eq!(stat_field(&stat, "Mode"), "0640", "{stat}");
@@ -584,8 +591,8 @@ fn corrupted_data_is_caught_by_debugfs_not_by_e2fsck() {
     // The content oracle is not.
     let dumped = debugfs_dump(&image, "/written/big.bin", &scratch);
     assert_eq!(
-        first_difference(&expected, &dumped),
-        Some(target as usize),
+        fs_ext4_test_support::first_different_offset_from_bytes(&expected, &dumped).unwrap(),
+        Some(target),
         "debugfs dump + compare must report the flipped byte and only that one"
     );
     eprintln!(

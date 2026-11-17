@@ -54,12 +54,16 @@ fn plain_files_read_and_encrypted_ones_are_refused() {
     std::fs::write(format!("{root}/plain/small.txt"), b"plain text\n").unwrap();
     std::fs::write(format!("{root}/plain/sealed.bin"), vec![0xC3; 9000]).unwrap();
     std::fs::write(format!("{root}/secret/inside.bin"), vec![0x5A; 5000]).unwrap();
-    std::os::unix::fs::symlink("a/short/target", format!("{root}/plain/link")).unwrap();
     let image = format!("{root}.img");
     std::fs::File::create(&image)
         .and_then(|f| f.set_len(32 * 1024 * 1024))
         .unwrap();
     let (code, _, log) = run(mkfs, &["-q", "-F", "-O", "encrypt", "-d", &root, &image]);
+    assert_eq!(code, Some(0), "{log}");
+    let (code, _, log) = run(
+        debugfs,
+        &["-w", "-R", "symlink /plain/link small.txt", &image],
+    );
     assert_eq!(code, Some(0), "{log}");
     // EXTENTS | ENCRYPT on the directory, the file beside plain ones, and the
     // fast symlink (whose target lives in i_block).

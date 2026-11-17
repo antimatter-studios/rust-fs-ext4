@@ -20,7 +20,7 @@ use fs_ext4::fs::Filesystem;
 mod cli_support;
 
 use cli_support::tool;
-use std::sync::Arc;
+use std::{io::Write, sync::Arc};
 
 const SIZE_BYTES: u64 = 32 * 1024 * 1024;
 const TEST_LABEL: &str = "BINSMOKE";
@@ -34,6 +34,18 @@ fn unique_tmp_path(suffix: &str) -> std::path::PathBuf {
         .map(|d| d.as_nanos())
         .unwrap_or(0);
     fs_ext4_test_support::temp_dir().join(format!("fs-ext4-mkfs-bin-{pid}-{nanos}-{suffix}"))
+}
+
+fn write_pattern(path: &std::path::Path, byte: u8) {
+    let mut file = std::fs::File::create(path).expect("create patterned image");
+    let chunk = vec![byte; 1024 * 1024];
+    let mut remaining = SIZE_BYTES;
+    while remaining > 0 {
+        let count = remaining.min(chunk.len() as u64) as usize;
+        file.write_all(&chunk[..count])
+            .expect("write image pattern");
+        remaining -= count as u64;
+    }
 }
 
 #[test]
@@ -176,8 +188,8 @@ fn mkfs_bin_dry_run_does_not_modify_file() {
 
     // Pre-fill with a recognisable byte pattern — anything other than the
     // ext4 superblock magic at offset 1080 would do, but 0xAA is loud.
-    let pattern = vec![0xAAu8; SIZE_BYTES as usize];
-    std::fs::write(&img, &pattern).expect("seed pattern");
+    write_pattern(&img, 0xAA);
+    let before = fs_ext4_test_support::snapshot_file(&img).expect("snapshot image");
 
     let out = tool("mkfs.ext4")
         .args(["-n", "-L", "DRYRUN", &img_str])
@@ -190,16 +202,7 @@ fn mkfs_bin_dry_run_does_not_modify_file() {
     );
 
     // File contents must be unchanged.
-    let after = std::fs::read(&img).expect("read after dry-run");
-    assert_eq!(
-        after.len(),
-        pattern.len(),
-        "dry-run must not change file size"
-    );
-    assert!(
-        after == pattern,
-        "dry-run must not modify file contents (first diff somewhere)"
-    );
+    fs_ext4_test_support::assert_files_equal(&img, &before);
 
     let _ = std::fs::remove_file(&img);
 }
@@ -256,8 +259,8 @@ fn mkfs_bin_rejects_bad_block_size_before_opening_the_device() {
     // that failed halfway.
     let img = unique_tmp_path("badbs");
     let img_str = img.to_string_lossy().into_owned();
-    let pattern = vec![0xAAu8; SIZE_BYTES as usize];
-    std::fs::write(&img, &pattern).expect("seed pattern");
+    write_pattern(&img, 0xAA);
+    let before = fs_ext4_test_support::snapshot_file(&img).expect("snapshot image");
 
     let out = tool("mkfs.ext4")
         .args(["-b", "3000", &img_str])
@@ -274,11 +277,7 @@ fn mkfs_bin_rejects_bad_block_size_before_opening_the_device() {
         !stderr.contains("formatting"),
         "must not announce a format it never intended to start; stderr:\n{stderr}"
     );
-    assert_eq!(
-        std::fs::read(&img).expect("read after rejected -b"),
-        pattern,
-        "a rejected argument must leave the device untouched"
-    );
+    fs_ext4_test_support::assert_files_equal(&img, &before);
 
     let _ = std::fs::remove_file(&img);
 }

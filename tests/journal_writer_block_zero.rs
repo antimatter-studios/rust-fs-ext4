@@ -46,37 +46,35 @@ fn image_with_journal_at(name: &str, start: Option<u64>) -> std::path::PathBuf {
         let (block, offset) = bgd::locate_inode(&fs.sb, &fs.groups, ino).unwrap();
         (block, offset as u64, u64::from(fs.sb.block_size()))
     };
-    let mut bytes = std::fs::read(&img).unwrap();
+    let header = block * bs + offset + 0x28;
+    let mut extents = fs_ext4_test_support::read_file_range(&img, header, 36).unwrap();
     // i_block at 0x28: a 12-byte extent header (magic, entries, max,
     // depth), then extents of ee_block(4) ee_len(2) ee_start_hi(2)
     // ee_start_lo(4). mkfs lays the journal out as several extents; the
     // SECOND one is moved to `start`, so logical block 0 -- the journal's
     // own superblock -- stays readable and a later logical block maps
     // onto the filesystem's first blocks: the shape the issue names.
-    let header = (block * bs + offset) as usize + 0x28;
     let le16 = |b: &[u8], at: usize| u16::from_le_bytes(b[at..at + 2].try_into().unwrap());
     assert_eq!(
-        le16(&bytes, header),
+        le16(&extents, 0),
         0xF30A,
         "fixture: the journal inode is extent-mapped"
     );
     assert!(
-        le16(&bytes, header + 2) >= 2,
+        le16(&extents, 2) >= 2,
         "fixture: the journal has a second extent"
     );
-    assert_eq!(
-        le16(&bytes, header + 6),
-        0,
-        "fixture: the extent tree has depth 0"
-    );
-    let second = header + 24;
+    assert_eq!(le16(&extents, 6), 0, "fixture: the extent tree has depth 0");
+    let second = 24;
     assert!(
-        u32::from_le_bytes(bytes[second..second + 4].try_into().unwrap()) > 0,
+        u32::from_le_bytes(extents[second..second + 4].try_into().unwrap()) > 0,
         "fixture: the second extent starts past logical block 0"
     );
-    bytes[second + 6..second + 8].copy_from_slice(&((start >> 32) as u16).to_le_bytes());
-    bytes[second + 8..second + 12].copy_from_slice(&(start as u32).to_le_bytes());
-    std::fs::write(&img, &bytes).unwrap();
+    extents[second + 6..second + 8].copy_from_slice(&((start >> 32) as u16).to_le_bytes());
+    extents[second + 8..second + 12].copy_from_slice(&(start as u32).to_le_bytes());
+    let mut image = std::fs::OpenOptions::new().write(true).open(&img).unwrap();
+    std::io::Seek::seek(&mut image, std::io::SeekFrom::Start(header)).unwrap();
+    std::io::Write::write_all(&mut image, &extents).unwrap();
     img
 }
 

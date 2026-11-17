@@ -203,7 +203,10 @@ fn export_carries_what_the_kernel_set_and_refuses_a_namespace_the_host_cannot_ho
 
     assert_eq!(host(&dest.join("f")), file, "{listing}");
     assert_eq!(host(&dest.join("sub")), dir, "{listing}");
-    assert_eq!(std::fs::read(dest.join("f")).unwrap(), b"data\n");
+    assert_eq!(
+        fs_ext4_test_support::read_small_file(dest.join("f")).unwrap(),
+        b"data\n"
+    );
     std::fs::remove_dir_all(&dest).unwrap();
 }
 

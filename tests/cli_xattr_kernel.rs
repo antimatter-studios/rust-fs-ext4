@@ -282,7 +282,7 @@ fn fs_ext4_xattr_lists_and_reads_what_the_kernel_set() {
         "the guest reported each path:\n{report}"
     );
     assert_every_place_is_used(img);
-    let before = std::fs::read(img).unwrap();
+    let before = fs_ext4_test_support::snapshot_file(img).unwrap();
     let value_file = image_path("xattr-value");
     let mut namespaces = Vec::new();
 
@@ -339,7 +339,7 @@ fn fs_ext4_xattr_lists_and_reads_what_the_kernel_set() {
                 .args(["-o", &value_file]));
             assert!(to_file.stdout.is_empty(), "{}", what(&shown));
             assert_eq!(
-                std::fs::read(&value_file).unwrap(),
+                fs_ext4_test_support::read_small_file(&value_file).unwrap(),
                 *value,
                 "{}",
                 what(&shown)
@@ -396,15 +396,16 @@ fn fs_ext4_xattr_lists_and_reads_what_the_kernel_set() {
 
     // --offset is where the filesystem starts in TARGET, as for every verb.
     let embedded = image_path("xattr-embedded");
-    let mut bytes = vec![0u8; 4096];
-    bytes.extend_from_slice(&before);
-    std::fs::write(&embedded, bytes).unwrap();
+    {
+        use std::io::Write;
+
+        let mut file = std::fs::File::create(&embedded).unwrap();
+        file.write_all(&[0; 4096]).unwrap();
+        std::io::copy(&mut std::fs::File::open(img).unwrap(), &mut file).unwrap();
+    }
     let offset =
         ok(tool("fs.ext4").args(["--offset", "4096", &embedded, "xattr", "/many", "user.bin"]));
     assert_eq!(offset.stdout, b"\0\xff\n\0\xff");
 
-    assert!(
-        std::fs::read(img).unwrap() == before,
-        "fs.ext4 xattr changed the image"
-    );
+    fs_ext4_test_support::assert_files_equal(img, &before);
 }

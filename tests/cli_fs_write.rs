@@ -64,7 +64,7 @@ fn the_volume_is_clean_after_the_writes() {
 #[test]
 fn refusals_are_structured_and_leave_the_image_alone() {
     let img = written_image("refusals");
-    let before = std::fs::read(&img).unwrap();
+    let before = fs_ext4_test_support::snapshot_file(&img).unwrap();
     // The volume's state refuses these: exit 4, `refused`, in the CLI
     // contract (EXIT_REFUSED), with the JSON error on stderr.
     let cases: Vec<(Vec<&str>, &str)> = vec![
@@ -93,7 +93,9 @@ fn refusals_are_structured_and_leave_the_image_alone() {
         );
     }
     assert!(
-        std::fs::read(&img).unwrap() == before,
+        fs_ext4_test_support::first_different_offset(&img, &before)
+            .unwrap()
+            .is_none(),
         "a refused write, mkdir or rmdir changed the image"
     );
 }
@@ -140,7 +142,7 @@ fn set_label_rewrites_the_label_and_leaves_the_volume_clean() {
         "an empty value clears the label"
     );
 
-    let before = std::fs::read(&img).unwrap();
+    let before = fs_ext4_test_support::snapshot_file(&img).unwrap();
     let out = tool("fs.ext4")
         .args([&img, "set", "label", "seventeen-bytes!!"])
         .output()
@@ -149,7 +151,9 @@ fn set_label_rewrites_the_label_and_leaves_the_volume_clean() {
     assert!(out.stdout.is_empty());
     assert!(stderr(&out).contains("16 bytes"), "{}", stderr(&out));
     assert!(
-        std::fs::read(&img).unwrap() == before,
+        fs_ext4_test_support::first_different_offset(&img, &before)
+            .unwrap()
+            .is_none(),
         "a refused label changed the image"
     );
 }

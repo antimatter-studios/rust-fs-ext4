@@ -258,7 +258,7 @@ fn truncate_refuses_what_the_kernel_refuses() {
         stderr(&out)
     );
     let kernel = stdout(&out);
-    let image = std::fs::read(&img).expect("read the image");
+    let image = fs_ext4_test_support::snapshot_file(&img).expect("snapshot the image");
 
     let mut tried = Vec::new();
     for line in kernel.lines() {
@@ -283,10 +283,7 @@ fn truncate_refuses_what_the_kernel_refuses() {
         assert!(got.stdout.is_empty(), "{what}; stdout: {}", stdout(&got));
         assert!(err.contains(&format!("\"code\": {code}")), "{what}");
         assert!(err.contains(want), "{what}; expected {want:?}");
-        assert!(
-            std::fs::read(&img).expect("read the image") == image,
-            "truncate {label:?} was refused and still changed the image"
-        );
+        fs_ext4_test_support::assert_files_equal(&img, &image);
         tried.push(path);
     }
     assert_eq!(tried, cases, "the guest answered every case:\n{kernel}");
@@ -310,7 +307,7 @@ fn truncate_of_a_block_mapped_file_grows_and_will_not_shrink() {
 
     // The driver cannot shrink a block-mapped file: exit 3, nothing on
     // stdout, and the image as it was.
-    let image = std::fs::read(&img).expect("read the image");
+    let image = fs_ext4_test_support::snapshot_file(&img).expect("snapshot the image");
     let got = tool("fs.ext4")
         .args([img.as_str(), "truncate", "/ours", "5000"])
         .output()
@@ -320,10 +317,7 @@ fn truncate_of_a_block_mapped_file_grows_and_will_not_shrink() {
     assert!(got.stdout.is_empty(), "stdout: {}", stdout(&got));
     assert!(err.contains("\"code\": 3"), "{err}");
     assert!(err.contains("block-mapped"), "{err}");
-    assert!(
-        std::fs::read(&img).expect("read the image") == image,
-        "the refused shrink changed the image"
-    );
+    fs_ext4_test_support::assert_files_equal(&img, &image);
 
     truncate(&img, "/ours", 65536);
     assert_e2fsck_clean(&img, "the volume fs.ext4 grew a block-mapped file on");
@@ -432,7 +426,7 @@ fn truncate_refuses_sizes_past_the_mapping_limit_the_kernel_enforces() {
             continue;
         }
         assert_e2fsck_clean(&img, "the volume fs.ext4 grew to the mapping limit");
-        let image = std::fs::read(&img).expect("read the image before the refusal");
+        let image = fs_ext4_test_support::snapshot_file(&img).expect("snapshot the image");
         let too_large = (max_size + 1).to_string();
         let refused = tool("fs.ext4")
             .args([img.as_str(), "truncate", "/ours", too_large.as_str()])
@@ -447,10 +441,7 @@ fn truncate_refuses_sizes_past_the_mapping_limit_the_kernel_enforces() {
             continue;
         }
         assert!(refused.stdout.is_empty(), "stdout: {}", stdout(&refused));
-        assert!(
-            std::fs::read(&img).expect("read the image after the refusal") == image,
-            "truncate one byte past the mapping limit changed the image"
-        );
+        fs_ext4_test_support::assert_files_equal(&img, &image);
     }
     assert!(
         wrong.is_empty(),

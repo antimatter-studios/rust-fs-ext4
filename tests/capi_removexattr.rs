@@ -8,7 +8,6 @@
 use fs_ext4::capi::*;
 use std::ffi::{CStr, CString};
 use std::fs;
-use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -21,10 +20,7 @@ fn scratch(tag: &str) -> PathBuf {
         "fs_ext4_capi_rmxattr_{tag}_{}_{n}.img",
         std::process::id()
     ));
-    let bytes = fs::read(SRC).expect("read src");
-    let mut out = fs::File::create(&dst).expect("create");
-    out.write_all(&bytes).expect("write");
-    out.flush().expect("flush");
+    fs::copy(SRC, &dst).expect("copy src");
     dst
 }
 

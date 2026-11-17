@@ -14,9 +14,13 @@
 //! crate, so a create on a quota-enabled volume charged nobody for the
 //! file and left counters that no longer describe the filesystem.
 
+use fs_ext4::block_io::{BlockDevice, FileDevice};
 use fs_ext4::checksum::linux_crc32c;
 use fs_ext4::features::RoCompat;
 use fs_ext4::{Error, Filesystem};
+use std::fs::OpenOptions;
+use std::io::{Seek, SeekFrom, Write};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 const IMAGE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/test-disks/ext4-basic.img");
@@ -27,42 +31,30 @@ const SB_AT: usize = 1024;
 const RO_COMPAT_AT: usize = SB_AT + 0x64;
 const CSUM_AT: usize = SB_AT + 0x3FC;
 
-/// A writable in-memory device, so a fixture can be edited without
-/// touching the file on disk.
-struct MemDev {
-    bytes: std::sync::Mutex<Vec<u8>>,
+struct ImageDev {
+    path: PathBuf,
+    device: FileDevice,
 }
 
-impl MemDev {
-    fn arc(bytes: Vec<u8>) -> Arc<Self> {
-        Arc::new(Self {
-            bytes: std::sync::Mutex::new(bytes),
-        })
+impl ImageDev {
+    fn open(path: PathBuf) -> Arc<Self> {
+        let device = FileDevice::open_path_rw(&path).expect("open image");
+        Arc::new(Self { path, device })
     }
 }
 
-impl fs_ext4::block_io::BlockDevice for MemDev {
+impl BlockDevice for ImageDev {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> fs_ext4::Result<()> {
-        let b = self.bytes.lock().unwrap();
-        let start = offset as usize;
-        let end = start + buf.len();
-        if end > b.len() {
-            return Err(Error::OutOfBounds);
-        }
-        buf.copy_from_slice(&b[start..end]);
-        Ok(())
+        self.device.read_at(offset, buf)
     }
     fn size_bytes(&self) -> u64 {
-        self.bytes.lock().unwrap().len() as u64
+        self.device.size_bytes()
     }
     fn write_at(&self, offset: u64, buf: &[u8]) -> fs_ext4::Result<()> {
-        let mut b = self.bytes.lock().unwrap();
-        let start = offset as usize;
-        if start + buf.len() > b.len() {
-            return Err(Error::OutOfBounds);
-        }
-        b[start..start + buf.len()].copy_from_slice(buf);
-        Ok(())
+        self.device.write_at(offset, buf)
+    }
+    fn flush(&self) -> fs_ext4::Result<()> {
+        self.device.flush()
     }
     fn is_writable(&self) -> bool {
         true
@@ -72,18 +64,32 @@ impl fs_ext4::block_io::BlockDevice for MemDev {
 /// A copy of the fixture with `bits` added to `s_feature_ro_compat` and
 /// the superblock checksum restored, so the volume is well-formed and
 /// differs from the original only in the feature mask.
-fn fixture_with_ro_compat(bits: u32) -> Arc<MemDev> {
-    let mut bytes = std::fs::read(IMAGE).expect("read the fixture");
-    let existing = u32::from_le_bytes(bytes[RO_COMPAT_AT..RO_COMPAT_AT + 4].try_into().unwrap());
+fn fixture_with_ro_compat(bits: u32) -> Arc<ImageDev> {
+    let path = fs_ext4_test_support::snapshot_file(IMAGE).expect("copy fixture");
+    let mut bytes =
+        fs_ext4_test_support::read_file_range(&path, SB_AT as u64, 1024).expect("read superblock");
+    let feature_offset = RO_COMPAT_AT - SB_AT;
+    let checksum_offset = CSUM_AT - SB_AT;
+    let existing = u32::from_le_bytes(
+        bytes[feature_offset..feature_offset + 4]
+            .try_into()
+            .unwrap(),
+    );
     let updated = existing | bits;
-    bytes[RO_COMPAT_AT..RO_COMPAT_AT + 4].copy_from_slice(&updated.to_le_bytes());
+    bytes[feature_offset..feature_offset + 4].copy_from_slice(&updated.to_le_bytes());
 
     // METADATA_CSUM is set on this fixture, so the superblock carries a
     // checksum over everything before it. Leave it stale and the mount
     // fails for the wrong reason entirely.
-    let csum = linux_crc32c(!0, &bytes[SB_AT..CSUM_AT]);
-    bytes[CSUM_AT..CSUM_AT + 4].copy_from_slice(&csum.to_le_bytes());
-    MemDev::arc(bytes)
+    let csum = linux_crc32c(!0, &bytes[..checksum_offset]);
+    bytes[checksum_offset..checksum_offset + 4].copy_from_slice(&csum.to_le_bytes());
+    let mut file = OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .expect("open fixture copy");
+    file.seek(SeekFrom::Start(SB_AT as u64)).unwrap();
+    file.write_all(&bytes).unwrap();
+    ImageDev::open(path)
 }
 
 /// The bits worth testing, and why each one.
@@ -155,15 +161,24 @@ fn an_unmaintained_ro_compat_bit_refuses_a_write() {
 /// being refused.
 #[test]
 fn a_default_volume_still_writes() {
-    let bytes = std::fs::read(IMAGE).expect("read the fixture");
-    let fs = Filesystem::mount(MemDev::arc(bytes)).expect("mount");
+    let path = fs_ext4_test_support::snapshot_file(IMAGE).expect("copy fixture");
+    let dev = ImageDev::open(path);
+    let fs = Filesystem::mount(dev).expect("mount");
     fs.apply_create("/guard_smoke.txt", 0o644)
         .expect("an ordinary volume must still accept a create");
 }
 
 /// The whole device, to prove a refusal wrote nothing at all.
-fn snapshot(dev: &MemDev) -> Vec<u8> {
-    dev.bytes.lock().unwrap().clone()
+fn snapshot(dev: &ImageDev) -> PathBuf {
+    fs_ext4_test_support::snapshot_file(&dev.path).expect("snapshot image")
+}
+
+fn assert_unchanged(dev: &ImageDev, before: &PathBuf, message: &str) {
+    assert_eq!(
+        fs_ext4_test_support::first_different_offset(&dev.path, before).unwrap(),
+        None,
+        "{message}"
+    );
 }
 
 /// `write_inode_raw` refuses too, and writes nothing (#323).
@@ -187,17 +202,19 @@ fn write_inode_raw_refuses_an_unmaintained_ro_compat_volume() {
             Err(other) => panic!("{name}: wrong refusal {other:?}"),
             Ok(()) => panic!("{name}: write_inode_raw must be refused on this volume"),
         }
-        assert!(
-            snapshot(&dev) == before,
-            "{name}: a refused write_inode_raw changed the device"
+        assert_unchanged(
+            &dev,
+            &before,
+            &format!("{name}: refused write changed the device"),
         );
     }
 }
 
 /// `s_state` straight off the device.
-fn on_disk_state(dev: &MemDev) -> u16 {
-    let b = dev.bytes.lock().unwrap();
-    u16::from_le_bytes([b[SB_AT + 0x3A], b[SB_AT + 0x3B]])
+fn on_disk_state(dev: &ImageDev) -> u16 {
+    let bytes = fs_ext4_test_support::read_file_range(&dev.path, (SB_AT + 0x3A) as u64, 2)
+        .expect("read superblock state");
+    u16::from_le_bytes(bytes.try_into().unwrap())
 }
 
 /// `EXT4_VALID_FS` in `s_state`: the volume reads as cleanly unmounted.
@@ -208,7 +225,7 @@ const VALID_FS: u16 = 0x0001;
 /// volume claiming to have been put away properly.
 #[test]
 fn write_inode_raw_marks_the_volume_not_clean() {
-    let dev = MemDev::arc(std::fs::read(IMAGE).expect("read the fixture"));
+    let dev = ImageDev::open(fs_ext4_test_support::snapshot_file(IMAGE).expect("copy fixture"));
     assert_ne!(on_disk_state(&dev) & VALID_FS, 0, "fixture: clean");
     let fs = Filesystem::mount(dev.clone()).expect("mount");
     let raw = fs.read_inode_raw(2).expect("read the root inode");
@@ -322,9 +339,10 @@ fn every_public_writer_refuses_and_writes_nothing() {
             Err(Error::UnsupportedRoCompat(reported)) => assert_eq!(reported & quota, quota),
             other => panic!("{writer}: expected UnsupportedRoCompat, got {other:?}"),
         }
-        assert!(
-            snapshot(&dev) == before,
-            "{writer}: a refused write changed the device"
+        assert_unchanged(
+            &dev,
+            &before,
+            &format!("{writer}: refused write changed the device"),
         );
     }
 
@@ -334,10 +352,7 @@ fn every_public_writer_refuses_and_writes_nothing() {
     let fs = Filesystem::mount(dev.clone()).expect("mount");
     let before = snapshot(&dev);
     assert_eq!(fs.recover_orphans().expect("declines, not fails"), 0);
-    assert!(
-        snapshot(&dev) == before,
-        "recover_orphans changed the device"
-    );
+    assert_unchanged(&dev, &before, "recover_orphans changed the device");
 }
 
 /// Every `pub fn apply_*` / `pub fn write_*` on `Filesystem` is in

@@ -25,7 +25,6 @@
 use fs_ext4::capi::*;
 use std::ffi::CStr;
 use std::fs;
-use std::io::Write;
 use std::os::raw::{c_char, c_void};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -46,13 +45,9 @@ fn scratch() -> PathBuf {
         "fs_ext4_capi_nonutf8_{}_{n}.img",
         std::process::id()
     ));
-    let mut out = fs::File::create(&dst).unwrap();
-    out.write_all(
-        &fs::read(fs_ext4_test_support::fixture(
-            env!("CARGO_MANIFEST_DIR"),
-            "ext4-basic.img",
-        ))
-        .unwrap(),
+    fs::copy(
+        fs_ext4_test_support::fixture(env!("CARGO_MANIFEST_DIR"), "ext4-basic.img"),
+        &dst,
     )
     .unwrap();
     dst

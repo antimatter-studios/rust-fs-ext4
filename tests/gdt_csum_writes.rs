@@ -174,6 +174,8 @@ fn large_write_and_check(tag: &str, sixty_four: bool, block_size: u32) {
         fs.dev.flush().expect("flush");
     }
     fs_ext4_test_support::assert_e2fsck_clean(&path, &format!("{tag}: after the driver's writes"));
+    let expected = format!("{path}.expected");
+    std::fs::write(&expected, &large).expect("write expected contents");
     let out = oracle("debugfs")
         .args(["-R", "cat /unrelated.txt", &path])
         .output();
@@ -183,24 +185,14 @@ fn large_write_and_check(tag: &str, sixty_four: bool, block_size: u32) {
         "[{tag}] debugfs read back something else: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let out = oracle("debugfs")
-        .args(["-R", "cat /large.bin", &path])
-        .output();
-    assert_eq!(
-        out.stdout.len(),
-        large.len(),
-        "[{tag}] debugfs read {} bytes of /large.bin, not {}: {}",
-        out.stdout.len(),
-        large.len(),
-        String::from_utf8_lossy(&out.stderr)
-    );
-    if let Some(block) = first_differing_block(&out.stdout, &large, block_size) {
-        panic!(
-            "[{tag}] debugfs read back a different /large.bin: block {block} of {} holds {}",
-            large.len() / block_size as usize,
-            describe_block(&out.stdout, block, block_size)
-        );
-    }
+    let dumped = format!("{path}.debugfs");
+    oracle("debugfs")
+        .args(["-R", &format!("dump /large.bin {dumped}"), &path])
+        .judged()
+        .clean("debugfs dump");
+    fs_ext4_test_support::assert_files_equal(&expected, &dumped);
+    let _ = std::fs::remove_file(expected);
+    let _ = std::fs::remove_file(dumped);
     let _ = std::fs::remove_file(&path);
 }
 
@@ -218,23 +210,6 @@ fn block_indexed(len: usize, block_size: u32) -> Vec<u8> {
         }
     }
     data
-}
-
-fn first_differing_block(got: &[u8], want: &[u8], block_size: u32) -> Option<usize> {
-    got.chunks(block_size as usize)
-        .zip(want.chunks(block_size as usize))
-        .position(|(got, want)| got != want)
-}
-
-/// What a block of the read-back holds, in the pattern's own terms.
-fn describe_block(data: &[u8], block: usize, block_size: u32) -> String {
-    let bytes = &data[block * block_size as usize..][..block_size as usize];
-    let first = u32::from_le_bytes(bytes[..4].try_into().unwrap());
-    if first == 0 {
-        "zeros, as if never written".to_string()
-    } else {
-        format!("the pattern of block {}", first - 1)
-    }
 }
 
 #[test]

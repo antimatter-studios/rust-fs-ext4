@@ -401,7 +401,11 @@ tasks:
               echo "siblings: $name has uncommitted changes -- refusing to move it." >&2
               exit 1
             fi
-            git -C "$dir" fetch --quiet origin main "$ref"
+            git -C "$dir" fetch --quiet origin main
+            # A tag fetched by name lands in FETCH_HEAD, not in refs/tags, so
+            # a second run on the same checkout cannot resolve `$ref` by name.
+            git -C "$dir" fetch --quiet origin "$ref"
+            pin="$(git -C "$dir" rev-parse 'FETCH_HEAD^{commit}')"
             # THE PIN IS A FLOOR, NOT A TARGET, AND THE SIBLING STAYS ON A BRANCH.
             #
             # This used to compare HEAD with the pinned ref and check out the ref
@@ -432,7 +436,7 @@ tasks:
             # Anything else is reported for a human, because this is one checkout
             # shared by every crate on the machine and not this task's to hijack.
             current="$(git -C "$dir" rev-parse --abbrev-ref HEAD)"
-            if git -C "$dir" merge-base --is-ancestor "$ref" HEAD; then
+            if git -C "$dir" merge-base --is-ancestor "$pin" HEAD; then
               echo "siblings: $name at or ahead of $ref (on $current)"
             elif [ "$current" = "main" ] && git -C "$dir" merge --ff-only --quiet origin/main 2>/dev/null; then
               echo "siblings: $name fast-forwarded to $(git -C "$dir" rev-parse --short HEAD)"
@@ -828,15 +832,15 @@ tasks:
 
   test:scripts:
     desc: The shell tests (tests/scripts/*.sh), every one by glob
-    # BUDGET: the new staticlib target-dir test measured 52 lines and 2974
-    # bytes in PR #625's full run (Actions run 43135623146).
+    # BUDGET: all script tests, including the whole-image-read guard, measured
+    # 53 lines and 3020 bytes in PR #638's local full script-tier run.
     # By glob, so a test added later needs no edit here -- a guard that
     # has to be registered somewhere else is a guard that gets silently
     # skipped.
     cmds:
       - |
         set -eu
-        bash ../rust-fs-core/scripts/tier.sh test:scripts scripts 52 3000 -- bash -c '
+        bash ../rust-fs-core/scripts/tier.sh test:scripts scripts 53 3020 -- bash -c '
           set -eu
           for t in tests/scripts/*.sh; do
             echo "== $t"
@@ -951,6 +955,7 @@ tasks:
       - bash ../rust-fs-core/scripts/family-check.sh
       - bash ../rust-fs-core/scripts/ci-gate.sh
       - scripts/check-provenance.sh
+      - bash tests/scripts/test-no-whole-image-reads.sh
       - cargo fmt --all --check
       # `--features cli`: the command-line tools' target requires it, and
       # clippy silently leaves out a target whose features are off.

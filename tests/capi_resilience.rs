@@ -11,11 +11,14 @@
 //! sentinel error with `fs_ext4_last_errno() != 0` and a non-empty
 //! `fs_ext4_last_error()`.
 
+use fs_ext4::block_io::{BlockDevice, FileDevice};
 use fs_ext4::capi::*;
 use std::ffi::{CStr, CString};
-use std::fs;
+use std::fs::{self, File, OpenOptions};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::raw::c_void;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 #[track_caller]
 fn good_image() -> String {
@@ -34,15 +37,20 @@ fn last_err() -> String {
 
 /// Make a tmp copy of ext4-basic.img, apply `mutate` to the bytes, write
 /// it back out, and return the tmp path (caller is responsible for drop).
-fn corrupted_copy(label: &str, mutate: impl FnOnce(&mut Vec<u8>)) -> PathBuf {
-    let mut bytes = fs::read(good_image()).expect("read source image");
-    mutate(&mut bytes);
+fn corrupted_copy(label: &str, mutate: impl FnOnce(&mut File, u64)) -> PathBuf {
     let mut p = fs_ext4_test_support::temp_dir().to_path_buf();
     p.push(format!(
         "ext4rs-resilience-{label}-{}.img",
         std::process::id()
     ));
-    fs::write(&p, &bytes).expect("write corrupted image");
+    fs_ext4_test_support::copy_file_sparse(good_image(), &p).expect("copy source image");
+    let mut file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&p)
+        .expect("open corrupted image");
+    let length = file.metadata().expect("image metadata").len();
+    mutate(&mut file, length);
     p
 }
 
@@ -125,9 +133,9 @@ fn known_good_image_baseline() {
 fn trashed_superblock_magic_rejected_cleanly() {
     // Superblock starts at byte offset 1024; magic is 2 bytes at offset
     // 56 within the superblock (s_magic = 0xEF53). Flip it to 0xDEAD.
-    let p = corrupted_copy("bad-magic", |b| {
-        b[1024 + 56] = 0xAD;
-        b[1024 + 57] = 0xDE;
+    let p = corrupted_copy("bad-magic", |file, _| {
+        file.seek(SeekFrom::Start(1024 + 56)).unwrap();
+        file.write_all(&[0xAD, 0xDE]).unwrap();
     });
     hammer_all_entry_points(p.to_str().unwrap());
     let _ = fs::remove_file(&p);
@@ -136,8 +144,8 @@ fn trashed_superblock_magic_rejected_cleanly() {
 #[test]
 fn truncated_image_rejected_cleanly() {
     // Truncate to something smaller than the superblock offset (1024).
-    let p = corrupted_copy("truncated", |b| {
-        b.truncate(512);
+    let p = corrupted_copy("truncated", |file, _| {
+        file.set_len(512).unwrap();
     });
     hammer_all_entry_points(p.to_str().unwrap());
     let _ = fs::remove_file(&p);
@@ -145,8 +153,9 @@ fn truncated_image_rejected_cleanly() {
 
 #[test]
 fn zeroed_superblock_rejected_cleanly() {
-    let p = corrupted_copy("zero-sb", |b| {
-        b[1024..2048].fill(0);
+    let p = corrupted_copy("zero-sb", |file, _| {
+        file.seek(SeekFrom::Start(1024)).unwrap();
+        file.write_all(&[0; 1024]).unwrap();
     });
     hammer_all_entry_points(p.to_str().unwrap());
     let _ = fs::remove_file(&p);
@@ -156,8 +165,9 @@ fn zeroed_superblock_rejected_cleanly() {
 fn trashed_bgd_area_handled_cleanly() {
     // Block group descriptor table follows the superblock, starting at
     // block 1 (offset 4096 for 4KB blocks). Poison 512 bytes of it.
-    let p = corrupted_copy("bad-bgd", |b| {
-        b[4096..4608].fill(0xAA);
+    let p = corrupted_copy("bad-bgd", |file, _| {
+        file.seek(SeekFrom::Start(4096)).unwrap();
+        file.write_all(&[0xAA; 512]).unwrap();
     });
     hammer_all_entry_points(p.to_str().unwrap());
     let _ = fs::remove_file(&p);
@@ -168,10 +178,11 @@ fn trashed_inode_table_handled_cleanly() {
     // The root inode (inode #2) lives at a computed offset in the inode
     // table. Rather than compute it exactly, trash a wider range likely
     // to hit it — around block ~36 for this mkfs layout.
-    let p = corrupted_copy("bad-inode", |b| {
+    let p = corrupted_copy("bad-inode", |file, length| {
         let start = 36 * 4096;
-        if start + 4096 < b.len() {
-            b[start..start + 4096].fill(0xEE);
+        if start + 4096 < length as usize {
+            file.seek(SeekFrom::Start(start as u64)).unwrap();
+            file.write_all(&[0xEE; 4096]).unwrap();
         }
     });
     hammer_all_entry_points(p.to_str().unwrap());
@@ -182,16 +193,20 @@ fn trashed_inode_table_handled_cleanly() {
 fn random_bit_flips_in_data_area_handled_cleanly() {
     // Scatter flips deep in the image (past metadata). Using a fixed seed
     // so the test is deterministic.
-    let p = corrupted_copy("scattered", |b| {
+    let p = corrupted_copy("scattered", |file, length| {
         let mut seed: u32 = 0x9E37_79B9;
         for _ in 0..256 {
             // xorshift32
             seed ^= seed << 13;
             seed ^= seed >> 17;
             seed ^= seed << 5;
-            let idx = (seed as usize) % b.len();
+            let idx = u64::from(seed) % length;
             if idx > 8192 {
-                b[idx] ^= 0xFF;
+                file.seek(SeekFrom::Start(idx)).unwrap();
+                let mut byte = [0];
+                file.read_exact(&mut byte).unwrap();
+                file.seek(SeekFrom::Start(idx)).unwrap();
+                file.write_all(&[byte[0] ^ 0xFF]).unwrap();
             }
         }
     });
@@ -201,9 +216,14 @@ fn random_bit_flips_in_data_area_handled_cleanly() {
 
 #[test]
 fn fully_zeroed_image_rejected_cleanly() {
-    let p = corrupted_copy("all-zero", |b| {
-        for byte in b.iter_mut() {
-            *byte = 0;
+    let p = corrupted_copy("all-zero", |file, length| {
+        let zeros = [0; 1024 * 1024];
+        let mut offset = 0;
+        while offset < length {
+            let count = (length - offset).min(zeros.len() as u64) as usize;
+            file.seek(SeekFrom::Start(offset)).unwrap();
+            file.write_all(&zeros[..count]).unwrap();
+            offset += count as u64;
         }
     });
     hammer_all_entry_points(p.to_str().unwrap());
@@ -214,9 +234,9 @@ fn fully_zeroed_image_rejected_cleanly() {
 // Callback-based mount path (what FSKit actually uses in production)
 // ---------------------------------------------------------------------------
 
-/// A read callback that serves bytes from a Vec pointed to by `ctx`.
+/// A read callback that serves bytes from the file device pointed to by `ctx`.
 /// Matches the `fs_ext4_read_fn` signature.
-extern "C" fn read_from_vec(
+extern "C" fn read_from_file(
     ctx: *mut c_void,
     buf: *mut c_void,
     offset: u64,
@@ -225,26 +245,19 @@ extern "C" fn read_from_vec(
     if ctx.is_null() || buf.is_null() {
         return 1;
     }
-    let bytes = unsafe { &*(ctx as *const Vec<u8>) };
-    let end = (offset as usize).checked_add(length as usize);
-    if end.is_none_or(|e| e > bytes.len()) {
+    let device = unsafe { &*(ctx as *const FileDevice) };
+    let Ok(length) = usize::try_from(length) else {
         return 2;
-    }
-    unsafe {
-        std::ptr::copy_nonoverlapping(
-            bytes.as_ptr().add(offset as usize),
-            buf as *mut u8,
-            length as usize,
-        );
-    }
-    0
+    };
+    let bytes = unsafe { std::slice::from_raw_parts_mut(buf as *mut u8, length) };
+    device.read_at(offset, bytes).map_or(2, |_| 0)
 }
 
-fn mount_callback(bytes: &Vec<u8>) -> *mut fs_ext4_fs_t {
+fn mount_callback(device: &Arc<FileDevice>) -> *mut fs_ext4_fs_t {
     let cfg = fs_ext4_blockdev_cfg_t {
-        read: Some(read_from_vec),
-        context: bytes as *const Vec<u8> as *mut c_void,
-        size_bytes: bytes.len() as u64,
+        read: Some(read_from_file),
+        context: Arc::as_ptr(device) as *mut c_void,
+        size_bytes: device.size_bytes(),
         block_size: 512,
         write: None,
         flush: None,
@@ -254,8 +267,9 @@ fn mount_callback(bytes: &Vec<u8>) -> *mut fs_ext4_fs_t {
 
 #[test]
 fn callback_mount_succeeds_on_good_image() {
-    let bytes = fs::read(good_image()).unwrap();
-    let fs = mount_callback(&bytes);
+    let path = good_image();
+    let device = Arc::new(FileDevice::open(&path).unwrap());
+    let fs = mount_callback(&device);
     assert!(!fs.is_null(), "callback mount failed: {}", last_err());
     assert_eq!(fs_ext4_last_errno(), 0);
     unsafe { fs_ext4_umount(fs) };
@@ -263,11 +277,12 @@ fn callback_mount_succeeds_on_good_image() {
 
 #[test]
 fn callback_mount_rejects_corrupted_bytes_cleanly() {
-    let mut bytes = fs::read(good_image()).unwrap();
-    // Kill the superblock magic (offset 1024 + 56).
-    bytes[1024 + 56] = 0;
-    bytes[1024 + 57] = 0;
-    let fs = mount_callback(&bytes);
+    let path = corrupted_copy("callback-bad-magic", |file, _| {
+        file.seek(SeekFrom::Start(1024 + 56)).unwrap();
+        file.write_all(&[0, 0]).unwrap();
+    });
+    let device = Arc::new(FileDevice::open(path.to_str().unwrap()).unwrap());
+    let fs = mount_callback(&device);
     assert!(fs.is_null(), "corrupted callback mount must fail");
     assert_ne!(fs_ext4_last_errno(), 0);
     assert!(!last_err().is_empty());

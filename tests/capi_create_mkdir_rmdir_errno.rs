@@ -15,7 +15,6 @@
 use fs_ext4::capi::*;
 use std::ffi::{CStr, CString};
 use std::fs;
-use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -28,8 +27,7 @@ fn scratch(label: &str) -> PathBuf {
         "fs_ext4_cmr_errno_{label}_{}_{n}.img",
         std::process::id()
     ));
-    let mut out = fs::File::create(&dst).unwrap();
-    out.write_all(&fs::read(SRC).unwrap()).unwrap();
+    fs::copy(SRC, &dst).unwrap();
     dst
 }
 

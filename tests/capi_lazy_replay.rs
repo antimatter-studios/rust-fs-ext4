@@ -12,14 +12,16 @@
 
 use fs_ext4::capi::*;
 use std::ffi::CString;
-use std::fs;
+use std::fs::{File, OpenOptions};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::raw::{c_int, c_void};
 use std::sync::{Arc, Mutex};
 
 const IMAGE: &str = "ext4-basic.img";
 
 struct DevCtx {
-    bytes: Mutex<Vec<u8>>,
+    file: Mutex<File>,
+    size: u64,
     writes: Mutex<u64>,
     flushes: Mutex<u64>,
 }
@@ -29,18 +31,19 @@ extern "C" fn read_cb(ctx: *mut c_void, buf: *mut c_void, offset: u64, length: u
         return 1;
     }
     let dev = unsafe { &*(ctx as *const DevCtx) };
-    let bytes = dev.bytes.lock().unwrap();
-    let end = (offset as usize).checked_add(length as usize);
-    let Some(end) = end else { return 2 };
-    if end > bytes.len() {
+    if offset.checked_add(length).is_none_or(|end| end > dev.size) {
         return 3;
     }
-    unsafe {
-        std::ptr::copy_nonoverlapping(
-            bytes.as_ptr().add(offset as usize),
-            buf as *mut u8,
-            length as usize,
-        );
+    let Ok(length) = usize::try_from(length) else {
+        return 2;
+    };
+    let mut file = dev.file.lock().unwrap();
+    if file.seek(SeekFrom::Start(offset)).is_err() {
+        return 4;
+    }
+    let bytes = unsafe { std::slice::from_raw_parts_mut(buf as *mut u8, length) };
+    if file.read_exact(bytes).is_err() {
+        return 4;
     }
     0
 }
@@ -50,18 +53,19 @@ extern "C" fn write_cb(ctx: *mut c_void, buf: *const c_void, offset: u64, length
         return 1;
     }
     let dev = unsafe { &*(ctx as *const DevCtx) };
-    let mut bytes = dev.bytes.lock().unwrap();
-    let end = (offset as usize).checked_add(length as usize);
-    let Some(end) = end else { return 2 };
-    if end > bytes.len() {
+    if offset.checked_add(length).is_none_or(|end| end > dev.size) {
         return 3;
     }
-    unsafe {
-        std::ptr::copy_nonoverlapping(
-            buf as *const u8,
-            bytes.as_mut_ptr().add(offset as usize),
-            length as usize,
-        );
+    let Ok(length) = usize::try_from(length) else {
+        return 2;
+    };
+    let mut file = dev.file.lock().unwrap();
+    if file.seek(SeekFrom::Start(offset)).is_err() {
+        return 4;
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(buf as *const u8, length) };
+    if file.write_all(bytes).is_err() {
+        return 4;
     }
     *dev.writes.lock().unwrap() += 1;
     0
@@ -72,26 +76,36 @@ extern "C" fn flush_cb(ctx: *mut c_void) -> c_int {
         return 1;
     }
     let dev = unsafe { &*(ctx as *const DevCtx) };
+    if dev.file.lock().unwrap().flush().is_err() {
+        return 2;
+    }
     *dev.flushes.lock().unwrap() += 1;
     0
 }
 
 fn fresh_dev() -> Arc<DevCtx> {
     let path = fs_ext4_test_support::fixture(env!("CARGO_MANIFEST_DIR"), IMAGE);
-    let bytes = fs::read(&path).unwrap_or_else(|e| panic!("read fixture image {path}: {e}"));
+    let scratch = fs_ext4_test_support::snapshot_file(&path)
+        .unwrap_or_else(|e| panic!("copy fixture image {path}: {e}"));
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&scratch)
+        .unwrap_or_else(|e| panic!("open scratch image {}: {e}", scratch.display()));
+    let size = file.metadata().expect("scratch image metadata").len();
     Arc::new(DevCtx {
-        bytes: Mutex::new(bytes),
+        file: Mutex::new(file),
+        size,
         writes: Mutex::new(0),
         flushes: Mutex::new(0),
     })
 }
 
 fn make_cfg(dev: &Arc<DevCtx>, with_write: bool, with_flush: bool) -> fs_ext4_blockdev_cfg_t {
-    let size = dev.bytes.lock().unwrap().len() as u64;
     fs_ext4_blockdev_cfg_t {
         read: Some(read_cb),
         context: Arc::as_ptr(dev) as *mut c_void,
-        size_bytes: size,
+        size_bytes: dev.size,
         block_size: 512,
         write: if with_write { Some(write_cb) } else { None },
         flush: if with_flush { Some(flush_cb) } else { None },

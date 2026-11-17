@@ -44,7 +44,7 @@ fn a_fresh_image_is_clean_and_status_0() {
 fn a_wrong_group_free_count_is_found_then_repaired_then_clean() {
     let img = fresh("drift");
     corrupt_group_free_blocks(&img, 7);
-    let before = std::fs::read(&img).unwrap();
+    let before = fs_ext4_test_support::snapshot_file(&img).unwrap();
 
     let (code, json) = fsck(&["-n", &img]);
     assert_eq!(code, Some(4), "{json}");
@@ -53,7 +53,12 @@ fn a_wrong_group_free_count_is_found_then_repaired_then_clean() {
         json.contains("\"kind\": \"group_free_count_drift\""),
         "{json}"
     );
-    assert_eq!(std::fs::read(&img).unwrap(), before, "-n changed the image");
+    assert!(
+        fs_ext4_test_support::first_different_offset(&img, &before)
+            .unwrap()
+            .is_none(),
+        "-n changed the image"
+    );
 
     let (code, json) = fsck(&["-y", &img]);
     assert_eq!(code, Some(1), "{json}");
@@ -109,8 +114,12 @@ fn an_image_that_cannot_be_opened_is_status_8() {
     assert!(stderr(&out).contains("\"code\": 8"), "{}", stderr(&out));
 
     let img = fresh("truncated");
-    let bytes = std::fs::read(&img).unwrap();
-    std::fs::write(&img, &bytes[..2048]).unwrap();
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&img)
+        .unwrap()
+        .set_len(2048)
+        .unwrap();
     let out = tool("fsck.ext4").arg(&img).output().unwrap();
     assert_eq!(out.status.code(), Some(8), "{}", stderr(&out));
     assert!(out.stdout.is_empty());

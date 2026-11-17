@@ -57,9 +57,7 @@ fn journal_block(image: &str, n: u32) -> u64 {
 }
 
 fn read_at(image: &str, block: u64) -> Vec<u8> {
-    let bytes = std::fs::read(image).unwrap();
-    let at = (block * BS) as usize;
-    bytes[at..at + BS as usize].to_vec()
+    fs_ext4_test_support::read_file_range(image, block * BS, BS as usize).unwrap()
 }
 
 fn payload() -> Vec<u8> {
@@ -196,8 +194,8 @@ fn checksum_declarations_are_accepted_and_refused_as_the_kernel_and_e2fsck_do() 
         let image = volume(&tag, 16, "metadata_csum");
         let at = journal_block(&image, 0) * BS;
 
-        let mut bytes = std::fs::read(&image).unwrap();
-        let sb = &mut bytes[at as usize..at as usize + 1024];
+        let mut bytes = fs_ext4_test_support::read_file_range(&image, at, 1024).unwrap();
+        let sb = &mut bytes[..];
         sb[0x24..0x28].copy_from_slice(&compat.to_be_bytes());
         sb[0x28..0x2C].copy_from_slice(&incompat.to_be_bytes());
         sb[0x50] = kind;
@@ -205,7 +203,16 @@ fn checksum_declarations_are_accepted_and_refused_as_the_kernel_and_e2fsck_do() 
         let csum = fs_ext4::checksum::linux_crc32c(!0, sb);
         sb[0xFC..0x100].copy_from_slice(&csum.to_be_bytes());
         let jsb = JournalSuperblock::parse(sb).unwrap();
-        std::fs::write(&image, &bytes).unwrap();
+        {
+            use std::io::{Seek, SeekFrom, Write};
+
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .open(&image)
+                .unwrap();
+            file.seek(SeekFrom::Start(at)).unwrap();
+            file.write_all(&bytes).unwrap();
+        }
 
         assert_eq!(
             jsb.checksum_declaration_error().is_none(),
