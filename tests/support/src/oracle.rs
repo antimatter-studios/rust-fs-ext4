@@ -137,9 +137,9 @@ const MAX_SCRIPT_BYTES: usize = 32 * 4096;
 /// already running, which is the normal case: `chore test:oracle` brings
 /// it up for the whole tier. A test process that finds it down boots it
 /// rather than failing — a suite run by hand still works. Run through
-/// `scripts/test.sh` (every tier is), the run is a harness session, so
-/// the VM it booted comes down and the machine-wide slot is released when
-/// it ends; a bare `cargo test` leaves that to the chore reaper.
+/// `scripts/test.sh` (every tier is), the run is a harness session on the
+/// shared guest, which ends with it and leaves the guest up; a bare
+/// `cargo test` is on the guest only for each single call.
 pub(crate) fn session() {
     static SESSION: OnceLock<()> = OnceLock::new();
     SESSION.get_or_init(|| {

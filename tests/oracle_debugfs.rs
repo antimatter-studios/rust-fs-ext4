@@ -181,8 +181,11 @@ fn e2fsck_clean(image: &Path) {
 
 /// Dump `path` out of the image with debugfs and return its bytes.
 fn debugfs_dump(image: &Path, path: &str, scratch: &Scratch) -> Vec<u8> {
-    let out = scratch.path("dumped.bin");
-    let _ = std::fs::remove_file(&out);
+    static DUMP_N: AtomicU32 = AtomicU32::new(0);
+    let out = scratch.path(&format!(
+        "dump-{}.bin",
+        DUMP_N.fetch_add(1, Ordering::Relaxed)
+    ));
     debugfs(image, &format!("dump {path} {}", out.display()));
     std::fs::read(&out).unwrap_or_else(|e| panic!("debugfs dump {path} wrote nothing: {e}"))
 }

@@ -57,7 +57,7 @@ fn journal_sequence(fs: &Filesystem) -> u32 {
 }
 
 fn dump(image: &str, path: &str) -> Vec<u8> {
-    let dumped = format!("{image}.dump");
+    let dumped = format!("{image}.{}.dump", path.trim_matches('/').replace('/', "_"));
     let _ = std::fs::remove_file(&dumped);
     fs_ext4_test_support::oracle("debugfs")
         .args(["-R", &format!("dump {path} {dumped}"), image])

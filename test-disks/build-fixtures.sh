@@ -15,8 +15,8 @@
 # guest, writes finished images into the shared directory, and this
 # script moves them into test-disks/ on the host.
 #
-# The VM comes down when this script exits (FLTH_KEEP_VM=1 keeps it up
-# for a quicker next run).
+# The run on the shared guest ends when this script exits; the guest stays
+# up for the next run.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"

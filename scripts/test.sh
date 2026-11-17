@@ -61,7 +61,7 @@ gone_within() {
 # this shell, and is lost.
 #
 # THE LIMIT ON THE COMMAND IS LONG BECAUSE IT COVERS A SESSION'S TEARDOWN: killing
-# a session halfway through that leaves the VM up and the machine-wide slot taken,
+# a session halfway through that leaves its run on the shared guest unfinished,
 # so only a process that is stuck should ever reach it. The harness ends what a
 # session's command started within five seconds, and what is left in this group
 # gets the same: TERM whichever signal began this, because a job a shell script
@@ -103,18 +103,16 @@ if [[ "${1:-}" == "--print-temp-dir" ]]; then
     exit 0
 fi
 
-# THE RUN OWNS THE VM ITS TESTS BOOT. An oracle or kernel test brings the
-# harness VM up from inside its own process, and that boot takes the
-# machine-wide slot, ONE for every repository on the machine. Left to
-# chore's `after_all` reaper, which runs only inside a chore invocation of
-# this repository, a run that reached cargo any other way (this script by
-# hand, ../rust-fs-core/scripts/tier.sh) exited with the VM idle and the slot held, and
-# every other repository's VM work queued behind it until the guest's idle
-# deadline. `vm.sh session` runs cargo inside a harness session: the VM
-# comes down and the slot is released when the run ends, passed, failed or
-# killed, and a VM held with `chore vm:up` is left up. In the guest, and on
-# a host that cannot run the VM, it runs cargo as it is. Without the
-# harness sibling no test can boot a VM, so there is none to own.
+# THE RUN IS A SESSION ON THE SHARED GUEST. An oracle or kernel test brings the
+# harness guest up from inside its own process; every repository on the machine
+# uses that one guest. A run that reached cargo outside a session (this script
+# by hand, ../rust-fs-core/scripts/tier.sh) is on the guest only for each
+# single call, so the guest can be stopped between two of them. `vm.sh
+# session` runs cargo inside a harness session: the run is one session, ended
+# when the command ends, passed, failed or killed, and the guest stays up for
+# the next run. In the guest, and on a host that cannot run the VM, it runs
+# cargo as it is. Without the harness sibling no test can boot a VM, so there
+# is no session to own.
 session=()
 HARNESS_VM="$REPO/../fs-linux-test-harness/scripts/vm.sh"
 [[ -x "$HARNESS_VM" ]] && session=("$HARNESS_VM" session)
