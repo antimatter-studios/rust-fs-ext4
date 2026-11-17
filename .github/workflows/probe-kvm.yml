@@ -1,0 +1,30 @@
+name: probe-kvm
+on:
+  push:
+    branches: [ci/probe-arm-kvm]
+permissions:
+  contents: read
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04-arm, ubuntu-24.04]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - name: Does this runner have KVM?
+        run: |
+          set +e
+          echo "runner=${{ matrix.runner }} arch=$(uname -m) environment=${{ runner.environment }}"
+          echo "--- /dev/kvm"; ls -l /dev/kvm; echo "exists-as-char-device: $([ -c /dev/kvm ] && echo yes || echo no)"
+          echo "--- cpu"; lscpu | grep -E 'Model name|Architecture|CPU\(s\)|Hypervisor|Virtualization'
+          echo "--- kernel modules"; ls /sys/module | grep -i kvm; lsmod 2>/dev/null | grep -i kvm
+          echo "--- dmesg"; sudo dmesg 2>/dev/null | grep -i -E 'kvm|hyp' | head
+          echo "--- try qemu with kvm"
+          sudo apt-get update -qq && sudo apt-get install -y -qq qemu-system-arm qemu-system-x86 >/dev/null
+          if [ "$(uname -m)" = aarch64 ]; then
+            timeout 20 qemu-system-aarch64 -M virt -accel kvm -cpu host -display none -S -monitor none -serial none 2>&1 | head -5; echo "qemu exit=${PIPESTATUS[0]}"
+          else
+            timeout 20 qemu-system-x86_64 -M q35 -accel kvm -cpu host -display none -S -monitor none -serial none 2>&1 | head -5; echo "qemu exit=${PIPESTATUS[0]}"
+          fi
