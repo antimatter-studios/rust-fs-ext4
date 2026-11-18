@@ -44,10 +44,9 @@ class HostBuildContract(unittest.TestCase):
                         driver.index('"${command_args[@]}" >"$state/qemu.log"'))
         build = (ROOT / "scripts/ci-qemu-build.sh").read_text()
         self.assertIn("--target", build)
-        self.assertIn("--memory=3g", build)
-        self.assertIn('cpus="${BENCH_CPUS:-2}"', build)
-        self.assertIn('cpus="${BENCH_CPUS:-$(nproc)}"', build)
-        self.assertIn('= github-hosted', build)
+        self.assertNotIn("--memory", build)
+        self.assertNotIn("--cpus", build)
+        self.assertNotIn("BENCH_CPUS", build)
         self.assertIn("debian:12-slim@sha256:", build)
         self.assertIn('test "$(uname -m)" = "$BUILD_HOST_ARCH"', build)
 
@@ -308,7 +307,7 @@ class CacheCommandTests(unittest.TestCase):
                               'else printf "%s\\n" "$@" >"$DOCKER_CALL"; fi\n')
             docker.chmod(0o755)
             base = {key: value for key, value in os.environ.items()
-                    if key not in ("BENCH_RUNNER_ENVIRONMENT", "BENCH_CPUS")}
+                    if key != "BENCH_RUNNER_ENVIRONMENT"}
             environment = dict(base, PATH=str(tools) + os.pathsep + os.environ["PATH"],
                                DOCKER_CALL=str(root / "docker-call"),
                                BENCH_RUNNER_IMAGE="sha256:" + "a" * 64)
@@ -318,22 +317,13 @@ class CacheCommandTests(unittest.TestCase):
                                env=dict(environment, **extra), check=True)
                 return (root / "docker-call").read_text().splitlines()
 
-            # A shared runner (the VPS pods) stays capped.
-            arguments = build_arguments(BENCH_RUNNER_ENVIRONMENT="self-hosted")
-            self.assertEqual(arguments[arguments.index("--platform") + 1], "linux/amd64")
-            self.assertIn("--memory=3g", arguments)
-            self.assertIn("--cpus=2", arguments)
-            self.assertIn("BUILD_HOST_ARCH=x86_64", arguments)
-            # No runner information at all is treated as shared, not as a whole machine.
-            self.assertIn("--cpus=2", build_arguments())
-            # A GitHub-hosted runner exists for this one job: every CPU, no memory cap.
-            arguments = build_arguments(BENCH_RUNNER_ENVIRONMENT="github-hosted")
-            self.assertEqual(arguments[arguments.index("--platform") + 1], "linux/amd64")
-            self.assertIn(f"--cpus={os.cpu_count()}", arguments)
-            self.assertNotIn("--memory=3g", arguments)
-            self.assertIn(f"BENCH_CPUS={os.cpu_count()}", arguments)
-            # An explicit value wins on either kind of runner.
-            self.assertIn("--cpus=3", build_arguments(BENCH_RUNNER_ENVIRONMENT="github-hosted", BENCH_CPUS="3"))
+            # The build container is never limited by this script, on any runner.
+            for runner in ("self-hosted", "github-hosted", ""):
+                arguments = build_arguments(BENCH_RUNNER_ENVIRONMENT=runner)
+                self.assertEqual(arguments[arguments.index("--platform") + 1], "linux/amd64")
+                self.assertIn("BUILD_HOST_ARCH=x86_64", arguments)
+                self.assertFalse([argument for argument in arguments
+                                  if argument.startswith(("--cpus", "--memory"))])
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

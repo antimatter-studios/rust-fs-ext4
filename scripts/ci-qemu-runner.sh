@@ -25,19 +25,11 @@ for name in GH_TOKEN GITHUB_ACTOR GITHUB_REPOSITORY GITHUB_RUN_ID GITHUB_RUN_ATT
     BENCH_SELECTED_RUNNER BENCH_RUNNER_ENVIRONMENT BENCH_RUNNER_NAME QEMU_TCG_CPU QEMU_TCG_ACCEL; do
     if [ -n "${!name:-}" ]; then environment+=(-e "$name"); fi
 done
-# A GitHub-hosted runner is a whole VM that exists for this job, so the job
-# may use all of it. Every other runner (the antimatter-vps pods) shares its
-# node with other jobs and stays capped. BENCH_CPUS / BENCH_MEMORY override.
-if [ "${BENCH_RUNNER_ENVIRONMENT:-}" = github-hosted ]; then
-    cpus="${BENCH_CPUS:-$(nproc)}"
-    memory_args=()
-    [ -z "${BENCH_MEMORY:-}" ] || memory_args=(--memory="$BENCH_MEMORY")
-else
-    cpus="${BENCH_CPUS:-2}"
-    memory_args=(--memory="${BENCH_MEMORY:-4g}")
-fi
-docker run --rm --cpus="$cpus" "${memory_args[@]+"${memory_args[@]}"}" "${device[@]+"${device[@]}"}" \
-    "${environment[@]+"${environment[@]}"}" -e "BENCH_RUNNER_IMAGE=$image" -e "BENCH_CPUS=$cpus" \
+# The runner container gets no CPU or memory limit from this script. The
+# platform sets what the runner may use (GitHub for hosted runners, the cluster
+# for antimatter-vps pods). The guest VM is what this script limits.
+docker run --rm "${device[@]+"${device[@]}"}" \
+    "${environment[@]+"${environment[@]}"}" -e "BENCH_RUNNER_IMAGE=$image" \
     -e "EVIDENCE_OWNER=$(id -u):$(id -g)" \
     -v "$repo:/repo" -v "$repo/../rust-fs-core:/rust-fs-core:ro" \
     -w /repo "$image" bash -c '

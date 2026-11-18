@@ -9,7 +9,7 @@ if [ "${1:-}" = container ]; then
     mkdir -p "$evidence"
     test "$(uname -m)" = "$BUILD_HOST_ARCH"
     cd /repo
-    export DEBIAN_FRONTEND=noninteractive CARGO_BUILD_JOBS="${BENCH_CPUS:-2}"
+    export DEBIAN_FRONTEND=noninteractive
     export RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo CARGO_TARGET_DIR=/benchmark-target
     export PATH="$CARGO_HOME/bin:$PATH" FS_CORE_CALLER=/repo
     test -f /opt/ext4-runner.json
@@ -56,14 +56,9 @@ case "$base" in debian:12-slim@sha256:*) ;; *) echo 'compiler image must pin the
 builder="${BENCH_RUNNER_IMAGE:-$(bash "$repo/scripts/ci-qemu-environment.sh" resolve "$host_arch")}"
 [[ "$builder" =~ (^sha256:|@sha256:)[0-9a-f]{64}$ ]] || { echo 'prepared builder must use an immutable image digest' >&2; exit 1; }
 printf '%s\n' "$builder" >"$state/builder-image.txt"
-if [ "${BENCH_RUNNER_ENVIRONMENT:-}" = github-hosted ]; then
-    cpus="${BENCH_CPUS:-$(nproc)}"
-    memory_args=()
-else
-    cpus="${BENCH_CPUS:-2}"
-    memory_args=(--memory=3g)
-fi
-docker run --rm --cpus="$cpus" "${memory_args[@]+"${memory_args[@]}"}" --platform "linux/$platform" \
-    -e "BUILD_HOST_ARCH=$host_arch" -e "BENCH_CPUS=$cpus" \
+# No CPU or memory limit on the build container: the platform sets what the
+# runner may use. Cargo sizes its jobs from the CPUs it can see.
+docker run --rm --platform "linux/$platform" \
+    -e "BUILD_HOST_ARCH=$host_arch" \
     -v "$repo:/repo:ro" -v "$repo/../rust-fs-core:/rust-fs-core:ro" -v "$state:/evidence" \
     "$builder" bash /repo/scripts/ci-qemu-build.sh container "$arch" "$workload"

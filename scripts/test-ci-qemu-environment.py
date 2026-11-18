@@ -157,8 +157,7 @@ elif arguments[0] == 'run':
         self.assertFalse(any(call[0] == "build" for call in self.calls()))
 
     def run_command(self, **overrides):
-        limits = {"BENCH_CPUS": "", "BENCH_MEMORY": "", **overrides}
-        result = self.execute("ci-qemu-runner.sh", "run", "aarch64", "tcg", "single", RUN_STATUS="17", **limits)
+        result = self.execute("ci-qemu-runner.sh", "run", "aarch64", "tcg", "single", RUN_STATUS="17", **overrides)
         self.assertEqual(result.returncode, 17, result.stderr)
         return [call for call in self.calls() if call[0] == "run"][-1]
 
@@ -171,22 +170,11 @@ elif arguments[0] == 'run':
         self.assertIn("GH_TOKEN", command)
         self.assertIn("ghcr.io/example/repo/qemu-pilot@sha256:" + DIGEST, command)
 
-    def test_a_shared_runner_is_capped(self):
-        for environment in ("self-hosted", ""):
+    def test_the_runner_container_is_never_limited_by_this_script(self):
+        for environment in ("self-hosted", "github-hosted", ""):
             command = self.run_command(BENCH_RUNNER_ENVIRONMENT=environment)
-            self.assertIn("--memory=4g", command)
-            self.assertIn("--cpus=2", command)
-
-    def test_a_github_hosted_runner_uses_the_whole_machine(self):
-        command = self.run_command(BENCH_RUNNER_ENVIRONMENT="github-hosted")
-        self.assertIn(f"--cpus={os.cpu_count()}", command)
-        self.assertFalse([argument for argument in command if argument.startswith("--memory")])
-
-    def test_an_explicit_limit_wins_on_either_kind_of_runner(self):
-        for environment in ("self-hosted", "github-hosted"):
-            command = self.run_command(BENCH_RUNNER_ENVIRONMENT=environment, BENCH_CPUS="3", BENCH_MEMORY="6g")
-            self.assertIn("--cpus=3", command)
-            self.assertIn("--memory=6g", command)
+            self.assertFalse([argument for argument in command
+                              if argument.startswith(("--cpus", "--memory"))])
 
     def test_local_cache_roundtrip_needs_no_registry_or_credentials(self):
         source, target = self.root / "source", self.root / "target"
