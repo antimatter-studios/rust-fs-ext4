@@ -13,6 +13,18 @@ use fs_ext4::fs::Filesystem;
 use std::{io::Write, sync::Arc};
 
 const SIZE: u64 = 32 << 20;
+
+/// The image still holds exactly `pattern`: same length and same bytes, compared in bounded chunks.
+fn assert_image_unchanged(img: &str, pattern: &[u8], context: &str) {
+    let length = std::fs::metadata(img).unwrap().len();
+    assert_eq!(length, pattern.len() as u64, "{context}");
+    assert_eq!(
+        fs_ext4_test_support::first_different_offset_from_bytes(pattern, img).unwrap(),
+        None,
+        "{context}"
+    );
+}
+
 const UUID: &str = "deadbeef-cafe-1234-5678-0123456789ab";
 
 fn mount(path: &str) -> Filesystem {
@@ -216,7 +228,7 @@ fn a_bad_inode_count_is_a_usage_error_before_the_device_is_opened() {
             "{bad}: {}",
             stderr(&out)
         );
-        assert_eq!(std::fs::read(&img).unwrap(), pattern, "{bad}");
+        assert_image_unchanged(&img, &pattern, "{bad}");
     }
 }
 
@@ -231,7 +243,7 @@ fn an_inode_count_the_layout_cannot_hold_is_refused_and_writes_nothing() {
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
-    assert_eq!(std::fs::read(&img).unwrap(), pattern);
+    assert_image_unchanged(&img, &pattern, "");
 }
 
 /// `-i` / `--bytes-per-inode` sets the ratio, as for mke2fs: 32 MiB at one
@@ -268,6 +280,6 @@ fn a_bad_bytes_per_inode_is_a_usage_error_before_the_device_is_opened() {
             "{bad}: {}",
             stderr(&out)
         );
-        assert_eq!(std::fs::read(&img).unwrap(), pattern, "{bad}");
+        assert_image_unchanged(&img, &pattern, bad);
     }
 }
