@@ -269,9 +269,31 @@ jobs:
           key: ${{ runner.os }}-unit-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-unit-cargo-
       - name: No fixtures are present
+        # A self-hosted runner (the runner gate hands unit one) is not a fresh
+        # machine: its workspace and caches outlive the job before this one.
+        # Measured on merge-group run 44795173191, where checkout had emptied
+        # the workspace and test-disks/ still held images by this step, on
+        # antimatter-vps-linux-x64-runner-fflsv. Images are gitignored
+        # (test-disks/*.img) and are never part of this job's inputs, so any
+        # found here came from the runner, not from the commit. Report what is
+        # there (so the next occurrence names its source), remove it, and let
+        # the check below stay the proof that nothing is left. A symlinked or
+        # mounted test-disks/ is shared with something else: never delete
+        # through it, fail as before.
         run: |
           set -euo pipefail
-          if ls test-disks/*.img >/dev/null 2>&1; then
+          shopt -s nullglob
+          stale=(test-disks/*.img)
+          shared=false
+          if [ -L test-disks ]; then shared=true; fi
+          if command -v mountpoint >/dev/null && mountpoint -q test-disks; then shared=true; fi
+          if [ "${#stale[@]}" -gt 0 ] && ! $shared; then
+            echo "::warning::test-disks/ held ${#stale[@]} image(s) this job did not make; removing them"
+            ls -l -- "${stale[@]}" || true
+            rm -f -- "${stale[@]}"
+          fi
+          left=(test-disks/*.img)
+          if [ "${#left[@]}" -gt 0 ]; then
             echo "::error::test-disks/ has images; this job must prove the unit tier needs none"
             exit 1
           fi
