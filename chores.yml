@@ -447,30 +447,17 @@ tasks:
             fi
           done
 
-          # CARGO IS TOLD ABOUT THE CHECKOUT BY Cargo.toml, NOT BY A CONFIG
-          # FILE WRITTEN HERE.
+          # CARGO DOES NOT READ THIS CHECKOUT.
           #
-          # An earlier cut of this task wrote a `paths` override into
-          # .cargo/config.toml holding an ABSOLUTE path to the sibling, so the
-          # manifest could name rust-fs-core by version alone. It failed in the
-          # one place this repository cannot afford to fail: `chore test:vm`
-          # mounts this working tree into the guest at /repo, the override went
-          # with it, and the host path it names does not exist inside the VM.
-          #   error: failed to update path override
-          #          `/home/runner/work/rust-fs-ext4/rust-fs-core`
-          #          (defined in `/repo/.cargo/config.toml`)
-          # -- run 35852463970, job 107154016599.
-          #
-          # A path INSIDE the repository is a path two machines have to agree
-          # on, and these two do not. `path = "../rust-fs-core"` in Cargo.toml
-          # is the answer both of them already have: on the host it is the
-          # sibling this task pins, and in the guest it is /rust-fs-core, which
-          # test:vm stages there for exactly this reason. It is also what every
-          # other crate in this family declares.
-          #
-          # `version` beside the `path` is what gets published: cargo drops the
-          # path when it packages, so the released crate depends on the
-          # registry version and nobody downstream inherits our layout.
+          # Cargo.toml names rust-fs-core by an exact published version and
+          # no path, so the crate is built against that release from the
+          # registry, here, in CI and in the guest alike. The checkout this
+          # task pins is for core's scripts. Building against an unreleased
+          # core is a `[patch]` in a local, gitignored .cargo/config.toml with
+          # a RELATIVE path (`../rust-fs-core`), which resolves to the sibling
+          # on the host and to /rust-fs-core in the guest; an absolute path
+          # there broke test:vm once (run 35852463970, job 107154016599).
+          # docs/developing-against-core.md has the recipe.
 
   tools:
     desc: "Install and verify what the HOST needs: ripgrep, and the VM the oracle tools live in"
@@ -694,12 +681,12 @@ tasks:
     on_timeout:
       - cmd: '../fs-linux-test-harness/scripts/vm.sh down || ../fs-linux-test-harness/scripts/vm.sh destroy'
     cmds:
-      # The sibling crates this one builds against are staged on the
-      # share first: the guest is given THIS repository, not the
-      # directory that holds it, so a path dependency on ../rust-fs-core
-      # has nothing to resolve to until it is put there. From the pinned
-      # checkout's HEAD, so what the guest builds against is what
-      # `chore siblings` pinned and nothing uncommitted.
+      # The sibling checkouts the suite runs scripts from are staged on
+      # the share first: the guest is given THIS repository, not the
+      # directory that holds it, so ../rust-fs-core has nothing to
+      # resolve to until it is put there. From the pinned checkout's
+      # HEAD, so what the guest runs is what `chore siblings` pinned and
+      # nothing uncommitted.
       - |
         set -eu
         [ -x ../fs-linux-test-harness/scripts/vm.sh ] || {
@@ -872,8 +859,11 @@ tasks:
       - 'src/**/*.rs'
       - 'include/*.h'
       # fs_core.h is a source of ours because we ship it (see the cp below).
-      # THIS PATH AND THE cp MUST AGREE, and nothing checks that they do —
-      # it is the same path Cargo.toml resolves rust-fs-core from.
+      # THIS PATH AND THE cp MUST AGREE, and nothing checks that they do.
+      # The sibling is pinned at the release Cargo.toml names (FS_CORE_REF;
+      # tests/ci_profile.rs holds the two equal), so its header is the one
+      # the linked core was built with; under a local `[patch]` it is the
+      # patched core itself.
       - '../rust-fs-core/include/fs_core.h'
       # The build reads the lock and every line of core it links, so each is a
       # source: a lock-only bump, or a sibling re-pinned under an unchanged

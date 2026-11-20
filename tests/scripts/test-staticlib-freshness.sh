@@ -16,8 +16,8 @@
 #      dependency versions CI never tested.
 #
 # IT RUNS IN A SANDBOX, a copy of this crate and of ../rust-fs-core side by
-# side, so case 2 and case 3 can edit core and the manifest without touching
-# a real checkout. The sandbox has no ../fs-linux-test-harness beside it, so
+# side, the copy of core patched in for the published one, so case 2 and
+# case 3 can edit core and the manifest without touching a real checkout. The sandbox has no ../fs-linux-test-harness beside it, so
 # chore's after_all reaper (chores.yml `lifecycle:`) does nothing: this test
 # cannot stop a VM some other run is using.
 #
@@ -60,6 +60,14 @@ cp -R "$REPO/tests/support" "$ext4/tests/"
 cp -R "$CORE/Cargo.toml" "$CORE/src" "$CORE/include" "$sandbox/rust-fs-core/"
 [ -f "$CORE/rust-toolchain.toml" ] && cp "$CORE/rust-toolchain.toml" "$sandbox/rust-fs-core/"
 ln -s "$cache" "$ext4/target"
+# Cargo.toml names core by its published version; the sandbox builds the
+# copied core instead, through the local override
+# docs/developing-against-core.md describes, so case 2 can edit it. The lock
+# is resolved once against the override, before anything is judged.
+mkdir -p "$ext4/.cargo"
+printf '[patch.crates-io]\nrust-fs-core = { path = "../rust-fs-core" }\n' > "$ext4/.cargo/config.toml"
+(cd "$ext4" && cargo metadata --format-version 1 >/dev/null 2>>"$log") ||
+    { echo "FAIL  the sandbox lock could not be resolved against the local core; see $log" >&2; exit 1; }
 
 # Quiet: chore and cargo go to the log, which a failure names.
 staticlib() {
@@ -93,8 +101,8 @@ grep -qa "$probe" "$ext4/dist/lib$LIB.a" ||
 # 3. The core requirement bumped, the lock not: the build must refuse.
 cp "$ext4/Cargo.lock" "$sandbox/Cargo.lock.before"
 sed -i.bak -E 's/^version = "[^"]+"/version = "0.2.999"/' "$sandbox/rust-fs-core/Cargo.toml"
-sed -i.bak -E 's/(rust-fs-core = \{ path = "\.\.\/rust-fs-core", version = )"[^"]+"/\1"0.2.999"/' "$ext4/Cargo.toml"
-grep -q 'version = "0.2.999"' "$ext4/Cargo.toml" || fail "could not bump the rust-fs-core requirement in the sandbox Cargo.toml"
+sed -i.bak -E 's/(rust-fs-core = \{ version = )"[^"]+"/\1"=0.2.999"/' "$ext4/Cargo.toml"
+grep -q 'version = "=0.2.999"' "$ext4/Cargo.toml" || fail "could not bump the rust-fs-core requirement in the sandbox Cargo.toml"
 if staticlib "core requirement bumped, lock stale"; then
     fail "the core requirement moved without Cargo.lock and chore staticlib still built: the build is not --locked"
 fi
