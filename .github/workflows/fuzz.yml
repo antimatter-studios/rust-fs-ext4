@@ -40,12 +40,25 @@ env:
   CHORE_VERSION: "0.11.0"
 
 jobs:
+  fuzz-gate:
+    runs-on: antimatter-vps-gate
+    timeout-minutes: 1
+    outputs:
+      runner: ${{ steps.pick.outputs.runner }}
+    steps:
+      - id: pick
+        run: runner-gate pick linux-x64
+
   fuzz:
     name: fuzz the superblock, inode, directory and journal decoders
-    runs-on: ubuntu-latest
+    needs: fuzz-gate
+    runs-on: ${{ needs.fuzz-gate.outputs.runner }}
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
+      - name: C toolchain for the gated runner
+        if: runner.environment == 'self-hosted'
+        run: sudo apt-get update && sudo apt-get install -y build-essential
 
       # The siblings come through `chore`, at the refs pinned in
       # chores.yml, the same way ci.yml gets them -- rather than a

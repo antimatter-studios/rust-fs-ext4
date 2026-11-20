@@ -119,7 +119,9 @@ env:
   # in ci-ok's needs: scripts/ci-ok.sh still judges each one's result, and
   # accepts docs-only skips only for fixture/VM jobs; any other skip, failure
   # or cancellation still fails ci-ok.
-  CI_GATE_NON_GATING: fixtures wasm cli
+  # The gate jobs that carry the same `if:` as their job, and ci-ok-gate (it only
+  # picks ci-ok's runner and carries `if: always()` like ci-ok), are named too.
+  CI_GATE_NON_GATING: fixtures wasm cli fixtures-gate wasm-gate cli-gate ci-ok-gate
 
 jobs:
   # Is this change documentation-only? rust-fs-core's
@@ -130,14 +132,23 @@ jobs:
   # diff runs everything. The jobs that boot the VM or read its fixtures
   # (test, test-arm64, suite-in-vm) run only when the answer is true, and
   # ci-ok accepts their skip when, and only when, it is false.
+  changes-gate:
+    runs-on: antimatter-vps-gate
+    timeout-minutes: 1
+    outputs:
+      runner: ${{ steps.pick.outputs.runner }}
+    steps:
+      - id: pick
+        run: runner-gate pick linux-x64
+
   changes:
     name: changes (does this need the full pipeline?)
-    runs-on: ubuntu-24.04
+    needs: changes-gate
+    runs-on: ${{ needs.changes-gate.outputs.runner }}
     outputs:
       code: ${{ steps.c.outputs.code }}
       # Full for every event (scripts/ci-plan.sh).
       profile: ${{ steps.plan.outputs.profile }}
-      runners: ${{ steps.runners.outputs.runners || '{}' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -192,54 +203,21 @@ jobs:
           fi
           echo "code=$code ($EVENT${range:+ $range})"
           echo "code=$code" >> "$GITHUB_OUTPUT"
-      - name: Pick runners
-        id: runners
-        env:
-          ORG: ${{ github.repository_owner }}
-          PROFILE: ${{ steps.plan.outputs.profile }}
-          ACTOR: ${{ github.triggering_actor }}
-          AUTHOR: ${{ github.event.pull_request.user.login }}
-          SENDER: ${{ github.event.sender.login }}
-          GH_ACTOR: ${{ github.actor }}
-          RUN_ID: ${{ github.run_id }}
-          RUN_ATTEMPT: ${{ github.run_attempt }}
-          JOBS: unit semver msrv provenance
-        run: |
-          set -euo pipefail
-          jobs="$JOBS"
-          if [ "$PROFILE" = full ]; then jobs="$jobs wasm cli"; fi
-          ours=true
-          for who in "$ACTOR" "$GH_ACTOR" "$SENDER" "$AUTHOR"; do
-            [ -z "$who" ] || [ "$who" = christhomas ] || ours=false
-          done
-          pick() {
-            $ours || { echo ubuntu-24.04; return; }
-            runner=$(curl -fsS --max-time 10 --get https://runner-gate.antimatter-studios.com/pick \
-              --data-urlencode "org=$ORG" \
-              --data-urlencode prefer=antimatter-vps-linux-x64 \
-              --data-urlencode fallback=ubuntu-24.04 \
-              --data-urlencode "actor=$ACTOR" \
-              --data-urlencode "author=$AUTHOR" \
-              --data-urlencode "run=$RUN_ID" \
-              --data-urlencode "attempt=$RUN_ATTEMPT" \
-              --data-urlencode "job=$1") || runner=ubuntu-24.04
-            case "$runner" in
-              antimatter-vps-linux-x64|ubuntu-24.04) echo "$runner" ;;
-              *) echo ubuntu-24.04 ;;
-            esac
-          }
-          runners='{}'
-          for job in $jobs; do
-            runners=$(jq -c --arg job "$job" --arg runner "$(pick "$job")" \
-              '. + {($job): $runner}' <<<"$runners")
-          done
-          echo "$runners" | jq . | tee -a "$GITHUB_STEP_SUMMARY"
-          echo "runners=$runners" >> "$GITHUB_OUTPUT"
+
+  unit-gate:
+    needs: changes
+    runs-on: antimatter-vps-gate
+    timeout-minutes: 1
+    outputs:
+      runner: ${{ steps.pick.outputs.runner }}
+    steps:
+      - id: pick
+        run: runner-gate pick linux-x64
 
   unit:
     name: unit (no tools, no fixtures)
-    needs: changes
-    runs-on: ${{ fromJSON(needs.changes.outputs.runners || '{}')['unit'] || 'ubuntu-24.04' }}
+    needs: [changes, unit-gate]
+    runs-on: ${{ needs.unit-gate.outputs.runner }}
     steps:
       - uses: actions/checkout@v4
       - name: Install chore
@@ -331,11 +309,22 @@ jobs:
           path: tmp/logs/*.log
           if-no-files-found: error
 
-  fixtures:
-    name: fixtures (harness VM, x86_64 KVM)
+  fixtures-gate:
     needs: changes
     if: needs.changes.outputs.profile == 'full' && needs.changes.outputs.code == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: antimatter-vps-gate
+    timeout-minutes: 1
+    outputs:
+      runner: ${{ steps.pick.outputs.runner }}
+    steps:
+      - id: pick
+        run: runner-gate pick linux-x64-kvm
+
+  fixtures:
+    name: fixtures (harness VM, x86_64 KVM)
+    needs: [changes, fixtures-gate]
+    if: needs.changes.outputs.profile == 'full' && needs.changes.outputs.code == 'true'
+    runs-on: ${{ needs.fixtures-gate.outputs.runner }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -367,10 +356,20 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  test-gate:
+    needs: fixtures
+    runs-on: antimatter-vps-gate
+    timeout-minutes: 1
+    outputs:
+      runner: ${{ steps.pick.outputs.runner }}
+    steps:
+      - id: pick
+        run: runner-gate pick linux-x64-kvm
+
   test:
     name: test (x86_64, oracles in the VM)
-    needs: fixtures
-    runs-on: ubuntu-24.04
+    needs: [fixtures, test-gate]
+    runs-on: ${{ needs.test-gate.outputs.runner }}
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
@@ -449,10 +448,20 @@ jobs:
           chore vm:down
           ! chore vm:status
 
+  test-arm64-gate:
+    needs: fixtures
+    runs-on: antimatter-vps-gate
+    timeout-minutes: 1
+    outputs:
+      runner: ${{ steps.pick.outputs.runner }}
+    steps:
+      - id: pick
+        run: runner-gate pick linux-arm64
+
   test-arm64:
     name: test (aarch64, no KVM on this runner)
-    needs: fixtures
-    runs-on: ubuntu-24.04-arm
+    needs: [fixtures, test-arm64-gate]
+    runs-on: ${{ needs.test-arm64-gate.outputs.runner }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -502,10 +511,20 @@ jobs:
           path: tmp/logs/*.log
           if-no-files-found: error
 
+  suite-in-vm-gate:
+    needs: fixtures
+    runs-on: antimatter-vps-gate
+    timeout-minutes: 1
+    outputs:
+      runner: ${{ steps.pick.outputs.runner }}
+    steps:
+      - id: pick
+        run: runner-gate pick linux-x64-kvm
+
   suite-in-vm:
     name: suite in the guest (the macOS path)
-    needs: fixtures
-    runs-on: ubuntu-24.04
+    needs: [fixtures, suite-in-vm-gate]
+    runs-on: ${{ needs.suite-in-vm-gate.outputs.runner }}
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
@@ -553,14 +572,28 @@ jobs:
           chore vm:down
           ! chore vm:status
 
-  wasm:
-    name: wasm32 (browser build, tests under Node)
+  wasm-gate:
     needs: changes
     if: needs.changes.outputs.profile == 'full'
-    runs-on: ${{ fromJSON(needs.changes.outputs.runners || '{}')['wasm'] || 'ubuntu-24.04' }}
+    runs-on: antimatter-vps-gate
+    timeout-minutes: 1
+    outputs:
+      runner: ${{ steps.pick.outputs.runner }}
+    steps:
+      - id: pick
+        run: runner-gate pick linux-x64
+
+  wasm:
+    name: wasm32 (browser build, tests under Node)
+    needs: [changes, wasm-gate]
+    if: needs.changes.outputs.profile == 'full'
+    runs-on: ${{ needs.wasm-gate.outputs.runner }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+      - name: C toolchain for the gated runner
+        if: runner.environment == 'self-hosted'
+        run: sudo apt-get update && sudo apt-get install -y build-essential
       - name: Install chore
         run: scripts/ci-install-chore.sh
       - name: chore siblings
@@ -595,13 +628,23 @@ jobs:
           path: tmp/logs/*.log
           if-no-files-found: error
 
+  semver-gate:
+    needs: changes
+    runs-on: antimatter-vps-gate
+    timeout-minutes: 1
+    outputs:
+      runner: ${{ steps.pick.outputs.runner }}
+    steps:
+      - id: pick
+        run: runner-gate pick linux-x64
+
   semver:
     # `chore check:semver`: this tree's public API against the newest
     # version on crates.io, refusing a break the version in Cargo.toml does
     # not declare (#120). No fixtures, no VM -- only the registry.
     name: semver (public API against crates.io)
-    needs: changes
-    runs-on: ${{ fromJSON(needs.changes.outputs.runners || '{}')['semver'] || 'ubuntu-24.04' }}
+    needs: [changes, semver-gate]
+    runs-on: ${{ needs.semver-gate.outputs.runner }}
     timeout-minutes: 30
     env:
       # The version ../rust-fs-core/scripts/semver-check.sh expects. A prebuilt binary,
@@ -612,6 +655,9 @@ jobs:
       OUTPUT_BUDGET_FAIL_TAIL: "200"
     steps:
       - uses: actions/checkout@v4
+      - name: C toolchain for the gated runner
+        if: runner.environment == 'self-hosted'
+        run: sudo apt-get update && sudo apt-get install -y build-essential
       - name: Install chore
         run: scripts/ci-install-chore.sh
       - name: chore siblings
@@ -644,12 +690,25 @@ jobs:
           path: tmp/logs/*.log
           if-no-files-found: error
 
+  msrv-gate:
+    needs: changes
+    runs-on: antimatter-vps-gate
+    timeout-minutes: 1
+    outputs:
+      runner: ${{ steps.pick.outputs.runner }}
+    steps:
+      - id: pick
+        run: runner-gate pick linux-x64
+
   msrv:
     name: msrv (Cargo.toml rust-version)
-    needs: changes
-    runs-on: ${{ fromJSON(needs.changes.outputs.runners || '{}')['msrv'] || 'ubuntu-24.04' }}
+    needs: [changes, msrv-gate]
+    runs-on: ${{ needs.msrv-gate.outputs.runner }}
     steps:
       - uses: actions/checkout@v4
+      - name: C toolchain for the gated runner
+        if: runner.environment == 'self-hosted'
+        run: sudo apt-get update && sudo apt-get install -y build-essential
       - name: Install chore
         run: scripts/ci-install-chore.sh
       - name: chore siblings
@@ -670,14 +729,28 @@ jobs:
         # rustup is all it needs.
         run: chore check:msrv
 
-  cli:
-    name: cli (the installed tools, on PATH)
+  cli-gate:
     needs: changes
     if: needs.changes.outputs.profile == 'full'
-    runs-on: ${{ fromJSON(needs.changes.outputs.runners || '{}')['cli'] || 'ubuntu-24.04' }}
+    runs-on: antimatter-vps-gate
+    timeout-minutes: 1
+    outputs:
+      runner: ${{ steps.pick.outputs.runner }}
+    steps:
+      - id: pick
+        run: runner-gate pick linux-x64
+
+  cli:
+    name: cli (the installed tools, on PATH)
+    needs: [changes, cli-gate]
+    if: needs.changes.outputs.profile == 'full'
+    runs-on: ${{ needs.cli-gate.outputs.runner }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+      - name: C toolchain for the gated runner
+        if: runner.environment == 'self-hosted'
+        run: sudo apt-get update && sudo apt-get install -y build-essential
       - name: Install chore
         run: scripts/ci-install-chore.sh
       - name: chore siblings
@@ -729,10 +802,20 @@ jobs:
           path: tmp/logs/*.log
           if-no-files-found: error
 
+  provenance-gate:
+    needs: changes
+    runs-on: antimatter-vps-gate
+    timeout-minutes: 1
+    outputs:
+      runner: ${{ steps.pick.outputs.runner }}
+    steps:
+      - id: pick
+        run: runner-gate pick linux-x64
+
   provenance:
     name: provenance (no kernel or e2fsprogs internals named)
-    needs: changes
-    runs-on: ${{ fromJSON(needs.changes.outputs.runners || '{}')['provenance'] || 'ubuntu-24.04' }}
+    needs: [changes, provenance-gate]
+    runs-on: ${{ needs.provenance-gate.outputs.runner }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -741,11 +824,22 @@ jobs:
       - name: chore check:provenance
         run: chore check:provenance
 
+  ci-ok-gate:
+    if: always()
+    needs: [changes-gate, changes, unit-gate, unit, fixtures-gate, fixtures, test-gate, test, test-arm64-gate, test-arm64, suite-in-vm-gate, suite-in-vm, wasm-gate, wasm, semver-gate, semver, msrv-gate, msrv, cli-gate, cli, provenance-gate, provenance]
+    runs-on: antimatter-vps-gate
+    timeout-minutes: 1
+    outputs:
+      runner: ${{ steps.pick.outputs.runner }}
+    steps:
+      - id: pick
+        run: runner-gate pick linux-x64
+
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [changes, unit, fixtures, test, test-arm64, suite-in-vm, wasm, semver, msrv, cli, provenance]
-    runs-on: ubuntu-latest
+    needs: [changes-gate, changes, unit-gate, unit, fixtures-gate, fixtures, test-gate, test, test-arm64-gate, test-arm64, suite-in-vm-gate, suite-in-vm, wasm-gate, wasm, semver-gate, semver, msrv-gate, msrv, cli-gate, cli, provenance-gate, provenance, ci-ok-gate]
+    runs-on: ${{ needs.ci-ok-gate.outputs.runner || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
       - name: Every job ran and succeeded
