@@ -42,8 +42,8 @@ jobs:
           fi
 
       # The same gate as a pull request's CI, through the same chore
-      # tasks: the siblings at their pinned refs (rust-fs-core is the
-      # path dependency), the oracle tools, the kernel-made fixtures in
+      # tasks: the siblings at their pinned refs (rust-fs-core for its
+      # scripts), the oracle tools, the kernel-made fixtures in
       # the fs-linux-test-harness VM (ubuntu-latest is x86_64 with KVM),
       # lint, and the whole suite -- which includes the e2fsck checks of
       # the mkfs.ext4 tool (tests/mkfs_bin_fsck_oracle.rs) that used to
@@ -114,7 +114,7 @@ jobs:
         with:
           persist-credentials: false
 
-      # The path dependency, at the ref chores.yml pins (read from there
+      # rust-fs-core's scripts, at the ref chores.yml pins (read from there
       # rather than restated; chore itself has no build for every runner
       # this job uses).
       - name: clone rust-fs-core sibling

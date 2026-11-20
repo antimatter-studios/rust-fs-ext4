@@ -81,12 +81,19 @@ bitflags = "2"
 unicode-normalization = "0.1"
 caseless = "0.2"
 # Block-device trait surface shared with sister crates (qcow2 reader,
-# partition probe, future fs-* drivers). Local path dep until both crates
-# publish; flip to a published version on the first crates.io release.
-# Strictly additive — ext4's existing BlockDevice trait is unchanged; this
-# adds a bridge module so external `fs_core::BlockDevice` implementors
-# (a `Qcow2Reader`, a `SliceReader`, etc.) can be mounted by ext4.
-rust-fs-core = { path = "../rust-fs-core", version = "0.4.3" }
+# partition probe, future fs-* drivers). Strictly additive -- ext4's
+# existing BlockDevice trait is unchanged; this adds a bridge module so
+# external `fs_core::BlockDevice` implementors (a `Qcow2Reader`, a
+# `SliceReader`, etc.) can be mounted by ext4.
+#
+# BY VERSION ONLY, AND EXACT. The manifest names the published release and
+# no path, so what is built here, in CI and in the guest is that release
+# from the registry, and a consumer that pins the same core across several
+# drivers gets the same one from each. The sibling checkout `chore
+# siblings` keeps at FS_CORE_REF is for core's scripts, not for cargo.
+# Building against an unreleased core is a local override that is never
+# committed: docs/developing-against-core.md says how.
+rust-fs-core = { version = "=0.4.3" }
 # The command-line tools' argument parser, behind the `cli` feature (see
 # the `rust-fs-ext4` target above). No derive: the builder API keeps each
 # tool's command a function the man pages and completions can be made from.

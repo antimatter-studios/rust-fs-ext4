@@ -36,3 +36,7 @@ test-disks/test-run/
 # Build output. `chore staticlib` writes the archive and headers here for a
 # consumer to copy out of (`chore artifact` prints this directory).
 /dist/
+
+# A local [patch] of rust-fs-core onto the sibling checkout
+# (docs/developing-against-core.md). Never committed.
+/.cargo/config.toml

@@ -3513,6 +3513,9 @@ fn am_fs_core_versions_declared(text: &str) -> Vec<(String, String)> {
         }
         if line.starts_with("rust-fs-core") {
             if let Some(v) = quoted_value_after(line, "version") {
+                // `=0.4.3` is an exact requirement on the same release
+                // the other spellings name as `0.4.3`.
+                let v = v.strip_prefix('=').unwrap_or(&v).trim().to_string();
                 found.push(("the rust-fs-core dependency's `version`".to_string(), v));
             }
         }
@@ -3708,6 +3711,14 @@ mod core_pin_parser {
     fn a_path_dependency_declares_its_version() {
         let toml = "rust-fs-core = { path = \"../rust-fs-core\", version = \"0.2.13\" }\n";
         assert_eq!(am_fs_core_versions_declared(toml), dep("0.2.13"));
+    }
+
+    /// The manifests name core by an exact version and no path: the
+    /// `=` is the requirement's operator, not part of the release.
+    #[test]
+    fn an_exact_requirement_declares_its_version() {
+        let toml = "rust-fs-core = { version = \"=0.4.3\" }\n";
+        assert_eq!(am_fs_core_versions_declared(toml), dep("0.4.3"));
     }
 
     /// A lockfile's package entry declares the version it resolved; a
