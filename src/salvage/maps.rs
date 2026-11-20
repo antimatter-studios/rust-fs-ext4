@@ -130,6 +130,11 @@ impl BlockMap {
 
 /// Where `i_block` sits in an inode.
 const I_BLOCK_OFFSET: u64 = 0x28;
+/// The reserved inode that maps the reserved descriptor blocks (format
+/// documentation, "Special inodes": 7). Its double-indirect map names
+/// those blocks in every backup group at once, so its block count is not
+/// a file's and is not checked against what a file's walk reaches.
+const RESIZE_INODE: u32 = 7;
 
 /// Follow an inode's block map as far as it goes.
 ///
@@ -182,7 +187,8 @@ pub fn map_inode(source: &dyn BlockRead, sb: &Superblock, record: &InodeRecord) 
         .root(&inode.block, root);
     }
     map.finish();
-    if let Some(claimed) = allocated_blocks(sb, inode) {
+    let claimed = allocated_blocks(sb, inode).filter(|_| record.ino != RESIZE_INODE);
+    if let Some(claimed) = claimed {
         let reached =
             map.mapped_blocks() + map.map_blocks.len() as u64 + u64::from(inode.file_acl != 0);
         if reached < claimed {

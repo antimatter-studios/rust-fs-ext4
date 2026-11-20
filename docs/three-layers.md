@@ -50,14 +50,20 @@ instead of refusing.
 
 The salvage verbs, built on the structures above:
 
-| Verb | ext4 terms | State |
+| Verb | ext4 terms | Where |
 |---|---|---|
-| Find candidates | Inodes in every group's inode table, live and deleted; superblock copies found by scanning | Next |
-| Walk extents | An inode's extent tree or indirect block map, as source byte ranges | `map_inode` gives the runs; the verb is next |
-| Rebuild the tree | Directory entries from every directory inode, as parent claims; orphans and conflicts kept | Next |
-| Report damage | `structure_damage`, then inodes, maps and directories | Partial |
-| Read by extent | Raw source bytes, no file object needed | Next |
-| Materialize from a plan | Source extents, zeros and literal bytes written to a caller's sink | Next |
+| Find candidates | Every inode-table slot that is not all zeros, live or deleted, and every superblock copy | `Ext4Salvage::find_candidates` |
+| Walk extents | An inode's extent tree or indirect block map, as source byte ranges in file order, holes and inline bytes kept | `Ext4Salvage::walk_extents` |
+| Rebuild the tree | Directory entries as parent claims, each with its name; a directory's own `..` as a claim too; orphans and conflicts kept | `Ext4Salvage::rebuild_tree` |
+| Report damage | The superblock copies and descriptor tables, then each live inode: its checksum, its map, a directory's blocks | `Ext4Salvage::report_damage` |
+| Read by extent | Raw source bytes, no file object needed | `Ext4Salvage::read_extent` |
+| Materialize from a plan | Source extents, zeros, literal bytes and block runs written to a caller's sink; an unreadable block becomes zeros and is recorded | `Ext4Salvage::materialize`, `ExtentWalk::plan` |
+
+What the kernel leaves behind decides what deletion recovery can find, and
+the oracle tests pin it: a deleted inode keeps its mode and gets `i_dtime`,
+but is truncated first, so its map is empty; a linear directory's removed
+entry is zeroed; a hashed directory's split leaves old copies of the moved
+entries, which the scan finds.
 
 ## Files
 

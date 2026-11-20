@@ -513,12 +513,41 @@ pub fn read_inode(
         ));
         return Ok(record);
     };
-    record.location.offset = offset;
+    let mut found = read_inode_at(source, sb, ino, offset);
+    found.uninitialized = record.uninitialized;
+    Ok(found)
+}
+
+/// Read inode `ino` from the `s_inode_size` bytes at `offset`, wherever
+/// they were found: through a descriptor, or by a scan of an inode table.
+pub fn read_inode_at(
+    source: &dyn BlockRead,
+    sb: &Superblock,
+    ino: u32,
+    offset: u64,
+) -> InodeRecord {
+    let inode_size = u64::from(sb.inode_size);
+    let mut record = InodeRecord {
+        ino,
+        location: Extent::new(offset, inode_size),
+        integrity: Integrity::Failed,
+        inode: None,
+        raw: Vec::new(),
+        uninitialized: false,
+        fault: None,
+    };
     let mut raw = vec![0u8; inode_size as usize];
     if let Err(error) = source.read_at(offset, &mut raw) {
         record.fault = Some(Fault::new(DamageKind::Unreadable, error.to_string()));
-        return Ok(record);
+        return record;
     }
+    judge_inode(sb, &mut record, raw);
+    record
+}
+
+/// Parse and check an inode's bytes into `record`.
+pub(crate) fn judge_inode(sb: &Superblock, record: &mut InodeRecord, raw: Vec<u8>) {
+    let ino = record.ino;
     match Inode::parse(&raw) {
         Ok(inode) => {
             let csum = Checksummer::from_superblock(sb);
@@ -540,7 +569,6 @@ pub fn read_inode(
         }
     }
     record.raw = raw;
-    Ok(record)
 }
 
 /// The superblock fields every copy must agree on: the ones that say where
