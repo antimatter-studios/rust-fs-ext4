@@ -66,8 +66,8 @@ fn format(
 ) -> Result<()> {
     let size = dev.size_bytes();
     let opts = FormatOptions {
-        flavor,
         inodes_count,
+        ..FormatOptions::new(flavor)
     };
     mkfs::format_filesystem_with_options(dev, None, Some([5; 16]), size, block_size, &opts)
 }
@@ -185,12 +185,14 @@ fn a_request_past_the_per_group_limit_is_clamped() {
 }
 
 #[test]
-fn without_a_request_the_default_is_unchanged() {
+fn without_a_request_the_count_follows_the_volume_size() {
+    // 256 MiB is under 512 MiB: one inode per 4 KiB, 65536 over two
+    // groups (tests/mkfs_default_inode_count.rs).
     let dev = device(256 << 20);
     format(&dev, FsFlavor::Ext4, 4096, None).expect("format");
     let fs = Filesystem::mount(dev).expect("mount");
-    assert_eq!(fs.sb.inodes_per_group, 8192);
-    assert_eq!(fs.sb.inodes_count, 2 * 8192);
+    assert_eq!(fs.sb.inodes_per_group, 32768);
+    assert_eq!(fs.sb.inodes_count, 2 * 32768);
 }
 
 /// A refused request leaves every byte of the device as it was.
