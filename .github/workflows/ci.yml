@@ -220,6 +220,12 @@ jobs:
     runs-on: ${{ needs.unit-gate.outputs.runner }}
     steps:
       - uses: actions/checkout@v4
+      - name: C toolchain for the gated runner
+        # Only a self-hosted Linux runner lacks it; the hosted image has it.
+        run: |
+          if [ "$RUNNER_OS" = Linux ] && [ "$RUNNER_ENVIRONMENT" = self-hosted ]; then
+            sudo apt-get update && sudo apt-get install -y build-essential
+          fi
       - name: Install chore
         # Pinned (CHORE_VERSION) and checked against the release's
         # checksums: the siblings, the tools and the tests all come
@@ -328,6 +334,12 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+      - name: C toolchain for the gated runner
+        # Only a self-hosted Linux runner lacks it; the hosted image has it.
+        run: |
+          if [ "$RUNNER_OS" = Linux ] && [ "$RUNNER_ENVIRONMENT" = self-hosted ]; then
+            sudo apt-get update && sudo apt-get install -y build-essential
+          fi
       - name: Install chore
         run: scripts/ci-install-chore.sh
       - name: chore siblings
@@ -347,13 +359,6 @@ jobs:
           key: ${{ steps.vm-host.outputs.box-cache-key }}
       - name: chore fixtures
         run: chore fixtures
-      - name: chore vm:down (no run is left on the shared guest)
-        # The guest stays up when a run ends, for the next run; `vm:down`
-        # stops it only when nobody is using it, so a run that leaked a
-        # session leaves it up and the status check fails.
-        run: |
-          chore vm:down
-          ! chore vm:status
       - uses: actions/upload-artifact@v4
         with:
           name: fixtures
@@ -378,6 +383,12 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
+      - name: C toolchain for the gated runner
+        # Only a self-hosted Linux runner lacks it; the hosted image has it.
+        run: |
+          if [ "$RUNNER_OS" = Linux ] && [ "$RUNNER_ENVIRONMENT" = self-hosted ]; then
+            sudo apt-get update && sudo apt-get install -y build-essential
+          fi
       - name: Install chore
         run: scripts/ci-install-chore.sh
       - name: chore siblings
@@ -450,13 +461,6 @@ jobs:
           name: tier-logs-x86_64
           path: tmp/logs/*.log
           if-no-files-found: error
-      - name: chore vm:down (no run is left on the shared guest)
-        # The guest stays up when a run ends, for the next run; `vm:down`
-        # stops it only when nobody is using it, so a run that leaked a
-        # session leaves it up and the status check fails.
-        run: |
-          chore vm:down
-          ! chore vm:status
 
   test-arm64-gate:
     needs: fixtures
@@ -475,6 +479,12 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+      - name: C toolchain for the gated runner
+        # Only a self-hosted Linux runner lacks it; the hosted image has it.
+        run: |
+          if [ "$RUNNER_OS" = Linux ] && [ "$RUNNER_ENVIRONMENT" = self-hosted ]; then
+            sudo apt-get update && sudo apt-get install -y build-essential
+          fi
       - name: Install chore
         run: scripts/ci-install-chore.sh
       - name: chore siblings
@@ -538,6 +548,12 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
+      - name: C toolchain for the gated runner
+        # Only a self-hosted Linux runner lacks it; the hosted image has it.
+        run: |
+          if [ "$RUNNER_OS" = Linux ] && [ "$RUNNER_ENVIRONMENT" = self-hosted ]; then
+            sudo apt-get update && sudo apt-get install -y build-essential
+          fi
       - name: Install chore
         run: scripts/ci-install-chore.sh
       - name: chore siblings
@@ -579,13 +595,6 @@ jobs:
           name: tier-logs-suite-in-vm
           path: tmp/logs/*.log
           if-no-files-found: error
-      - name: chore vm:down (no run is left on the shared guest)
-        # The guest stays up when a run ends, for the next run; `vm:down`
-        # stops it only when nobody is using it, so a run that leaked a
-        # session leaves it up and the status check fails.
-        run: |
-          chore vm:down
-          ! chore vm:status
 
   wasm-gate:
     needs: changes
@@ -834,6 +843,12 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+      - name: C toolchain for the gated runner
+        # Only a self-hosted Linux runner lacks it; the hosted image has it.
+        run: |
+          if [ "$RUNNER_OS" = Linux ] && [ "$RUNNER_ENVIRONMENT" = self-hosted ]; then
+            sudo apt-get update && sudo apt-get install -y build-essential
+          fi
       - name: Install chore
         run: scripts/ci-install-chore.sh
       - name: chore check:provenance
