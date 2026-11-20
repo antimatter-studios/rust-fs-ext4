@@ -14,6 +14,7 @@
 //! - [`dir`] — directory entries (linear and HTree)
 //! - [`hash`] — htree hash functions (legacy / half_md4 / tea)
 //! - [`fs`] — top-level filesystem handle, file/dir lookup, read API
+//! - [`salvage`] — read-only, damage-tolerant reads of the on-disk structures
 //! - [`capi`] — C ABI exports matching `include/fs_ext4.h`
 
 // `doc_lazy_continuation` disagrees with the existing numbered-list
@@ -53,6 +54,7 @@ pub mod journal_writer;
 pub mod mkfs;
 pub mod path;
 pub mod runtime;
+pub mod salvage;
 pub mod superblock;
 pub mod transaction;
 pub mod verify;
