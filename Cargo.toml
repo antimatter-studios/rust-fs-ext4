@@ -94,7 +94,7 @@ caseless = "0.2"
 # siblings` keeps at FS_CORE_REF is for core's scripts, not for cargo.
 # Building against an unreleased core is a local override that is never
 # committed: docs/developing-against-core.md says how.
-rust-fs-core = { version = "0.5", features = ["layers"] }
+rust-fs-core = { version = "=0.5.1", features = ["layers"] }
 # The three layers' evidence types are serde data, so the candidate detail
 # this crate defines derives them too. MIT/Apache-2.0, already in the tree
 # through rust-fs-core's `layers` feature.
