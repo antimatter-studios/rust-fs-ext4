@@ -224,7 +224,19 @@ pub fn find_superblock(source: &dyn BlockRead) -> Result<SuperblockCopy, Salvage
 /// for each block size the format allows, with the default
 /// `blocks_per_group` of eight times the block size.
 fn probe_backups(source: &dyn BlockRead) -> Option<SuperblockCopy> {
+    probe_backup_copies(source)
+        .into_iter()
+        .find(SuperblockCopy::is_sound)
+}
+
+/// Every superblock copy that parses where the default layout puts the
+/// first backups -- groups 1, 3, 5, 7, 9, 25, 27 and 49 at every block
+/// size, with the default `blocks_per_group` of eight times the block size
+/// -- and whose own block size and group size say it belongs there. Sound
+/// or not: a caller weighing geometry hypotheses wants them all.
+pub fn probe_backup_copies(source: &dyn BlockRead) -> Vec<SuperblockCopy> {
     let size = source.size_bytes();
+    let mut found = Vec::new();
     for log in 0..=MAX_LOG_BLOCK_SIZE {
         let block_size = 1024u64 << log;
         let blocks_per_group = 8 * block_size;
@@ -245,12 +257,12 @@ fn probe_backups(source: &dyn BlockRead) -> Option<SuperblockCopy> {
                 u64::from(sb.block_size()) == block_size
                     && u64::from(sb.blocks_per_group) == blocks_per_group
             });
-            if fits && copy.is_sound() {
-                return Some(copy);
+            if fits {
+                found.push(copy);
             }
         }
     }
-    None
+    found
 }
 
 /// One group descriptor, from one copy of the table.
@@ -601,6 +613,18 @@ pub fn structure_damage(source: &dyn BlockRead) -> Result<Vec<Damage>, SalvageEr
         .superblock
         .clone()
         .expect("find_superblock returns a copy that parses");
+    Ok(structure_damage_with(source, &sb, chosen.location))
+}
+
+/// [`structure_damage`] with the geometry already chosen -- `sb`, read from
+/// `chosen` -- so a source on which no copy survives still has every copy
+/// and descriptor reported, unreadable ones included.
+pub fn structure_damage_with(
+    source: &dyn BlockRead,
+    sb: &Superblock,
+    chosen: Extent,
+) -> Vec<Damage> {
+    let sb = sb.clone();
     let mut damage = Vec::new();
     let copies = superblock_copies(source, &sb);
     let backup_sound = copies.iter().skip(1).any(SuperblockCopy::is_sound);
@@ -654,9 +678,9 @@ pub fn structure_damage(source: &dyn BlockRead) -> Result<Vec<Damage>, SalvageEr
             });
         }
     }
-    damage.extend(recorded_state(&sb, chosen.location));
+    damage.extend(recorded_state(&sb, chosen));
     damage.extend(descriptor_damage(source, &sb));
-    Ok(damage)
+    damage
 }
 
 /// The state the superblock records about itself.

@@ -300,7 +300,8 @@ vars:
   # v0.4.2 is that release building on Rust 1.89, as this crate's msrv needs.
   # v0.4.3 has `cli::listing`: the arguments, defaults and bound-reached error
   # `ls --recursive` shares with every driver (rust-fs-core#406).
-  FS_CORE_REF: v0.4.3
+  # v0.5.0 has the three API layers (`layers` feature, rust-fs-core#454).
+  FS_CORE_REF: v0.5.0
   LINUX_HARNESS_URL: https://github.com/antimatter-studios/fs-linux-test-harness.git
   # v0.3.0 is the release with `vm.sh session`, which the test runner runs
   # cargo through so a run ends however its command ends; v0.2.0 answers it

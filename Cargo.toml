@@ -86,14 +86,19 @@ caseless = "0.2"
 # external `fs_core::BlockDevice` implementors (a `Qcow2Reader`, a
 # `SliceReader`, etc.) can be mounted by ext4.
 #
-# BY VERSION ONLY, AND EXACT. The manifest names the published release and
-# no path, so what is built here, in CI and in the guest is that release
-# from the registry, and a consumer that pins the same core across several
-# drivers gets the same one from each. The sibling checkout `chore
+# BY VERSION ONLY: the 0.5 releases from the registry, the ones with the
+# three API layers (the `layers` feature), and no path, as every driver in
+# the family pins it (rust-fs-core's docs/three-layers.md). The lock file
+# holds the exact release CI tests, and a consumer using several drivers
+# resolves one 0.5 core for all of them. The sibling checkout `chore
 # siblings` keeps at FS_CORE_REF is for core's scripts, not for cargo.
 # Building against an unreleased core is a local override that is never
 # committed: docs/developing-against-core.md says how.
-rust-fs-core = { version = "=0.4.3" }
+rust-fs-core = { version = "0.5", features = ["layers"] }
+# The three layers' evidence types are serde data, so the candidate detail
+# this crate defines derives them too. MIT/Apache-2.0, already in the tree
+# through rust-fs-core's `layers` feature.
+serde = { version = "1", features = ["derive"] }
 # The command-line tools' argument parser, behind the `cli` feature (see
 # the `rust-fs-ext4` target above). No derive: the builder API keeps each
 # tool's command a function the man pages and completions can be made from.
