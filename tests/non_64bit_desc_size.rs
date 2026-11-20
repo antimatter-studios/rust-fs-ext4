@@ -51,9 +51,10 @@ fn a_non_64bit_volume_with_a_64_byte_desc_size_field_reads_its_real_descriptors(
         .collect();
     assert!(before.len() > 1, "fixture: several groups");
 
-    let mut bytes = std::fs::read(&img).unwrap();
-    bytes[1024 + 0xFE..1024 + 0x100].copy_from_slice(&64u16.to_le_bytes());
-    std::fs::write(&img, &bytes).unwrap();
+    use std::io::{Seek, SeekFrom, Write};
+    let mut image = std::fs::OpenOptions::new().write(true).open(&img).unwrap();
+    image.seek(SeekFrom::Start(1024 + 0xFE)).unwrap();
+    image.write_all(&64u16.to_le_bytes()).unwrap();
 
     let fs = mount().unwrap_or_else(|e| panic!("Linux mounts this volume: {e:?}"));
     assert_eq!(fs.sb.desc_size, 32);

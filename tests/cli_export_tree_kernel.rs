@@ -7,7 +7,7 @@ mod cli_support;
 use cli_support::*;
 use fs_ext4::block_io::FileDevice;
 use fs_ext4::Filesystem;
-use fs_ext4_test_support::{assert_e2fsck_clean, guest_kernel_write, oracle, sha256_hex};
+use fs_ext4_test_support::{assert_e2fsck_clean, guest_kernel_write, oracle, sha256_file};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -66,7 +66,7 @@ fn item<'a>(report: &'a str, path: &str) -> &'a str {
 #[test]
 fn recursive_export_matches_every_kernel_digest_and_reports_each_item() {
     let (img, sums) = kernel_tree("export-tree-kernel", true);
-    let before = std::fs::read(&img).unwrap();
+    let before = fs_ext4_test_support::snapshot_file(&img).unwrap();
     let dest = image_path("export-tree");
     let _ = std::fs::remove_dir_all(&dest);
 
@@ -93,7 +93,7 @@ fn recursive_export_matches_every_kernel_digest_and_reports_each_item() {
     assert!(!item(&report, "/tree/d1/pipe").contains("\"status\": \"completed\""));
     for (path, want) in &sums {
         let local = Path::new(&dest).join(path.strip_prefix("/tree/").unwrap());
-        assert_eq!(sha256_hex(&std::fs::read(&local).unwrap()), *want, "{path}");
+        assert_eq!(sha256_file(&local).unwrap(), *want, "{path}");
         let entry = item(&report, path);
         assert!(
             entry.contains("\"status\": \"completed\""),
@@ -120,12 +120,11 @@ fn recursive_export_matches_every_kernel_digest_and_reports_each_item() {
         item(&report, "/tree/big").contains("\"status\": \"refused\""),
         "{report}"
     );
-    assert_eq!(std::fs::read(&kept).unwrap(), b"keep me");
     assert_eq!(
-        std::fs::read(&img).unwrap(),
-        before,
-        "export wrote the source"
+        fs_ext4_test_support::read_small_file(&kept).unwrap(),
+        b"keep me"
     );
+    fs_ext4_test_support::assert_files_equal(&img, &before);
     std::fs::remove_dir_all(&dest).unwrap();
 }
 
@@ -134,7 +133,7 @@ fn recursive_export_reports_a_damaged_file_and_keeps_exporting_the_tree() {
     // No special files: this export is partial solely because one regular
     // file cannot be read, not because a fifo or symlink was refused.
     let (source, sums) = kernel_tree("export-tree-damaged-source", false);
-    let original = std::fs::read(&source).unwrap();
+    let original = fs_ext4_test_support::snapshot_file(&source).unwrap();
     let damaged = image_path("export-tree-damaged-copy");
     std::fs::copy(&source, &damaged).unwrap();
     let bad_path = "/tree/big";
@@ -145,7 +144,7 @@ fn recursive_export_reports_a_damaged_file_and_keeps_exporting_the_tree() {
     // As in the single-file failed-read oracle, keep the inode readable
     // but destroy its extent header, so only this file's data is unreadable.
     destroy_extent_header(&damaged, ino);
-    let before = std::fs::read(&damaged).unwrap();
+    let before = fs_ext4_test_support::snapshot_file(&damaged).unwrap();
     let dest = image_path("export-tree-damaged");
 
     let out = tool("fs.ext4")
@@ -177,7 +176,7 @@ fn recursive_export_reports_a_damaged_file_and_keeps_exporting_the_tree() {
             continue;
         }
         let local = Path::new(&dest).join(path.strip_prefix("/tree/").unwrap());
-        assert_eq!(sha256_hex(&std::fs::read(&local).unwrap()), *want, "{path}");
+        assert_eq!(sha256_file(&local).unwrap(), *want, "{path}");
         let entry = item(&report, path);
         assert!(
             entry.contains("\"status\": \"completed\""),
@@ -200,16 +199,8 @@ fn recursive_export_reports_a_damaged_file_and_keeps_exporting_the_tree() {
         }
     }
     assert_eq!(files, sums.len() - 1, "a staging file remained");
-    assert_eq!(
-        std::fs::read(&damaged).unwrap(),
-        before,
-        "export wrote its source"
-    );
-    assert_eq!(
-        std::fs::read(&source).unwrap(),
-        original,
-        "the fixture was damaged"
-    );
+    fs_ext4_test_support::assert_files_equal(&damaged, &before);
+    fs_ext4_test_support::assert_files_equal(&source, &original);
     std::fs::remove_dir_all(&dest).unwrap();
 }
 
@@ -308,7 +299,7 @@ fn kernel_link_tree(tag: &str) -> LinkTree {
 fn recursive_export_preserves_kernel_links_and_times() {
     use std::os::unix::fs::MetadataExt;
     let tree = kernel_link_tree("export-tree-links-kernel");
-    let before = std::fs::read(&tree.img).unwrap();
+    let before = fs_ext4_test_support::snapshot_file(&tree.img).unwrap();
 
     // Without --preserve each symlink is its own refused item, nothing is
     // created for it, and the hard links land as separate files.
@@ -384,18 +375,14 @@ fn recursive_export_preserves_kernel_links_and_times() {
             "{path} modification time"
         );
     }
-    assert_eq!(
-        std::fs::read(&tree.img).unwrap(),
-        before,
-        "export wrote the source"
-    );
+    fs_ext4_test_support::assert_files_equal(&tree.img, &before);
     std::fs::remove_dir_all(&dest).unwrap();
 }
 
 #[test]
 fn single_file_export_refuses_preserve_without_recursive() {
     let tree = kernel_link_tree("export-file-preserve-kernel");
-    let before = std::fs::read(&tree.img).unwrap();
+    let before = fs_ext4_test_support::snapshot_file(&tree.img).unwrap();
     let dest = image_path("export-file-preserve");
     let _ = std::fs::remove_file(&dest);
 
@@ -443,9 +430,5 @@ fn single_file_export_refuses_preserve_without_recursive() {
         "{}",
         stdout(&help)
     );
-    assert_eq!(
-        std::fs::read(&tree.img).unwrap(),
-        before,
-        "export wrote the source"
-    );
+    fs_ext4_test_support::assert_files_equal(&tree.img, &before);
 }

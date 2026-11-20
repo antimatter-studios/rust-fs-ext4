@@ -26,6 +26,7 @@
 //! and removes the question.
 
 use std::collections::BTreeMap;
+use std::io::{self, Read};
 use std::process::Output;
 
 use crate::oracle::{guest_quote, guest_shell, repo, session, Run};
@@ -338,6 +339,20 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     hasher.hex()
+}
+
+pub fn sha256_file(path: impl AsRef<std::path::Path>) -> io::Result<String> {
+    let mut file = std::fs::File::open(path)?;
+    let mut buffer = [0; 1024 * 1024];
+    let mut hasher = Sha256::new();
+    loop {
+        let count = file.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+    }
+    Ok(hasher.hex())
 }
 
 /// SHA-256, spelled out so the test support crate needs no dependency

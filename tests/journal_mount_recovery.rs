@@ -9,7 +9,8 @@
 use fs_ext4::block_io::{BlockDevice, FileDevice};
 use fs_ext4::error::{Error, Result};
 use fs_ext4::{jbd2, Filesystem};
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
+use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::Output;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -52,6 +53,13 @@ fn le(bytes: &[u8], offset: usize) -> u32 {
 }
 fn be(bytes: &[u8], offset: usize) -> u32 {
     u32::from_be_bytes(bytes[offset..offset + 4].try_into().unwrap())
+}
+fn read_range(path: &Path, offset: usize, length: usize) -> Vec<u8> {
+    fs_ext4_test_support::read_file_range(path, offset as u64, length).unwrap()
+}
+fn write_range(file: &mut File, offset: usize, bytes: &[u8]) {
+    file.seek(SeekFrom::Start(offset as u64)).unwrap();
+    file.write_all(bytes).unwrap();
 }
 fn header(kind: u32, sequence: u32) -> Vec<u8> {
     let mut block = vec![0; BLOCK];
@@ -129,10 +137,14 @@ impl Fixture {
             })
             .collect();
 
-        let mut image = fs::read(&pending).unwrap();
-        let incompat = le(&image, 1024 + 0x60) | RECOVER;
-        image[1024 + 0x60..1024 + 0x64].copy_from_slice(&incompat.to_le_bytes());
-        let mut jsb = image[journal[0] * BLOCK..(journal[0] + 1) * BLOCK].to_vec();
+        let mut image = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&pending)
+            .unwrap();
+        let incompat = le(&read_range(&pending, 1024 + 0x60, 4), 0) | RECOVER;
+        write_range(&mut image, 1024 + 0x60, &incompat.to_le_bytes());
+        let mut jsb = read_range(&pending, journal[0] * BLOCK, BLOCK);
         assert_eq!(be(&jsb, 0x24), 0, "plain journal compatibility flags");
         assert_eq!(
             be(&jsb, 0x28),
@@ -144,13 +156,13 @@ impl Fixture {
         put_be(&mut jsb, 0x1c, 1);
         put_be(&mut jsb, 0x28, 1); // Plain JBD2 with revoke support.
 
-        let mut inode = image[inode_block * BLOCK..(inode_block + 1) * BLOCK].to_vec();
+        let mut inode = read_range(&pending, inode_block * BLOCK, BLOCK);
         assert_ne!(
             u16::from_le_bytes(inode[inode_offset..inode_offset + 2].try_into().unwrap()),
             EXPECTED_MODE
         );
         inode[inode_offset..inode_offset + 2].copy_from_slice(&EXPECTED_MODE.to_le_bytes());
-        let mut superblock = image[..BLOCK].to_vec();
+        let mut superblock = read_range(&pending, 0, BLOCK);
         superblock[1024 + 120..1024 + 136].fill(0);
         superblock[1024 + 120..1024 + 120 + LABEL.len()].copy_from_slice(LABEL.as_bytes());
         if journaled_not_clean {
@@ -191,10 +203,9 @@ impl Fixture {
         blocks.push(vec![0; BLOCK]); // No commit for the trailing transaction.
         for (index, block) in blocks.iter().enumerate() {
             let offset = journal[index + 1] * BLOCK;
-            image[offset..offset + BLOCK].copy_from_slice(block);
+            write_range(&mut image, offset, block);
         }
-        image[journal[0] * BLOCK..(journal[0] + 1) * BLOCK].copy_from_slice(&jsb);
-        fs::write(&pending, image).unwrap();
+        write_range(&mut image, journal[0] * BLOCK, &jsb);
         Self {
             dir,
             pending,
@@ -211,24 +222,20 @@ impl Fixture {
     }
 
     fn assert_recovered(&self, path: &Path) {
-        let image = fs::read(path).unwrap();
         let offset = self.inode_block * BLOCK + self.inode_offset;
         assert_eq!(
-            u16::from_le_bytes(image[offset..offset + 2].try_into().unwrap()),
+            u16::from_le_bytes(read_range(path, offset, 2).try_into().unwrap()),
             EXPECTED_MODE
         );
+        assert_eq!(read_range(path, 1024 + 120, LABEL.len()), LABEL.as_bytes());
         assert_eq!(
-            &image[1024 + 120..1024 + 120 + LABEL.len()],
-            LABEL.as_bytes()
-        );
-        assert_eq!(
-            le(&image, 1024 + 0x60) & RECOVER,
+            le(&read_range(path, 1024 + 0x60, 4), 0) & RECOVER,
             0,
             "finished mount must clear RECOVER"
         );
-        let jsb = &image[self.journal_block * BLOCK..(self.journal_block + 1) * BLOCK];
-        assert_eq!(be(jsb, 0x1c), 0, "journal must be clean");
-        assert!(be(jsb, 0x18) > SEQUENCE, "sequence must advance");
+        let jsb = read_range(path, self.journal_block * BLOCK, BLOCK);
+        assert_eq!(be(&jsb, 0x1c), 0, "journal must be clean");
+        assert!(be(&jsb, 0x18) > SEQUENCE, "sequence must advance");
     }
 
     fn linux_recover(&self, path: &Path) {
@@ -299,15 +306,12 @@ fn committed_plain_journal_matches_linux_and_refreshes_mount_metadata() {
         mounted.finish().expect("explicit clean finish");
         fixture.assert_recovered(&library);
         fixture.linux_check(&library);
-        let after_first_finish = fs::read(&library).unwrap();
+        let after_first_finish = fs_ext4_test_support::snapshot_file(&library).unwrap();
         checked_mount(&library)
             .finish()
             .expect("repeat checked mount and finish");
-        assert_eq!(
-            fs::read(&library).unwrap(),
-            after_first_finish,
-            "repeat recovery must be byte-stable"
-        );
+        fs_ext4_test_support::assert_files_equal(&library, &after_first_finish);
+        let _ = fs::remove_file(after_first_finish);
     }
 }
 
@@ -318,9 +322,9 @@ fn live_flush_and_fresh_read_keep_recovery_marker_until_finish() {
     let mut mounted = checked_mount(&path);
     mounted.apply_pwrite("/oracle", 0, b"first").unwrap();
     mounted.flush().unwrap();
-    assert_ne!(le(&fs::read(&path).unwrap(), 1024 + 0x60) & RECOVER, 0);
+    assert_ne!(le(&read_range(&path, 1024 + 0x60, 4), 0) & RECOVER, 0);
     mounted.fresh_read().unwrap();
-    assert_ne!(le(&fs::read(&path).unwrap(), 1024 + 0x60) & RECOVER, 0);
+    assert_ne!(le(&read_range(&path, 1024 + 0x60, 4), 0) & RECOVER, 0);
     mounted.apply_pwrite("/oracle", 0, b"second").unwrap();
     mounted.fresh_read().unwrap();
     mounted.finish().unwrap();

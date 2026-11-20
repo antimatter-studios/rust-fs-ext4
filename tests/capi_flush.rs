@@ -10,7 +10,10 @@ use fs_ext4::block_io::{BlockDevice, FileDevice};
 use fs_ext4::capi::*;
 use fs_ext4::Filesystem;
 use std::ffi::CString;
+use std::fs::{File, OpenOptions};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::raw::{c_int, c_void};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -19,7 +22,9 @@ const EINVAL: c_int = 22;
 const EIO: c_int = 5;
 
 struct DevCtx {
-    bytes: Mutex<Vec<u8>>,
+    path: PathBuf,
+    file: Mutex<File>,
+    size: u64,
     flushes: AtomicU64,
     /// When set, the next write fails and clears it.
     fail_next_write: AtomicBool,
@@ -27,12 +32,20 @@ struct DevCtx {
 
 extern "C" fn read_cb(ctx: *mut c_void, buf: *mut c_void, offset: u64, length: u64) -> c_int {
     let dev = unsafe { &*(ctx as *const DevCtx) };
-    let bytes = dev.bytes.lock().unwrap();
-    let (off, len) = (offset as usize, length as usize);
-    if off + len > bytes.len() {
+    if offset.checked_add(length).is_none_or(|end| end > dev.size) {
         return 1;
     }
-    unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr().add(off), buf as *mut u8, len) };
+    let Ok(length) = usize::try_from(length) else {
+        return 1;
+    };
+    let mut file = dev.file.lock().unwrap();
+    if file.seek(SeekFrom::Start(offset)).is_err() {
+        return 1;
+    }
+    let bytes = unsafe { std::slice::from_raw_parts_mut(buf as *mut u8, length) };
+    if file.read_exact(bytes).is_err() {
+        return 1;
+    }
     0
 }
 
@@ -41,39 +54,60 @@ extern "C" fn write_cb(ctx: *mut c_void, buf: *const c_void, offset: u64, length
     if dev.fail_next_write.swap(false, Ordering::SeqCst) {
         return 1;
     }
-    let mut bytes = dev.bytes.lock().unwrap();
-    let (off, len) = (offset as usize, length as usize);
-    if off + len > bytes.len() {
+    if offset.checked_add(length).is_none_or(|end| end > dev.size) {
         return 1;
     }
-    unsafe { std::ptr::copy_nonoverlapping(buf as *const u8, bytes.as_mut_ptr().add(off), len) };
+    let Ok(length) = usize::try_from(length) else {
+        return 1;
+    };
+    let mut file = dev.file.lock().unwrap();
+    if file.seek(SeekFrom::Start(offset)).is_err() {
+        return 1;
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(buf as *const u8, length) };
+    if file.write_all(bytes).is_err() {
+        return 1;
+    }
     0
 }
 
 extern "C" fn flush_cb(ctx: *mut c_void) -> c_int {
     let dev = unsafe { &*(ctx as *const DevCtx) };
+    if dev.file.lock().unwrap().flush().is_err() {
+        return 1;
+    }
     dev.flushes.fetch_add(1, Ordering::SeqCst);
     0
 }
 
-fn dev_from(bytes: Vec<u8>) -> Arc<DevCtx> {
+fn dev_from(path: &Path) -> Arc<DevCtx> {
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .expect("open callback image");
+    let size = file.metadata().expect("callback image metadata").len();
     Arc::new(DevCtx {
-        bytes: Mutex::new(bytes),
+        path: path.to_path_buf(),
+        file: Mutex::new(file),
+        size,
         flushes: AtomicU64::new(0),
         fail_next_write: AtomicBool::new(false),
     })
 }
 
-fn fixture_bytes() -> Vec<u8> {
+fn fixture_device() -> Arc<DevCtx> {
     let path = fs_ext4_test_support::fixture(env!("CARGO_MANIFEST_DIR"), IMAGE);
-    std::fs::read(&path).unwrap_or_else(|e| panic!("read fixture {path}: {e}"))
+    let copy = fs_ext4_test_support::snapshot_file(&path)
+        .unwrap_or_else(|e| panic!("copy fixture {path}: {e}"));
+    dev_from(&copy)
 }
 
 fn cfg(dev: &Arc<DevCtx>) -> fs_ext4_blockdev_cfg_t {
     fs_ext4_blockdev_cfg_t {
         read: Some(read_cb),
         context: Arc::as_ptr(dev) as *mut c_void,
-        size_bytes: dev.bytes.lock().unwrap().len() as u64,
+        size_bytes: dev.size,
         block_size: 512,
         write: Some(write_cb),
         flush: Some(flush_cb),
@@ -140,7 +174,7 @@ fn payload() -> Vec<u8> {
 /// moment, with the first mount still live -- holds the file byte-exact.
 #[test]
 fn flush_puts_every_change_on_the_device_without_unmounting() {
-    let dev = dev_from(fixture_bytes());
+    let dev = fixture_device();
     let fs = mount_rw(&dev);
     let data = payload();
     create_and_write(fs, "/flushed.bin", &data).expect("create + pwrite");
@@ -155,7 +189,8 @@ fn flush_puts_every_change_on_the_device_without_unmounting() {
     );
 
     // A snapshot of the device now, read by an independent read-only mount.
-    let copy = dev_from(dev.bytes.lock().unwrap().clone());
+    let snapshot = fs_ext4_test_support::snapshot_file(&dev.path).expect("snapshot device");
+    let copy = dev_from(&snapshot);
     let c = cfg(&copy);
     let ro = unsafe { fs_ext4_mount_with_callbacks(&c) };
     assert!(!ro.is_null(), "ro mount of the copy: {}", last_error());
@@ -176,7 +211,7 @@ fn flush_puts_every_change_on_the_device_without_unmounting() {
 /// anything: flush refuses with EIO rather than claim durability.
 #[test]
 fn flush_after_a_failed_write_is_eio() {
-    let dev = dev_from(fixture_bytes());
+    let dev = fixture_device();
     let fs = mount_rw(&dev);
     create_and_write(fs, "/first.bin", b"first").expect("first write");
     assert_eq!(unsafe { fs_ext4_flush(fs) }, 0, "{}", last_error());
@@ -206,7 +241,7 @@ fn null_handles_are_einval() {
 /// A read-only mount has nothing to write back: flush succeeds.
 #[test]
 fn flush_on_a_read_only_mount_succeeds() {
-    let dev = dev_from(fixture_bytes());
+    let dev = fixture_device();
     let c = cfg(&dev);
     let ro = unsafe { fs_ext4_mount_with_callbacks(&c) };
     assert!(!ro.is_null(), "{}", last_error());
@@ -219,7 +254,7 @@ fn flush_on_a_read_only_mount_succeeds() {
 /// mount's caches, so it reads what the device now holds.
 #[test]
 fn fresh_read_sees_what_the_host_wrote_underneath() {
-    let dev = dev_from(fixture_bytes());
+    let dev = fixture_device();
     let first = mount_rw(&dev);
     // Warm the first mount's caches: the lookup reads the root directory.
     let name = CString::new("/underneath.bin").unwrap();
@@ -280,7 +315,11 @@ impl BlockDevice for CutAfterDirtyJournal {
 #[test]
 fn fresh_read_on_a_read_only_replay_is_eio_and_keeps_the_replayed_view() {
     let image = fs_ext4_test_support::temp_path!("fs_ext4_capi_flush_{}.img", std::process::id());
-    std::fs::write(&image, fixture_bytes()).unwrap();
+    fs_ext4_test_support::copy_file_sparse(
+        fs_ext4_test_support::fixture(env!("CARGO_MANIFEST_DIR"), IMAGE),
+        &image,
+    )
+    .unwrap();
     {
         let dev = Arc::new(CutAfterDirtyJournal {
             inner: Arc::new(FileDevice::open_rw(&image).unwrap()),

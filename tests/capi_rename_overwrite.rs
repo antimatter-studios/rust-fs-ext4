@@ -12,7 +12,6 @@
 use fs_ext4::capi::*;
 use std::ffi::{CStr, CString};
 use std::fs;
-use std::io::Write;
 use std::os::raw::c_void;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -36,10 +35,7 @@ fn scratch_image(tag: &str) -> PathBuf {
         "fs_ext4_capi_rename_overwrite_{tag}_{}_{n}.img",
         std::process::id()
     ));
-    let bytes = fs::read(SRC_IMAGE).expect("read src image");
-    let mut out = fs::File::create(&dst).expect("create dst image");
-    out.write_all(&bytes).expect("write dst image");
-    out.flush().expect("flush");
+    fs::copy(SRC_IMAGE, &dst).expect("copy src image");
     dst
 }
 

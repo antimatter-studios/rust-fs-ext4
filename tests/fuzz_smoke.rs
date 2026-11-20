@@ -9,10 +9,15 @@
 //! deliberately malformed in one way, and asserts we get a
 //! structured error back instead of a panic.
 
-use fs_ext4::block_io::BlockDevice;
+use fs_ext4::block_io::{BlockDevice, FileDevice};
 use fs_ext4::error::{Error, Result};
 use fs_ext4::fs::Filesystem;
-use std::sync::Arc;
+use std::{
+    fs::{self, OpenOptions},
+    io::{Read, Seek, SeekFrom, Write},
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 /// In-memory block device backed by a single `Vec<u8>`. Reads past EOF
 /// fail, matching a real disk.
@@ -110,28 +115,65 @@ fn prng_images_never_panic() {
 }
 
 /// The bytes of fixture `name`; fails (never skips) when it is absent.
-fn read_fixture(name: &str) -> Vec<u8> {
-    let path = fs_ext4_test_support::fixture(env!("CARGO_MANIFEST_DIR"), name);
-    std::fs::read(&path).unwrap_or_else(|e| panic!("read {path}: {e}"))
+fn copy_fixture(name: &str, tag: &str) -> PathBuf {
+    let source = fs_ext4_test_support::fixture(env!("CARGO_MANIFEST_DIR"), name);
+    let destination = PathBuf::from(fs_ext4_test_support::temp_path!(
+        "fuzz-smoke-{}-{tag}.img",
+        std::process::id()
+    ));
+    fs_ext4_test_support::copy_file_sparse(&source, &destination)
+        .unwrap_or_else(|e| panic!("copy {source}: {e}"));
+    destination
+}
+
+fn flip_file_byte(path: &Path, offset: u64, mask: u8) -> u8 {
+    let mut file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .expect("open image for mutation");
+    file.seek(SeekFrom::Start(offset)).expect("seek to byte");
+    let mut byte = [0];
+    file.read_exact(&mut byte).expect("read byte");
+    file.seek(SeekFrom::Start(offset)).expect("seek to byte");
+    file.write_all(&[byte[0] ^ mask]).expect("write byte");
+    byte[0]
+}
+
+fn restore_file_byte(path: &Path, offset: u64, byte: u8) {
+    let mut file = OpenOptions::new()
+        .write(true)
+        .open(path)
+        .expect("open image to restore byte");
+    file.seek(SeekFrom::Start(offset)).expect("seek to byte");
+    file.write_all(&[byte]).expect("restore byte");
+}
+
+fn mount_file(path: &Path) -> fs_ext4::Result<Filesystem> {
+    let device: Arc<dyn BlockDevice> = Arc::new(
+        FileDevice::open(path.to_str().expect("UTF-8 image path"))
+            .expect("open image as a block device"),
+    );
+    Filesystem::mount(device)
 }
 
 /// Flip a single byte in a real ext4 image and confirm mount either
 /// rejects it or reads without panicking.
 #[test]
 fn single_byte_flips_in_basic_image_dont_panic() {
-    let bytes = read_fixture("ext4-basic.img");
+    let image = copy_fixture("ext4-basic.img", "single-byte");
+    let length = fs::metadata(&image).unwrap().len();
     // Flip bytes at a sampling of positions that are known to sit inside
     // a superblock, a block-group descriptor, and an inode table block.
     // (The exact offsets don't matter — any of these should either produce
     // a structured error or parse as benign noise; no panics allowed.)
     for &off in &[0x400u64, 0x404, 0x450, 0x500, 0x800, 0x1000, 0x4000, 0x8000] {
-        if (off as usize) >= bytes.len() {
+        if off >= length {
             continue;
         }
-        let mut mutated = bytes.clone();
-        mutated[off as usize] ^= 0xFF;
-        let dev = MemDevice::new(mutated);
-        let _ = Filesystem::mount(dev); // ok or err — just never panic
+        let original = flip_file_byte(&image, off, 0xFF);
+        let _ = mount_file(&image);
+        restore_file_byte(&image, off, original);
     }
 }
 
@@ -147,8 +189,8 @@ fn dir_structure_walks_never_panic_on_byte_flipped_basic() {
     use fs_ext4::extent;
     use fs_ext4::inode::Inode;
 
-    let bytes = read_fixture("ext4-basic.img");
-    let sb_size = bytes.len();
+    let image = copy_fixture("ext4-basic.img", "directory-walk");
+    let sb_size = fs::metadata(&image).unwrap().len();
     let sample_offsets: Vec<u64> = vec![
         0x400, 0x408, 0x450, 0x500, // superblock
         0x800, 0x820, 0x840, // bgdt
@@ -158,37 +200,35 @@ fn dir_structure_walks_never_panic_on_byte_flipped_basic() {
     ];
 
     for &off in &sample_offsets {
-        if off as usize >= sb_size {
+        if off >= sb_size {
             continue;
         }
-        let mut mutated = bytes.clone();
-        mutated[off as usize] ^= 0xFF;
-        let dev = MemDevice::new(mutated);
-        let Ok(fs) = Filesystem::mount(dev) else {
-            continue;
-        };
-
-        // Root inode (ino 2).
-        let Ok((inode, _raw)) = fs.read_inode_verified(2) else {
-            continue;
-        };
-        // Extent walk over the root inode's extent tree.
-        let _ = extent::collect_all(&inode.block, fs.dev.as_ref(), fs.sb.block_size());
-        // Raw read of logical block 0 and parse as a directory block.
-        if let Ok(Some(phys)) =
-            extent::map_logical(&inode.block, fs.dev.as_ref(), fs.sb.block_size(), 0)
-        {
-            let mut block = vec![0u8; fs.sb.block_size() as usize];
-            if fs
-                .dev
-                .read_at(phys * fs.sb.block_size() as u64, &mut block)
-                .is_ok()
-            {
-                let _ = dir::parse_block(&block, true);
+        let original = flip_file_byte(&image, off, 0xFF);
+        let mounted = mount_file(&image);
+        if let Ok(fs) = mounted {
+            if let Ok((inode, _raw)) = fs.read_inode_verified(2) {
+                // Extent walk over the root inode's extent tree.
+                let _ = extent::collect_all(&inode.block, fs.dev.as_ref(), fs.sb.block_size());
+                // Raw read of logical block 0 and parse as a directory block.
+                if let Ok(Some(phys)) =
+                    extent::map_logical(&inode.block, fs.dev.as_ref(), fs.sb.block_size(), 0)
+                {
+                    let mut block = vec![0u8; fs.sb.block_size() as usize];
+                    if fs
+                        .dev
+                        .read_at(phys * fs.sb.block_size() as u64, &mut block)
+                        .is_ok()
+                    {
+                        let _ = dir::parse_block(&block, true);
+                    }
+                }
             }
+            restore_file_byte(&image, off, original);
+            // Inode 2 again but via the raw path.
+            let _ = fs.read_inode_raw(2).and_then(|r| Inode::parse(&r));
+        } else {
+            restore_file_byte(&image, off, original);
         }
-        // Inode 2 again but via the raw path.
-        let _ = fs.read_inode_raw(2).and_then(|r| Inode::parse(&r));
     }
 }
 
@@ -263,19 +303,19 @@ fn extent_parsers_never_panic_on_random_bytes() {
 /// flip surface available for the superblock region.
 #[test]
 fn exhaustive_single_bit_flip_first_sector_never_panics() {
-    let bytes = read_fixture("ext4-basic.img");
+    let image = copy_fixture("ext4-basic.img", "exhaustive-flip");
+    let length = fs::metadata(&image).unwrap().len() as usize;
     for byte_off in 0x400..0x600usize {
-        if byte_off >= bytes.len() {
+        if byte_off >= length {
             break;
         }
         for bit in 0..8u8 {
-            let mut mutated = bytes.clone();
-            mutated[byte_off] ^= 1 << bit;
-            let dev = MemDevice::new(mutated);
+            let original = flip_file_byte(&image, byte_off as u64, 1 << bit);
             // Mount is allowed to succeed or fail; never panic.
-            if let Ok(fs) = Filesystem::mount(dev) {
+            if let Ok(fs) = mount_file(&image) {
                 let _ = fs.read_inode_verified(2);
             }
+            restore_file_byte(&image, byte_off as u64, original);
         }
     }
 }
@@ -285,9 +325,8 @@ fn exhaustive_single_bit_flip_first_sector_never_panics() {
 /// (traverses every directory + inode) + per-inode extent collection. The
 /// htree/xattr/inline images exercise the more complex parsers under
 /// corruption. `catch_unwind` collects every panic so one doesn't mask the
-/// rest. Marked `#[ignore]` (slow); run with `cargo test -- --ignored`.
+/// rest.
 #[test]
-#[ignore = "slow corrupt-input fuzz; run explicitly with --ignored"]
 fn deep_walk_byte_flip_fuzz_never_panics() {
     use fs_ext4::{extent, fsck};
 
@@ -302,14 +341,14 @@ fn deep_walk_byte_flip_fuzz_never_panics() {
     let mut panics: Vec<String> = Vec::new();
 
     for img in images {
-        let bytes = read_fixture(img);
-        let hi = bytes.len().min(0x2800); // superblock + GDT + first inode-table/dir blocks
+        let image = copy_fixture(img, "deep-walk");
+        let length = fs::metadata(&image).unwrap().len() as usize;
+        let hi = length.min(0x2800); // superblock + GDT + first inode-table/dir blocks
         let mut off = 0x400usize;
         while off < hi {
-            let mut m = bytes.clone();
-            m[off] ^= 0xFF;
-            let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
-                if let Ok(fs) = Filesystem::mount(MemDevice::new(m)) {
+            let original = flip_file_byte(&image, off as u64, 0xFF);
+            let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                if let Ok(fs) = mount_file(&image) {
                     let _ = fsck::audit(&fs, u32::MAX, u32::MAX);
                     for ino in 1..=24u32 {
                         if let Ok((inode, _)) = fs.read_inode_verified(ino) {
@@ -325,24 +364,37 @@ fn deep_walk_byte_flip_fuzz_never_panics() {
             if res.is_err() {
                 panics.push(format!("{img}@{off:#x}"));
             }
+            restore_file_byte(&image, off as u64, original);
             off += 2;
         }
 
         // Truncation: a short device (read past EOF) must surface Err, never panic.
         for cut in [256usize, 512, 1024, 1536, 2048, 3072, 4096, 6144, 0x2000] {
-            if cut >= bytes.len() {
+            if cut >= length {
                 continue;
             }
-            let m = bytes[..cut].to_vec();
-            let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
-                if let Ok(fs) = Filesystem::mount(MemDevice::new(m)) {
+            let truncated = PathBuf::from(fs_ext4_test_support::temp_path!(
+                "fuzz-smoke-{}-truncated.img",
+                std::process::id()
+            ));
+            fs_ext4_test_support::copy_file_sparse(&image, &truncated).unwrap();
+            OpenOptions::new()
+                .write(true)
+                .open(&truncated)
+                .unwrap()
+                .set_len(cut as u64)
+                .unwrap();
+            let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                if let Ok(fs) = mount_file(&truncated) {
                     let _ = fsck::audit(&fs, u32::MAX, u32::MAX);
                 }
             }));
+            fs::remove_file(truncated).unwrap();
             if res.is_err() {
                 panics.push(format!("{img}@trunc{cut}"));
             }
         }
+        fs::remove_file(image).unwrap();
     }
 
     std::panic::set_hook(prev);

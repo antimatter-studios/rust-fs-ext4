@@ -99,13 +99,13 @@ fn recursive_import_matches_every_kernel_digest_with_links_and_times() {
     let src = src.to_str().unwrap();
 
     // Without --recursive a directory source is refused and nothing lands.
-    let before = std::fs::read(&img).unwrap();
+    let before = fs_ext4_test_support::snapshot_file(&img).unwrap();
     let plain = tool("fs.ext4")
         .args([&img, "import", src, "/tree"])
         .output()
         .unwrap();
     assert_ne!(plain.status.code(), Some(0), "{}", stderr(&plain));
-    assert_eq!(std::fs::read(&img).unwrap(), before);
+    fs_ext4_test_support::assert_files_equal(&img, &before);
 
     let report = stdout(&ok(tool("fs.ext4").args([
         &img,

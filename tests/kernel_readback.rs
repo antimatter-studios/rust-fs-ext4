@@ -331,9 +331,17 @@ fn a_flipped_data_byte_fails_the_comparison_and_not_e2fsck() {
                 .expect("logical block 300 is mapped");
         extent.map(300) * u64::from(fs.sb.block_size()) + 17
     };
-    let mut bytes = std::fs::read(&written.image).expect("read image");
-    bytes[offset as usize] ^= 0xff;
-    std::fs::write(&written.image, &bytes).expect("write image");
+    {
+        use std::io::{Seek, SeekFrom, Write};
+
+        let byte = fs_ext4_test_support::read_file_range(&written.image, offset, 1).unwrap()[0];
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&written.image)
+            .unwrap();
+        file.seek(SeekFrom::Start(offset)).unwrap();
+        file.write_all(&[byte ^ 0xff]).unwrap();
+    }
 
     // e2fsck is happy: the bytes it checks are all still right.
     fs_ext4_test_support::assert_e2fsck_clean(&written.image, "corrupt");

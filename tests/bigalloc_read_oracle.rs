@@ -93,13 +93,12 @@ fn bigalloc_volume(block: u32, cluster: u32, size_mib: u64, min_groups: usize) {
             "[{tag}] {path} differs from its source"
         );
     }
-    let reference = fs_ext4_test_support::oracle(debugfs)
-        .args(["-R", "cat /d/big.bin", &image])
-        .output();
-    assert!(
-        read(&fs, "/d/big.bin") == reference.stdout,
-        "[{tag}] debugfs cat"
-    );
+    let dumped = format!("{root}/debugfs-big.bin");
+    fs_ext4_test_support::oracle(debugfs)
+        .args(["-R", &format!("dump /d/big.bin {dumped}"), &image])
+        .judged()
+        .clean("debugfs dump");
+    fs_ext4_test_support::assert_files_equal(format!("{root}/d/big.bin"), dumped);
 
     let err = fs_ext4::fsck::audit(&fs, u32::MAX, u32::MAX).expect_err("audit");
     assert!(

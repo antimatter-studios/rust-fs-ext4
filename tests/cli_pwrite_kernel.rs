@@ -318,7 +318,7 @@ fn write_at_refuses_what_the_kernel_refuses() {
         stderr(&out)
     );
     let kernel = stdout(&out);
-    let image = std::fs::read(&img).expect("read the image");
+    let image = fs_ext4_test_support::snapshot_file(&img).expect("snapshot the image");
 
     let mut tried = Vec::new();
     for line in kernel.lines() {
@@ -340,10 +340,7 @@ fn write_at_refuses_what_the_kernel_refuses() {
         assert!(got.stdout.is_empty(), "{what}; stdout: {}", stdout(&got));
         assert!(err.contains(&format!("\"code\": {code}")), "{what}");
         assert!(err.contains(want), "{what}; expected {want:?}");
-        assert!(
-            std::fs::read(&img).expect("read the image") == image,
-            "write --at {label:?} was refused and still changed the image"
-        );
+        fs_ext4_test_support::assert_files_equal(&img, &image);
         tried.push(path);
     }
     assert_eq!(tried, cases, "the guest answered every case:\n{kernel}");
@@ -363,7 +360,7 @@ fn write_at_into_a_block_mapped_file_is_refused() {
 
     // The driver cannot write into a block-mapped file, inside it or past
     // its end: exit 3, nothing on stdout, and the image as it was.
-    let image = std::fs::read(&img).expect("read the image");
+    let image = fs_ext4_test_support::snapshot_file(&img).expect("snapshot the image");
     for at in [100, 50000] {
         let got = write_at(&img, "/ours", at, &pattern(10, 9));
         let err = stderr(&got);
@@ -371,10 +368,7 @@ fn write_at_into_a_block_mapped_file_is_refused() {
         assert!(got.stdout.is_empty(), "at {at}: stdout: {}", stdout(&got));
         assert!(err.contains("\"code\": 3"), "at {at}: {err}");
         assert!(err.contains("block-mapped"), "at {at}: {err}");
-        assert!(
-            std::fs::read(&img).expect("read the image") == image,
-            "the refused write at {at} changed the image"
-        );
+        fs_ext4_test_support::assert_files_equal(&img, &image);
     }
 }
 

@@ -658,9 +658,18 @@ fn one_flipped_data_byte_makes_the_two_disagree() {
         "lwext4 and this crate disagreed before anything was corrupted"
     );
 
-    let mut bytes = std::fs::read(&image).expect("read the image");
-    bytes[block as usize + 17] ^= 0xff;
-    std::fs::write(&image, &bytes).expect("write the image back");
+    {
+        use std::io::{Seek, SeekFrom, Write};
+
+        let offset = block + 17;
+        let byte = fs_ext4_test_support::read_file_range(&image, offset, 1).unwrap()[0];
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&image)
+            .unwrap();
+        file.seek(SeekFrom::Start(offset)).unwrap();
+        file.write_all(&[byte ^ 0xff]).unwrap();
+    }
 
     let dirty = lwext4_report(&image, "after the flip");
     assert_eq!(
@@ -707,8 +716,11 @@ fn the_pin_the_guest_builds_is_the_pin_this_suite_requires() {
     // the patch changes the script, which is what makes the harness
     // re-provision. A digest left behind would fail setup in the guest;
     // this says so on the host first.
-    let patch = std::fs::read(format!("{}/{LWEXT4_PATCH}", env!("CARGO_MANIFEST_DIR")))
-        .expect("read the lwext4 patch");
+    let patch = fs_ext4_test_support::read_small_file(format!(
+        "{}/{LWEXT4_PATCH}",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+    .expect("read the lwext4 patch");
     let digest = sha256_hex(&patch);
     assert!(
         setup.contains(&format!("LWEXT4_PATCH_SHA256={digest}")),

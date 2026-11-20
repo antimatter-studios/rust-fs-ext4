@@ -144,7 +144,7 @@ fn a_read_only_replay_keeps_its_pins_through_fresh_read() {
         dev.armed.store(true, Ordering::SeqCst);
         fs.apply_mkdir("/committed", 0o755).expect("mkdir");
     }
-    let before = std::fs::read(&image).unwrap();
+    let before = fs_ext4_test_support::snapshot_file(&image).unwrap();
 
     let mut ro = Filesystem::mount(Arc::new(FileDevice::open(&image).unwrap())).expect("mount ro");
     assert!(
@@ -176,9 +176,6 @@ fn a_read_only_replay_keeps_its_pins_through_fresh_read() {
         "after fresh_read the committed mkdir is gone"
     );
     drop(ro);
-    assert!(
-        std::fs::read(&image).unwrap() == before,
-        "a read-only mount wrote to the device"
-    );
+    fs_ext4_test_support::assert_files_equal(&image, before);
     let _ = std::fs::remove_file(&image);
 }

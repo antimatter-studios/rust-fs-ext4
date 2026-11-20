@@ -1,0 +1,86 @@
+name: QEMU benchmark trial
+description: Run the same ext4 workload in an explicitly accelerated or emulated guest
+inputs:
+  mode:
+    default: run
+    description: run requires a prepared guest; prepare builds one on matching native hardware
+  arch:
+    required: true
+    description: Guest architecture
+  accelerator:
+    required: true
+    description: kvm or tcg, with no implicit fallback
+  requested-runner:
+    required: true
+    description: Requested runner placement
+  selected-runner:
+    required: true
+    description: Fixed runner label for this controlled benchmark
+  workload:
+    default: single
+    description: single, smoke or full
+  label:
+    default: ''
+    description: Distinguishes artifacts when one job id runs as a matrix
+runs:
+  using: composite
+  steps:
+    - name: Record arrival
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        REQUESTED: ${{ inputs.requested-runner }}
+        SELECTED: ${{ inputs.selected-runner }}
+        RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        RUNNER_NAME: ${{ runner.name }}
+      run: |
+        set -euo pipefail
+        echo "BENCH_JOB_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
+        ready_at=$(curl -fsS --connect-timeout 3 --max-time 15 \
+          -H "Authorization: Bearer $GH_TOKEN" \
+          "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" | \
+          python3 -c 'import datetime,json,sys; print(int(datetime.datetime.fromisoformat(json.load(sys.stdin)["created_at"].replace("Z", "+00:00")).timestamp()))')
+        echo "BENCH_READY_AT=$ready_at" >> "$GITHUB_ENV"
+        echo "BENCH_REQUESTED_RUNNER=$REQUESTED" >> "$GITHUB_ENV"
+        echo "BENCH_SELECTED_RUNNER=$SELECTED" >> "$GITHUB_ENV"
+        echo "BENCH_RUNNER_ENVIRONMENT=$RUNNER_ENVIRONMENT" >> "$GITHUB_ENV"
+        echo "BENCH_RUNNER_NAME=$RUNNER_NAME" >> "$GITHUB_ENV"
+    - name: Grade guest architecture and accelerator selection
+      shell: bash
+      run: bash scripts/test-ci-qemu-benchmark.sh
+    - name: Install chore
+      shell: bash
+      run: bash scripts/ci-install-chore.sh
+    - name: Pinned siblings
+      shell: bash
+      run: chore siblings
+    - name: Enable KVM only when requested
+      if: inputs.accelerator == 'kvm'
+      shell: bash
+      run: |
+        test -e /dev/kvm
+        sudo chmod 0666 /dev/kvm
+    - name: Run ext4 in the guest
+      shell: bash
+      env:
+        ARCH: ${{ inputs.arch }}
+        ACCELERATOR: ${{ inputs.accelerator }}
+        WORKLOAD: ${{ inputs.workload }}
+        MODE: ${{ inputs.mode }}
+        GH_TOKEN: ${{ github.token }}
+        BENCH_CACHE_REGISTRY: ghcr.io/${{ github.repository }}/qemu-pilot
+      run: bash scripts/ci-qemu-runner.sh "$MODE" "$ARCH" "$ACCELERATOR" "$WORKLOAD"
+    - name: Preserve measurements and failures
+      if: always()
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: qemu-${{ github.job }}-${{ inputs.arch }}${{ inputs.label && format('-{0}', inputs.label) || '' }}
+        path: |
+          tmp/qemu-benchmark/**/*.json
+          tmp/qemu-benchmark/**/*.txt
+          tmp/qemu-benchmark/**/*.tsv
+          tmp/qemu-benchmark/**/*.time
+          tmp/qemu-benchmark/**/*.log
+          tmp/qemu-benchmark/**/*.jsonl
+        if-no-files-found: error
+        retention-days: 7

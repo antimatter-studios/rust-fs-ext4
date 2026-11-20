@@ -3,14 +3,15 @@
 //! unlink in capi_truncate_callback_mount.rs, adding create, mkdir,
 //! rmdir, rename, write_file.
 
+use fs_ext4::block_io::{BlockDevice, FileDevice};
 use fs_ext4::capi::*;
 use std::ffi::{CStr, CString};
-use std::fs;
 use std::os::raw::c_void;
+use std::sync::Arc;
 
 const IMAGE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/test-disks/ext4-basic.img");
 
-extern "C" fn read_from_vec(
+extern "C" fn read_from_file(
     ctx: *mut c_void,
     buf: *mut c_void,
     offset: u64,
@@ -19,33 +20,27 @@ extern "C" fn read_from_vec(
     if ctx.is_null() || buf.is_null() {
         return 1;
     }
-    let bytes = unsafe { &*(ctx as *const Vec<u8>) };
-    let end = (offset as usize).checked_add(length as usize);
-    if end.is_none_or(|e| e > bytes.len()) {
+    let device = unsafe { &*(ctx as *const FileDevice) };
+    let Ok(length) = usize::try_from(length) else {
         return 2;
-    }
-    unsafe {
-        std::ptr::copy_nonoverlapping(
-            bytes.as_ptr().add(offset as usize),
-            buf as *mut u8,
-            length as usize,
-        );
-    }
-    0
+    };
+    let bytes = unsafe { std::slice::from_raw_parts_mut(buf as *mut u8, length) };
+    device.read_at(offset, bytes).map_or(2, |_| 0)
 }
 
-fn mount_ro(bytes: &Vec<u8>) -> *mut fs_ext4_fs_t {
+fn mount_ro() -> (*mut fs_ext4_fs_t, Arc<FileDevice>) {
+    let device = Arc::new(FileDevice::open(IMAGE).expect("open image"));
     let cfg = fs_ext4_blockdev_cfg_t {
-        read: Some(read_from_vec),
-        context: bytes as *const Vec<u8> as *mut c_void,
-        size_bytes: bytes.len() as u64,
+        read: Some(read_from_file),
+        context: Arc::as_ptr(&device) as *mut c_void,
+        size_bytes: device.size_bytes(),
         block_size: 512,
         write: None,
         flush: None,
     };
     let fs_h = unsafe { fs_ext4_mount_with_callbacks(&cfg) };
     assert!(!fs_h.is_null());
-    fs_h
+    (fs_h, device)
 }
 
 fn last_err() -> String {
@@ -58,8 +53,7 @@ fn last_err() -> String {
 
 #[test]
 fn create_on_ro_mount_refused_with_erofs() {
-    let bytes = fs::read(IMAGE).unwrap();
-    let fs_h = mount_ro(&bytes);
+    let (fs_h, _device) = mount_ro();
     let p = CString::new("/new.txt").unwrap();
     let ino = unsafe { fs_ext4_create(fs_h, p.as_ptr(), 0o644) };
     assert_eq!(ino, 0, "create on RO mount must fail");
@@ -70,8 +64,7 @@ fn create_on_ro_mount_refused_with_erofs() {
 
 #[test]
 fn mkdir_on_ro_mount_refused() {
-    let bytes = fs::read(IMAGE).unwrap();
-    let fs_h = mount_ro(&bytes);
+    let (fs_h, _device) = mount_ro();
     let p = CString::new("/newdir").unwrap();
     let ino = unsafe { fs_ext4_mkdir(fs_h, p.as_ptr(), 0o755) };
     assert_eq!(ino, 0);
@@ -81,8 +74,7 @@ fn mkdir_on_ro_mount_refused() {
 
 #[test]
 fn rmdir_on_ro_mount_refused() {
-    let bytes = fs::read(IMAGE).unwrap();
-    let fs_h = mount_ro(&bytes);
+    let (fs_h, _device) = mount_ro();
     let p = CString::new("/subdir").unwrap();
     let rc = unsafe { fs_ext4_rmdir(fs_h, p.as_ptr()) };
     assert_eq!(rc, -1);
@@ -92,8 +84,7 @@ fn rmdir_on_ro_mount_refused() {
 
 #[test]
 fn rename_on_ro_mount_refused() {
-    let bytes = fs::read(IMAGE).unwrap();
-    let fs_h = mount_ro(&bytes);
+    let (fs_h, _device) = mount_ro();
     let src = CString::new("/test.txt").unwrap();
     let dst = CString::new("/renamed.txt").unwrap();
     let rc = unsafe { fs_ext4_rename(fs_h, src.as_ptr(), dst.as_ptr()) };
@@ -104,8 +95,7 @@ fn rename_on_ro_mount_refused() {
 
 #[test]
 fn write_file_on_ro_mount_refused_and_data_intact() {
-    let bytes = fs::read(IMAGE).unwrap();
-    let fs_h = mount_ro(&bytes);
+    let (fs_h, _device) = mount_ro();
     let p = CString::new("/test.txt").unwrap();
     let payload = b"nope";
     let rc = unsafe {

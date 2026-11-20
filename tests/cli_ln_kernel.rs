@@ -304,7 +304,7 @@ fn refused_as_the_kernel_refuses(img: &str, setup: &str, cases: &[Case]) {
         stderr(&out)
     );
     let kernel = stdout(&out);
-    let image = std::fs::read(img).expect("read the image");
+    let image = fs_ext4_test_support::snapshot_file(img).expect("snapshot the image");
 
     let mut tried = Vec::new();
     for line in kernel.lines() {
@@ -333,10 +333,7 @@ fn refused_as_the_kernel_refuses(img: &str, setup: &str, cases: &[Case]) {
         assert!(got.stdout.is_empty(), "{what}; stdout: {}", stdout(&got));
         assert!(err.contains(&format!("\"code\": {code}")), "{what}");
         assert!(err.contains(want), "{what}; expected {want:?}");
-        assert!(
-            std::fs::read(img).expect("read the image") == image,
-            "{what}: refused, and still changed the image"
-        );
+        fs_ext4_test_support::assert_files_equal(img, &image);
         tried.push(index);
     }
     let all: Vec<usize> = (0..cases.len()).collect();

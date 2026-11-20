@@ -16,7 +16,6 @@
 use fs_ext4::capi::*;
 use std::ffi::{CStr, CString};
 use std::fs;
-use std::io::Write;
 use std::os::raw::c_void;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -30,8 +29,7 @@ fn scratch() -> PathBuf {
         "fs_ext4_capi_pwrite_{}_{n}.img",
         std::process::id()
     ));
-    let mut out = fs::File::create(&dst).unwrap();
-    out.write_all(&fs::read(SRC).unwrap()).unwrap();
+    fs::copy(SRC, &dst).unwrap();
     dst
 }
 

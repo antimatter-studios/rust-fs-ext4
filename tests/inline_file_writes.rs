@@ -12,44 +12,19 @@
 //! e2fsck's and the kernel's view of the same writes are in
 //! `tests/inline_file_writes_oracle.rs` and `tests/kernel_inline_writes.rs`.
 
-use fs_ext4::block_io::BlockDevice;
+use fs_ext4::block_io::{BlockDevice, FileDevice};
 use fs_ext4::error::Result;
 use fs_ext4::Filesystem;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-struct MemDev(Mutex<Vec<u8>>);
-
-impl BlockDevice for MemDev {
-    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<()> {
-        let b = self.0.lock().unwrap();
-        let start = offset as usize;
-        buf.copy_from_slice(&b[start..start + buf.len()]);
-        Ok(())
-    }
-    fn write_at(&self, offset: u64, buf: &[u8]) -> Result<()> {
-        let mut b = self.0.lock().unwrap();
-        let start = offset as usize;
-        b[start..start + buf.len()].copy_from_slice(buf);
-        Ok(())
-    }
-    fn size_bytes(&self) -> u64 {
-        self.0.lock().unwrap().len() as u64
-    }
-    fn flush(&self) -> Result<()> {
-        Ok(())
-    }
-    fn is_writable(&self) -> bool {
-        true
-    }
-}
-
-fn image() -> Arc<MemDev> {
+fn image() -> Arc<FileDevice> {
     let path = fs_ext4_test_support::fixture(env!("CARGO_MANIFEST_DIR"), "ext4-inline.img");
-    let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("read {path}: {e}"));
-    Arc::new(MemDev(Mutex::new(bytes)))
+    let copy =
+        fs_ext4_test_support::snapshot_file(&path).unwrap_or_else(|e| panic!("copy {path}: {e}"));
+    Arc::new(FileDevice::open_path_rw(&copy).expect("open scratch image"))
 }
 
-fn mount(dev: &Arc<MemDev>) -> Filesystem {
+fn mount(dev: &Arc<FileDevice>) -> Filesystem {
     Filesystem::mount(dev.clone()).expect("mount")
 }
 
@@ -59,7 +34,7 @@ fn ino_of(fs: &Filesystem, name: &str) -> u32 {
 
 /// Every byte of the file, read through a fresh mount, and whether it is
 /// still inline.
-fn read_back(dev: &Arc<MemDev>, name: &str) -> (Vec<u8>, bool) {
+fn read_back(dev: &Arc<FileDevice>, name: &str) -> (Vec<u8>, bool) {
     let fs = mount(dev);
     let ino = ino_of(&fs, name);
     let inode = fs.stat_ino(ino).unwrap();
@@ -265,7 +240,7 @@ fn writes_to_the_kernels_inline_files_succeed_and_read_back() {
 /// A device that stops writing after `budget` writes and reports success,
 /// as a power cut would look to the writer.
 struct CutDev {
-    inner: Arc<MemDev>,
+    inner: Arc<FileDevice>,
     budget: usize,
     writes: std::sync::atomic::AtomicUsize,
 }
@@ -323,11 +298,21 @@ fn a_write_that_converts_an_inline_file_is_atomic_across_a_cut() {
             || vec![b'r'; 9000],
         ),
     ];
-    let snapshot = image().0.lock().unwrap().clone();
+    let fixture = fs_ext4_test_support::fixture(env!("CARGO_MANIFEST_DIR"), "ext4-inline.img");
+    let snapshot = fs_ext4_test_support::snapshot_file(&fixture).expect("snapshot fixture");
+    static CUT_ID: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     for (what, write, want) in writes {
         let mut total = None;
         for cut in 0.. {
-            let dev = Arc::new(MemDev(Mutex::new(snapshot.clone())));
+            let image = fs_ext4_test_support::temp_path!(
+                "inline-write-cut-{}-{}.img",
+                std::process::id(),
+                CUT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            );
+            fs_ext4_test_support::copy_file_sparse(&snapshot, &image).expect("copy fixture");
+            let dev = Arc::new(
+                FileDevice::open_path_rw(std::path::Path::new(&image)).expect("open cut image"),
+            );
             let crash = Arc::new(CutDev {
                 inner: dev.clone(),
                 budget: cut,

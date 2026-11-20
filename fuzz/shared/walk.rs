@@ -61,6 +61,10 @@ pub const INODE_BUDGET: u32 = 48;
 /// been established.
 pub fn walk(image: &[u8]) {
     let dev: std::sync::Arc<dyn BlockDevice> = std::sync::Arc::new(Bytes(image.to_vec()));
+    walk_device(dev);
+}
+
+pub fn walk_device(dev: std::sync::Arc<dyn BlockDevice>) {
     let Ok(mut fs) = fs_ext4::Filesystem::mount(dev) else {
         return;
     };

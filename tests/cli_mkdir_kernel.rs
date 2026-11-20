@@ -150,15 +150,12 @@ fn mkdir_parents_makes_a_chain_the_kernel_then_sees() {
 
     // A chain already there, all the way: success, nothing made, and the
     // image not written.
-    let image = std::fs::read(&img).expect("read the image");
+    let image = fs_ext4_test_support::snapshot_file(&img).expect("snapshot the image");
     for path in ["/twin/a/b/c", "/have/deep/x/y", "/have/./deep/..", "/"] {
         let report = stdout(&ok(tool("fs.ext4").args([&img, "mkdir", "-p", path])));
         assert_eq!(json_field(&report, "path"), path, "{report}");
         assert!(created(&report).is_empty(), "{path}: {report}");
-        assert!(
-            std::fs::read(&img).expect("read the image") == image,
-            "mkdir -p {path}, which was all there, wrote to the image"
-        );
+        fs_ext4_test_support::assert_files_equal(&img, &image);
     }
     let dirty = stdout(&ok(tool("fs.ext4").args([&img, "get", "dirty", "--text"])));
     assert_eq!(dirty.trim(), "false", "mkdir -p was not released clean");
@@ -280,7 +277,7 @@ fn mkdir_parents_refuses_what_the_kernel_refuses() {
         stderr(&out)
     );
     let kernel = stdout(&out);
-    let image = std::fs::read(&img).expect("read the image");
+    let image = fs_ext4_test_support::snapshot_file(&img).expect("snapshot the image");
 
     let mut tried = Vec::new();
     for line in kernel.lines() {
@@ -305,10 +302,7 @@ fn mkdir_parents_refuses_what_the_kernel_refuses() {
         assert!(got.stdout.is_empty(), "{what}; stdout: {}", stdout(&got));
         assert!(err.contains(&format!("\"code\": {code}")), "{what}");
         assert!(err.contains(want), "{what}; expected {want:?}");
-        assert!(
-            std::fs::read(&img).expect("read the image") == image,
-            "mkdir -p {label:?} was refused and still changed the image"
-        );
+        fs_ext4_test_support::assert_files_equal(&img, &image);
         tried.push(path);
     }
     assert_eq!(tried, cases, "the guest answered every case:\n{kernel}");

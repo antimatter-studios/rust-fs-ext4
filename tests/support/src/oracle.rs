@@ -547,7 +547,7 @@ impl Run {
 
     pub(crate) fn streams(&self) -> (Vec<u8>, Vec<u8>) {
         let read = |path: &PathBuf| {
-            let bytes = std::fs::read(path).unwrap_or_default();
+            let bytes = crate::read_small_file(path).unwrap_or_default();
             let _ = std::fs::remove_file(path);
             bytes
         };

@@ -198,7 +198,7 @@ fn rm_and_rmdir_refuse_what_the_kernel_refuses() {
         stderr(&out)
     );
     let kernel = stdout(&out);
-    let image = std::fs::read(&img).expect("read the image");
+    let image = fs_ext4_test_support::snapshot_file(&img).expect("snapshot the image");
 
     let mut tried = Vec::new();
     for line in kernel.lines() {
@@ -218,10 +218,7 @@ fn rm_and_rmdir_refuse_what_the_kernel_refuses() {
         assert!(got.stdout.is_empty(), "{what}; stdout: {}", stdout(&got));
         assert!(err.contains(&format!("\"code\": {code}")), "{what}");
         assert!(err.contains(want), "{what}; expected {want:?}");
-        assert!(
-            std::fs::read(&img).expect("read the image") == image,
-            "{label} was refused and still changed the image"
-        );
+        fs_ext4_test_support::assert_files_equal(&img, &image);
         tried.push(label.to_string());
     }
     let labels: Vec<String> = cases.iter().map(|(l, _)| l.to_string()).collect();
