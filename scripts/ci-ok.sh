@@ -33,6 +33,13 @@ for job in $all; do
     *) bad+=("$job") ;;
   esac
 done
+# A gate job (<job>-gate) that failed or was cancelled leaves its job skipped
+# or unrun: it counts as that job failing. A skipped gate is its job's skip.
+while read -r name result; do
+  case "$name" in
+    *-gate) case "$result" in failure | cancelled) echo "$name: $result"; bad+=("$name") ;; esac ;;
+  esac
+done <<<"$input"
 echo "profile: $profile, code changed: $code"
 if [ "${#bad[@]}" -gt 0 ]; then
   echo "::error::not green: ${bad[*]} (failed, cancelled, skipped or missing)"
