@@ -1223,104 +1223,60 @@ fn ci_runs_on_a_pull_request_against_any_base() {
 }
 
 #[test]
-fn eligible_linux_jobs_use_one_autobalancer_pick_each_and_special_jobs_stay_hosted() {
+fn every_ci_job_takes_its_runner_from_its_own_gate_job() {
     let path = workflow_path("ci.yml");
     let text = read_or_panic(&path);
     let document = load_document(&text, &path);
-    let changes = job(&document, "changes", &path);
-    let outputs = field(changes, "outputs").expect("jobs.changes declares outputs");
-    assert_eq!(
-        field(outputs, "runners").and_then(Yaml::as_str),
-        Some("${{ steps.runners.outputs.runners || '{}' }}"),
-        "the runner map must be exposed to dependent jobs"
-    );
-    assert_eq!(
-        field(changes, "runs-on").and_then(Yaml::as_str),
-        Some("ubuntu-24.04"),
-        "the picker/bootstrap job must remain on GitHub-hosted runners"
-    );
-    let steps = steps_of(changes, "changes");
-    let picker = steps.last().expect("the picker is the final changes step");
-    assert_eq!(
-        field(picker, "name").and_then(Yaml::as_str),
-        Some("Pick runners")
-    );
-    assert_eq!(field(picker, "id").and_then(Yaml::as_str), Some("runners"));
-    let picker_env = field(picker, "env").expect("the picker carries event context through env");
-    for (name, value) in [
-        ("ACTOR", "${{ github.triggering_actor }}"),
-        ("AUTHOR", "${{ github.event.pull_request.user.login }}"),
-        ("SENDER", "${{ github.event.sender.login }}"),
-        ("GH_ACTOR", "${{ github.actor }}"),
-        ("RUN_ID", "${{ github.run_id }}"),
-        ("RUN_ATTEMPT", "${{ github.run_attempt }}"),
-        ("JOBS", "unit semver msrv provenance"),
+    // The runner class each job asks the gate for. KVM jobs ask for the KVM
+    // class, and test-arm64 for arm64; the rest take any Linux x86_64.
+    for (name, class) in [
+        ("changes", "linux-x64"),
+        ("unit", "linux-x64"),
+        ("fixtures", "linux-x64-kvm"),
+        ("test", "linux-x64-kvm"),
+        ("test-arm64", "linux-arm64"),
+        ("suite-in-vm", "linux-x64-kvm"),
+        ("wasm", "linux-x64"),
+        ("semver", "linux-x64"),
+        ("msrv", "linux-x64"),
+        ("cli", "linux-x64"),
+        ("provenance", "linux-x64"),
+        ("ci-ok", "linux-x64"),
     ] {
+        let gate_name = format!("{name}-gate");
+        let gate = job(&document, &gate_name, &path);
         assert_eq!(
-            field(picker_env, name).and_then(Yaml::as_str),
-            Some(value),
-            "the runner picker env {name} must carry the intended value"
+            field(gate, "runs-on").and_then(Yaml::as_str),
+            Some("antimatter-vps-gate"),
+            "jobs.{gate_name} must run on the gate runner"
         );
-    }
-    let pick_script = run_of(picker);
-    for required in [
-        "runner-gate.antimatter-studios.com/pick",
-        "--max-time 10",
-        "run=$RUN_ID",
-        "attempt=$RUN_ATTEMPT",
-        "job=$1",
-        "wasm cli",
-        "antimatter-vps-linux-x64|ubuntu-24.04",
-        "GITHUB_STEP_SUMMARY",
-    ] {
-        assert!(
-            pick_script.contains(required),
-            "the runner picker is missing {required:?}"
+        let steps = steps_of(gate, &gate_name);
+        assert_eq!(steps.len(), 1, "jobs.{gate_name} has the one pick step");
+        assert_eq!(field(&steps[0], "id").and_then(Yaml::as_str), Some("pick"));
+        assert_eq!(
+            field(&steps[0], "run").and_then(Yaml::as_str),
+            Some(format!("runner-gate pick {class}").as_str()),
+            "jobs.{gate_name} must ask for the {class} class"
         );
-    }
-
-    for (name, key) in [
-        ("unit", "unit"),
-        ("wasm", "wasm"),
-        ("semver", "semver"),
-        ("msrv", "msrv"),
-        ("cli", "cli"),
-        ("provenance", "provenance"),
-    ] {
         let gated = job(&document, name, &path);
         assert!(
-            needs_of(gated).iter().any(|need| need == "changes"),
-            "jobs.{name} must depend on the job that reserves its runner"
+            needs_of(gated).contains(&gate_name),
+            "jobs.{name} must need {gate_name}"
         );
-        let expected = format!(
-            "${{{{ fromJSON(needs.changes.outputs.runners || '{{}}')['{key}'] || 'ubuntu-24.04' }}}}"
+        assert_eq!(
+            field(gate, "if").and_then(Yaml::as_str),
+            field(gated, "if").and_then(Yaml::as_str),
+            "jobs.{gate_name} must carry the same condition as jobs.{name}"
         );
+        let expected = if name == "ci-ok" {
+            "${{ needs.ci-ok-gate.outputs.runner || 'ubuntu-latest' }}".to_string()
+        } else {
+            format!("${{{{ needs.{gate_name}.outputs.runner }}}}")
+        };
         assert_eq!(
             field(gated, "runs-on").and_then(Yaml::as_str),
             Some(expected.as_str()),
-            "jobs.{name} must use only its own gate reservation and fall back to GitHub"
-        );
-    }
-
-    let msrv = job(&document, "msrv", &path);
-    assert!(
-        steps_of(msrv, "msrv").iter().any(|step| {
-            field(step, "uses").and_then(Yaml::as_str) == Some("dtolnay/rust-toolchain@stable")
-        }),
-        "jobs.msrv must install rustup before checking the declared minimum toolchain"
-    );
-
-    for (name, runner) in [
-        ("fixtures", "ubuntu-24.04"),
-        ("test", "ubuntu-24.04"),
-        ("test-arm64", "ubuntu-24.04-arm"),
-        ("suite-in-vm", "ubuntu-24.04"),
-        ("ci-ok", "ubuntu-latest"),
-    ] {
-        assert_eq!(
-            field(job(&document, name, &path), "runs-on").and_then(Yaml::as_str),
-            Some(runner),
-            "jobs.{name} must remain on its required hosted runner"
+            "jobs.{name} must take its runner from {gate_name}"
         );
     }
 }
@@ -1335,11 +1291,15 @@ fn the_pr_gate_builds_fixtures_once_in_the_harness_vm_and_tests_both_architectur
     // the kernel tests can run at all.
     let test = job(&document, "test", &path);
     assert_unconditional(test, "test", "ci.yml");
-    let runner = field(test, "runs-on").and_then(Yaml::as_str).unwrap_or("");
-    assert!(
-        runner.starts_with("ubuntu-") && !runner.contains("arm"),
-        "jobs.test must run on an x86_64 ubuntu runner: the oracle tools and the kernel \
-         oracles run in a VM, and only those runners have KVM; got {runner:?}"
+    assert_eq!(
+        field(
+            &steps_of(job(&document, "test-gate", &path), "test-gate")[0],
+            "run"
+        )
+        .and_then(Yaml::as_str),
+        Some("runner-gate pick linux-x64-kvm"),
+        "jobs.test must ask the gate for an x86_64 KVM runner: the oracle tools and the \
+         kernel oracles run in a VM"
     );
     assert!(
         needs_of(test).iter().any(|n| n == "fixtures"),
@@ -1386,9 +1346,13 @@ fn the_pr_gate_builds_fixtures_once_in_the_harness_vm_and_tests_both_architectur
     let arm = job(&document, "test-arm64", &path);
     assert_unconditional(arm, "test-arm64", "ci.yml");
     assert_eq!(
-        field(arm, "runs-on").and_then(Yaml::as_str),
-        Some("ubuntu-24.04-arm"),
-        "jobs.test-arm64 must run on GitHub's arm64 runner"
+        field(
+            &steps_of(job(&document, "test-arm64-gate", &path), "test-arm64-gate")[0],
+            "run"
+        )
+        .and_then(Yaml::as_str),
+        Some("runner-gate pick linux-arm64"),
+        "jobs.test-arm64 must ask the gate for an arm64 runner"
     );
     let arm_steps = steps_of(arm, "test-arm64");
     for task in ["lint", "test:unit", "test:images"] {
@@ -1425,13 +1389,14 @@ fn the_pr_gate_builds_fixtures_once_in_the_harness_vm_and_tests_both_architectur
     // jobs.fixtures
     let fixtures = job(&document, "fixtures", &path);
     assert_unconditional_or_skipped_for_documentation(fixtures, "fixtures", "ci.yml");
-    let runner = field(fixtures, "runs-on")
-        .and_then(Yaml::as_str)
-        .unwrap_or("");
-    assert!(
-        runner.starts_with("ubuntu-") && !runner.contains("arm"),
-        "jobs.fixtures must run on an x86_64 ubuntu runner, where KVM is available; got \
-         {runner:?}"
+    assert_eq!(
+        field(
+            &steps_of(job(&document, "fixtures-gate", &path), "fixtures-gate")[0],
+            "run"
+        )
+        .and_then(Yaml::as_str),
+        Some("runner-gate pick linux-x64-kvm"),
+        "jobs.fixtures must ask the gate for an x86_64 KVM runner"
     );
     let steps = steps_of(fixtures, "fixtures");
     let setup = steps

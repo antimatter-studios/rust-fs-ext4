@@ -1,3 +1,4 @@
 self-hosted-runner:
   labels:
     - antimatter-vps-linux-x64
+    - antimatter-vps-gate
