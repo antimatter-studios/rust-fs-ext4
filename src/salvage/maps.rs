@@ -71,8 +71,12 @@ pub struct BlockMap {
     /// root, or indirect blocks.
     pub map_blocks: Vec<u64>,
     /// File contents held in the inode itself (inline data, or a fast
-    /// symlink's target), up to `i_size` and the 60 bytes of `i_block`.
+    /// symlink's target): the bytes in `i_block`, then for inline data past
+    /// 60 bytes the value of the in-inode `system.data` attribute, up to
+    /// `i_size`.
     pub inline: Option<Vec<u8>>,
+    /// Where the inline bytes are on the source, in order.
+    pub inline_extents: Vec<Extent>,
     /// The first reason the walk did not reach everything.
     pub end: MapEnd,
     /// Every fault seen, with where it is.
@@ -85,6 +89,7 @@ impl BlockMap {
             runs: Vec::new(),
             map_blocks: Vec::new(),
             inline: None,
+            inline_extents: Vec::new(),
             end: MapEnd::Complete,
             faults: Vec::new(),
         }
@@ -164,7 +169,41 @@ pub fn map_inode(source: &dyn BlockRead, sb: &Superblock, record: &InodeRecord) 
     };
     if inode.has_inline_data() || is_fast_symlink(inode) {
         let length = (inode.size as usize).min(I_BLOCK_BYTES);
-        map.inline = Some(inode.block[..length].to_vec());
+        let mut bytes = inode.block[..length].to_vec();
+        map.inline_extents
+            .push(Extent::new(root.offset, length as u64));
+        let rest = inode.size.saturating_sub(length as u64) as usize;
+        if inode.has_inline_data() && rest > 0 {
+            match system_data(&record.raw) {
+                Some((at, value)) => {
+                    let take = value.len().min(rest);
+                    bytes.extend_from_slice(&value[..take]);
+                    map.inline_extents
+                        .push(Extent::new(record.location.offset + at as u64, take as u64));
+                    if take < rest {
+                        map.fault(
+                            MapEnd::Broken,
+                            record.location,
+                            DamageKind::Broken,
+                            format!(
+                                "inode {} keeps {take} of its {rest} inline bytes past i_block",
+                                record.ino
+                            ),
+                        );
+                    }
+                }
+                None => map.fault(
+                    MapEnd::Broken,
+                    record.location,
+                    DamageKind::Missing,
+                    format!(
+                        "inode {} holds {} bytes inline and has no system.data attribute for the {rest} past i_block",
+                        record.ino, inode.size
+                    ),
+                ),
+            }
+        }
+        map.inline = Some(bytes);
     } else if inode.has_extents() {
         let mut walk = ExtentWalk {
             source,
@@ -204,6 +243,42 @@ pub fn map_inode(source: &dyn BlockRead, sb: &Superblock, record: &InodeRecord) 
         }
     }
     map
+}
+
+/// The in-inode extended attribute area starts with this magic number
+/// (format documentation, "Extended Attributes": `h_magic`, in the inode
+/// after `i_extra_isize`).
+const IBODY_XATTR_MAGIC: u32 = 0xEA02_0000;
+/// The `system.` attribute name index, which `system.data` uses.
+const XATTR_INDEX_SYSTEM: u8 = 7;
+
+/// The `system.data` attribute in an inode's own attribute area: its
+/// value's offset in the inode and the value. Read without trusting it:
+/// an entry or value that leaves the inode ends the search.
+fn system_data(raw: &[u8]) -> Option<(usize, &[u8])> {
+    let extra = usize::from(u16::from_le_bytes(raw.get(0x80..0x82)?.try_into().ok()?));
+    let header = 128 + extra;
+    if u32::from_le_bytes(raw.get(header..header + 4)?.try_into().ok()?) != IBODY_XATTR_MAGIC {
+        return None;
+    }
+    let first = header + 4;
+    let mut at = first;
+    while let Some(entry) = raw.get(at..at + 16) {
+        if entry[..4] == [0, 0, 0, 0] {
+            return None;
+        }
+        let name_len = usize::from(entry[0]);
+        let index = entry[1];
+        let value_offs = usize::from(u16::from_le_bytes([entry[2], entry[3]]));
+        let value_size = u32::from_le_bytes(entry[8..12].try_into().ok()?) as usize;
+        let name = raw.get(at + 16..at + 16 + name_len)?;
+        if index == XATTR_INDEX_SYSTEM && name == b"data" {
+            let start = first + value_offs;
+            return Some((start, raw.get(start..start + value_size)?));
+        }
+        at += (16 + name_len).div_ceil(4) * 4;
+    }
+    None
 }
 
 /// `i_blocks` in filesystem blocks: 512-byte units, or blocks when the

@@ -79,10 +79,33 @@ entries, which the scan finds.
 The write path (`apply_*`, `journal_writer`, `mkfs`) is this crate's own and
 belongs to none of the three layers.
 
-## Moving onto the shared traits
+## On the shared traits
 
-When rust-fs-core publishes the traits, this crate implements them over the
-functions above, and keeps today's API for one release as a deprecated
-wrapper. Until then the salvage types here (`Extent`, `Integrity`, `Damage`,
-`DamageKind`, `Severity`) have the shapes the convention gives them, so the
-change is a conversion, not a rewrite.
+`fs_ext4::layers` implements rust-fs-core's `layers` traits (rust-fs-core
+0.5, the `layers` feature; until 0.5.0 is published, built through the
+local `[patch]` docs/developing-against-core.md describes):
+
+| Trait | Implemented by | Built on |
+|---|---|---|
+| `VolumeAPI`, `OpenVolume` | `Ext4Volume<S: BlockRead>` | `salvage::find_superblock` (the geometry, from a backup when the primary is damaged), `superblock_copies`, `quick_damage` (health: the superblock copies, descriptor tables and root directory), `features::check_mountable` (support) |
+| `PrimitiveAPI` | `Ext4Volume` | `structures()`: superblock copies, every copy of the descriptors, each group's bitmaps and inode table, the journal superblock |
+| `SalvageAdapter` | `Ext4Adapter` | `salvage::Ext4Salvage`; blocks are the cluster layout, so plans may name block runs; core's `materialize` and `plan_reader` |
+| `FileAPI` | `Ext4Volume` (`Node` = inode number) | `Filesystem::read_dir_ino`, `stat_ino`, `read_ino`, `read_link_ino` over a device whose writes fail |
+
+`Ext4Volume::open` mounts the volume as the file layer needs it and refuses
+what does not validate; `open_for_salvage` needs only a usable superblock
+copy, and offers the file layer only when the mount succeeds.
+
+A walk places every stored extent at its file offset, holes between and
+uninitialized extents flagged, so `ExtentWalk::plan()` rebuilds a sparse
+file exactly. The tree's parent claims carry each entry's name and whether
+it was live, so a hard-linked inode has one named claim per link.
+Geometry hypotheses (`Ext4Hypothesis`) are the superblock copies that parse,
+from the layout and from the default backup groups, sound ones first.
+
+What the shared types do not cover stays in the crate: the journal's older
+copies of metadata blocks (`scan_journal`). The points ext4 raised against
+the traits are on rust-fs-core#453.
+
+No existing API is removed or renamed: `Filesystem`, the C ABI and the
+modules above keep compiling unchanged, and the layers are an addition.
