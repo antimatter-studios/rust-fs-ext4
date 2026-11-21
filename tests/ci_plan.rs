@@ -123,11 +123,14 @@ fn every_planned_outcome_is_green() {
     let ci = read(".github/workflows/ci.yml");
     let needs: Vec<String> = list(
         &ci[ci.find("\n  ci-ok:\n").expect("ci.yml has a ci-ok job")..],
-        "\n    needs: [changes,",
+        "\n    needs: [changes-gate, changes,",
         ']',
     )
     .iter()
     .map(|j| j.trim_end_matches(',').to_string())
+    // Each job's runner is picked by a `<job>-gate` job, which ci-ok needs
+    // beside the job and which the verdict does not read.
+    .filter(|j| !j.ends_with("-gate"))
     .collect();
     assert_eq!(
         needs,
