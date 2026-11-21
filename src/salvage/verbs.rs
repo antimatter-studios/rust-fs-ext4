@@ -14,7 +14,7 @@
 use super::dirs::read_directory;
 use super::maps::{map_inode, MapEnd};
 use super::structures::{
-    find_superblock, group_descriptors, read_inode_at, structure_damage, superblock_copies,
+    find_superblock, group_descriptors, read_inode_at, structure_damage_with, superblock_copies,
     DescriptorRecord, InodeRecord,
 };
 use super::{Damage, DamageKind, Extent, Integrity, SalvageError, Severity};
@@ -25,9 +25,12 @@ use fs_core::BlockRead;
 use std::collections::BTreeMap;
 use std::io;
 use std::ops::ControlFlow;
+use std::sync::{Arc, Mutex};
 
 /// The root directory's inode number.
 const ROOT_INO: u32 = 2;
+/// The reserved inode mapping the reserved descriptor blocks.
+const RESIZE_INODE: u32 = 7;
 /// How much a plan step reads or writes at a time.
 const CHUNK: u64 = 1 << 20;
 
@@ -145,6 +148,9 @@ pub enum Piece {
     Zeros(u64),
     /// Bytes kept in the inode itself.
     Inline(Vec<u8>),
+    /// Blocks allocated at this source extent that read as zeros: an
+    /// uninitialized extent.
+    Uninitialized(Extent),
 }
 
 impl Piece {
@@ -153,6 +159,7 @@ impl Piece {
             Self::Stored(extent) => extent.length,
             Self::Zeros(length) => *length,
             Self::Inline(bytes) => bytes.len() as u64,
+            Self::Uninitialized(extent) => extent.length,
         }
     }
 }
@@ -183,6 +190,7 @@ impl ExtentWalk {
                     Piece::Stored(extent) => PlanStep::Extent(*extent),
                     Piece::Zeros(length) => PlanStep::Zeros(*length),
                     Piece::Inline(bytes) => PlanStep::Bytes(bytes.clone()),
+                    Piece::Uninitialized(extent) => PlanStep::Zeros(extent.length),
                 })
                 .collect(),
             length: Some(self.claimed),
@@ -349,6 +357,24 @@ pub enum Feature {
 #[derive(Clone, Debug)]
 pub struct Ext4Salvage {
     sb: Superblock,
+    /// The names the last source's directories gave, and which source that
+    /// was: see [`Ext4Salvage::cached_names`].
+    names: Arc<Mutex<Option<CachedNames>>>,
+}
+
+/// A name map, and the source it was read from.
+type CachedNames = (NamesKey, Arc<BTreeMap<u32, String>>);
+
+/// What identifies the source a name map was read from: the source object,
+/// its size, and a checksum over its superblock and first descriptor
+/// block, which any change to the directories also changes (free counts,
+/// write time). A source that cannot be read there has no key, and its
+/// names are never cached.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct NamesKey {
+    source: usize,
+    size: u64,
+    metadata: u32,
 }
 
 impl Ext4Salvage {
@@ -362,7 +388,22 @@ impl Ext4Salvage {
 
     /// The geometry of a superblock the caller chose.
     pub fn from_superblock(sb: Superblock) -> Self {
-        Self { sb }
+        Self {
+            sb,
+            names: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    fn names_key(&self, source: &dyn BlockRead) -> Option<NamesKey> {
+        let mut bytes = vec![0u8; 1024 + self.block_size() as usize];
+        source
+            .read_at(crate::superblock::SUPERBLOCK_OFFSET, &mut bytes)
+            .ok()?;
+        Some(NamesKey {
+            source: source as *const dyn BlockRead as *const u8 as usize,
+            size: source.size_bytes(),
+            metadata: crate::checksum::linux_crc32c(!0, &bytes),
+        })
     }
 
     pub fn superblock(&self) -> &Superblock {
@@ -400,7 +441,79 @@ impl Ext4Salvage {
     /// copies, and every inode table slot that is not all zeros. An inode
     /// table a group's descriptor marks uninitialized is skipped, unless
     /// that descriptor's own checksum failed.
+    ///
+    /// An inode keeps no name; directories do. Each candidate is given the
+    /// name of the first live entry naming it in a live directory, found by
+    /// reading every directory on the volume, whatever `range` is, so a
+    /// candidate is the same whichever range finds it. [`Self::rebuild_tree`]
+    /// gives every name and every parent.
     pub fn find_candidates(
+        &self,
+        source: &dyn BlockRead,
+        range: Extent,
+        sink: &mut dyn Sink<Candidate>,
+    ) -> Result<ScanReport, SalvageError> {
+        let names = self.cached_names(source)?;
+        let mut named = |mut candidate: Candidate| {
+            if let Some(name) = candidate.ino().and_then(|ino| names.get(&ino)) {
+                candidate.name = Some(name.clone());
+            }
+            sink.accept(candidate)
+        };
+        self.scan(source, range, &mut named)
+    }
+
+    /// [`Self::names`] over the whole source, kept for the next call on the
+    /// same unchanged source: a scan of one record then costs one read, not
+    /// a pass over every directory.
+    fn cached_names(
+        &self,
+        source: &dyn BlockRead,
+    ) -> Result<Arc<BTreeMap<u32, String>>, SalvageError> {
+        let key = self.names_key(source);
+        if let Some(key) = key {
+            if let Some((cached, names)) = self.names.lock().unwrap().as_ref() {
+                if *cached == key {
+                    return Ok(names.clone());
+                }
+            }
+        }
+        let mut all = Vec::new();
+        self.scan(source, Extent::new(0, source.size_bytes()), &mut all)?;
+        let names = Arc::new(self.names(source, &all)?);
+        if let Some(key) = key {
+            *self.names.lock().unwrap() = Some((key, names.clone()));
+        }
+        Ok(names)
+    }
+
+    /// The name each inode has in a live directory: the first live entry
+    /// naming it, in candidate order.
+    fn names(
+        &self,
+        source: &dyn BlockRead,
+        candidates: &[Candidate],
+    ) -> Result<BTreeMap<u32, String>, SalvageError> {
+        let mut names = BTreeMap::new();
+        for directory in candidates
+            .iter()
+            .filter(|c| c.kind == CandidateKind::Directory && c.state == CandidateState::Live)
+        {
+            let record = self.record_of(source, directory)?;
+            for entry in read_directory(source, &self.sb, &record).entries() {
+                if !entry.live || entry.name == b"." || entry.name == b".." {
+                    continue;
+                }
+                names
+                    .entry(entry.inode)
+                    .or_insert_with(|| String::from_utf8_lossy(&entry.name).into_owned());
+            }
+        }
+        Ok(names)
+    }
+
+    /// The scan itself, without names.
+    fn scan(
         &self,
         source: &dyn BlockRead,
         range: Extent,
@@ -412,7 +525,17 @@ impl Ext4Salvage {
                 && extent.end().zip(range.end()).is_some_and(|(a, b)| a <= b)
         };
         for copy in superblock_copies(source, &self.sb) {
-            if !inside(copy.location) || copy.superblock.is_none() {
+            if !inside(copy.location) {
+                continue;
+            }
+            let unreadable = copy
+                .fault
+                .as_ref()
+                .is_some_and(|fault| fault.kind == DamageKind::Unreadable);
+            if unreadable {
+                report.unreadable.push(copy.location);
+            }
+            if copy.superblock.is_none() {
                 continue;
             }
             report.candidates += 1;
@@ -433,6 +556,15 @@ impl Ext4Salvage {
         let tables: Vec<Vec<DescriptorRecord>> = (0..super::descriptor_table_copies(&self.sb))
             .map(|copy| group_descriptors(source, &self.sb, copy))
             .collect();
+        for record in tables.iter().flatten() {
+            let unreadable = record
+                .fault
+                .as_ref()
+                .is_some_and(|fault| fault.kind == DamageKind::Unreadable);
+            if unreadable && inside(record.location) {
+                report.unreadable.push(record.location);
+            }
+        }
         let inode_size = u64::from(self.sb.inode_size);
         let per_group = u64::from(self.sb.inodes_per_group);
         let block_size = self.block_size();
@@ -562,10 +694,37 @@ impl Ext4Salvage {
     ) -> Result<ExtentWalk, SalvageError> {
         let record = self.record_of(source, candidate)?;
         let map = map_inode(source, &self.sb, &record);
-        let claimed = record.inode.as_ref().map_or(0, |inode| inode.size);
+        let size = record.inode.as_ref().map_or(0, |inode| inode.size);
         let mut pieces = Vec::new();
-        if let Some(bytes) = &map.inline {
-            pieces.push(Piece::Inline(bytes.clone()));
+        if record.ino == RESIZE_INODE {
+            // The resize inode's size is the span its map could address,
+            // not a file's length, and its map names blocks out of logical
+            // order: what it claims is the blocks it maps, in map order.
+            let block_size = self.block_size();
+            let mut claimed = 0;
+            for run in &map.runs {
+                let extent = Extent::new(run.physical * block_size, run.length * block_size);
+                claimed += extent.length;
+                pieces.push(Piece::Stored(extent));
+            }
+            return Ok(ExtentWalk {
+                extents: pieces
+                    .iter()
+                    .filter_map(|p| match p {
+                        Piece::Stored(e) => Some(*e),
+                        _ => None,
+                    })
+                    .collect(),
+                claimed,
+                end: map.end,
+                pieces,
+            });
+        }
+        let claimed = size;
+        if map.inline.is_some() {
+            for at in &map.inline_extents {
+                pieces.push(Piece::Stored(*at));
+            }
         } else {
             let block_size = self.block_size();
             let mut at = 0u64;
@@ -578,10 +737,11 @@ impl Ext4Salvage {
                     pieces.push(Piece::Zeros(start - at));
                 }
                 let length = run.length.saturating_mul(block_size).min(claimed - start);
+                let stored = Extent::new(run.physical * block_size, length);
                 pieces.push(if run.uninitialized {
-                    Piece::Zeros(length)
+                    Piece::Uninitialized(stored)
                 } else {
-                    Piece::Stored(Extent::new(run.physical * block_size, length))
+                    Piece::Stored(stored)
                 });
                 at = start + length;
             }
@@ -729,7 +889,11 @@ impl Ext4Salvage {
             report.reported += 1;
             sink.accept(damage).is_break()
         };
-        for damage in structure_damage(source)? {
+        let primary = Extent::new(
+            crate::superblock::SUPERBLOCK_OFFSET,
+            crate::superblock::SUPERBLOCK_SIZE as u64,
+        );
+        for damage in structure_damage_with(source, &self.sb, primary) {
             if send(damage, &mut report) {
                 report.stopped = true;
                 return Ok(report);
@@ -763,6 +927,32 @@ impl Ext4Salvage {
             }
         }
         Ok(report)
+    }
+
+    /// The quick verdict's findings: the superblock copies and descriptor
+    /// tables, and the root directory's inode, map and blocks. What lies
+    /// deeper is [`Self::report_damage`]'s, which reads every inode.
+    pub fn quick_damage(&self, source: &dyn BlockRead) -> Vec<Damage> {
+        let primary = Extent::new(
+            crate::superblock::SUPERBLOCK_OFFSET,
+            crate::superblock::SUPERBLOCK_SIZE as u64,
+        );
+        let mut found = structure_damage_with(source, &self.sb, primary);
+        let descriptors = group_descriptors(source, &self.sb, 0);
+        if let Ok(root) = super::read_inode(source, &self.sb, &descriptors, ROOT_INO) {
+            if let Some(candidate) = self.inode_candidate(&root) {
+                found.extend(self.inode_damage(source, &candidate).unwrap_or_default());
+            } else {
+                found.push(Damage {
+                    kind: DamageKind::Malformed,
+                    severity: Severity::Error,
+                    location: root.location,
+                    structure: format!("inode {ROOT_INO}"),
+                    detail: "the root directory's inode holds no inode".to_string(),
+                });
+            }
+        }
+        found
     }
 
     fn inode_damage(

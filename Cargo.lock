@@ -427,9 +427,9 @@ checksum = "323c417e1d9665a65b263ec744ba09030cfb277e9daa0b018a4ab62e57bc8189"
 
 [[package]]
 name = "rust-fs-core"
-version = "0.4.3"
+version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d8df0bed38b9ce645d2c7c8a1f0a36524dc2a78d61f5bdb090fb9d944041155"
+checksum = "e5565c39c9e33464399bb7ad1c2061d52d113ffacce8a23af919e69347969552"
 dependencies = [
  "clap",
  "clap_complete",
@@ -456,6 +456,7 @@ dependencies = [
  "rust-fs-core",
  "same-file",
  "saphyr",
+ "serde",
  "tempfile",
  "unicode-normalization",
  "wasm-bindgen-test",

@@ -1,10 +1,10 @@
 # Building against an unreleased rust-fs-core
 
-`Cargo.toml` and `fuzz/Cargo.toml` name `rust-fs-core` by an exact
-published version and no path:
+`Cargo.toml` and `fuzz/Cargo.toml` name `rust-fs-core` by a published
+version and no path:
 
 ```toml
-rust-fs-core = { version = "=0.4.3" }
+rust-fs-core = { version = "0.5", features = ["layers"] }
 ```
 
 So every build -- on a workstation, in CI and in the harness guest --

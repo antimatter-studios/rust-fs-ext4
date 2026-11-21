@@ -37,9 +37,9 @@ pub use dirs::{
 pub use journal::{scan_journal, JournalCopy, JournalScan};
 pub use maps::{map_inode, BlockMap, MapEnd, MappedRun};
 pub use structures::{
-    descriptor_table_copies, find_superblock, group_descriptors, read_inode, read_inode_at,
-    read_superblock_at, structure_damage, superblock_copies, DescriptorRecord, InodeRecord,
-    SuperblockCopy,
+    descriptor_table_copies, find_superblock, group_descriptors, probe_backup_copies, read_inode,
+    read_inode_at, read_superblock_at, structure_damage, structure_damage_with, superblock_copies,
+    DescriptorRecord, InodeRecord, SuperblockCopy,
 };
 pub use verbs::{
     Candidate, CandidateDetail, CandidateKind, CandidateState, DamageReport, Ext4Salvage,

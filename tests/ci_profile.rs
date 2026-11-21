@@ -3652,7 +3652,7 @@ fn every_declaration_of_the_am_fs_core_pin_names_the_same_version() {
     let agreed = &declared[0].2;
     let disagreeing: Vec<String> = declared
         .iter()
-        .filter(|(_, _, v)| v != agreed)
+        .filter(|(_, _, v)| !same_release(v, agreed))
         .map(|(file, spelling, v)| format!("{file}: {spelling} says {v}"))
         .collect();
     assert!(
@@ -3664,6 +3664,30 @@ fn every_declaration_of_the_am_fs_core_pin_names_the_same_version() {
         declared[0].0,
         declared[0].1,
     );
+}
+
+/// Whether two declarations name the same release: equal, or one is a
+/// manifest's `major.minor` requirement (`0.5`, which cargo reads as
+/// `^0.5`) and the other a release of that line (`0.5.0`), as the lock and
+/// `FS_CORE_REF` name it.
+fn same_release(a: &str, b: &str) -> bool {
+    let line = |short: &str, long: &str| {
+        short.split('.').count() == 2
+            && long
+                .strip_prefix(short)
+                .is_some_and(|rest| rest.starts_with('.'))
+    };
+    a == b || line(a, b) || line(b, a)
+}
+
+#[test]
+fn a_minor_requirement_names_the_releases_of_its_line() {
+    assert!(same_release("0.5", "0.5.0"));
+    assert!(same_release("0.5.3", "0.5"));
+    assert!(same_release("0.5.0", "0.5.0"));
+    assert!(!same_release("0.5", "0.50.0"));
+    assert!(!same_release("0.5", "0.4.3"));
+    assert!(!same_release("0.5.0", "0.5.1"));
 }
 
 /// The oldest `rust-fs-core` release that carries the shared tree
