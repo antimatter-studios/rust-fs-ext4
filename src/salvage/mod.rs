@@ -24,6 +24,7 @@
 //! layers (volume, primitives, files).
 
 pub mod dirs;
+pub mod journal;
 pub mod maps;
 pub mod structures;
 pub mod verbs;
@@ -33,6 +34,7 @@ use std::fmt;
 pub use dirs::{
     read_directory, scan_dir_block, DirBlockScan, DirContext, DirectoryScan, FoundEntry,
 };
+pub use journal::{scan_journal, JournalCopy, JournalScan};
 pub use maps::{map_inode, BlockMap, MapEnd, MappedRun};
 pub use structures::{
     descriptor_table_copies, find_superblock, group_descriptors, read_inode, read_inode_at,

@@ -46,7 +46,7 @@ instead of refusing.
 | Damage to the above | `structure_damage` | Faulty and disagreeing copies, and the state the superblock records |
 | Extent trees and indirect blocks | `map_inode` | Every run reached, the map blocks, inline data, and where and why the walk stopped (bad header, pointer out of range, a block reached twice, unreadable); a map that reaches fewer blocks than `i_blocks` counts is broken |
 | Directories | `scan_dir_block`, `read_directory` | Linear, inline and hashed directories; entries recovered past a broken `rec_len`, and deleted entries left in a record's slack |
-| Journal | `jbd2::JournalSuperblock::parse`, `journal::walk` (mount-time, trusting) | A tolerant journal read is still to come |
+| Journal | `scan_journal` | Every copy of a filesystem block the ring still holds, from every transaction found, committed or not, checksummed where the journal keeps tag checksums; older copies of a damaged block in place |
 
 The salvage verbs, built on the structures above:
 
