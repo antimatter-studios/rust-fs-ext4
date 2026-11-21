@@ -26,6 +26,7 @@
 pub mod dirs;
 pub mod maps;
 pub mod structures;
+pub mod verbs;
 
 use std::fmt;
 
@@ -34,8 +35,14 @@ pub use dirs::{
 };
 pub use maps::{map_inode, BlockMap, MapEnd, MappedRun};
 pub use structures::{
-    descriptor_table_copies, find_superblock, group_descriptors, read_inode, read_superblock_at,
-    structure_damage, superblock_copies, DescriptorRecord, InodeRecord, SuperblockCopy,
+    descriptor_table_copies, find_superblock, group_descriptors, read_inode, read_inode_at,
+    read_superblock_at, structure_damage, superblock_copies, DescriptorRecord, InodeRecord,
+    SuperblockCopy,
+};
+pub use verbs::{
+    Candidate, CandidateDetail, CandidateKind, CandidateState, DamageReport, Ext4Salvage,
+    ExtentWalk, Feature, InodeDetail, MaterializeReport, MaterializedRange, Parent, ParentClaim,
+    Piece, Plan, PlanStep, ScanReport, Sink, Tree, TreeNode, WalkEnd,
 };
 
 /// A byte range of the source.
@@ -128,6 +135,13 @@ pub enum SalvageError {
     /// A request names something outside the volume or the format's range,
     /// such as inode 0 or an inode past `s_inodes_count`.
     OutOfRange(String),
+    /// Source bytes a request named directly could not be read. Bytes a
+    /// scan or a plan meets along the way are reported as evidence instead.
+    Read(String),
+    /// A plan that cannot be carried out as written.
+    InvalidPlan(String),
+    /// The caller's output refused the bytes.
+    Sink(std::io::Error),
 }
 
 impl fmt::Display for SalvageError {
@@ -135,11 +149,21 @@ impl fmt::Display for SalvageError {
         match self {
             Self::NoGeometry => formatter.write_str("no readable superblock copy was found"),
             Self::OutOfRange(what) => write!(formatter, "out of range: {what}"),
+            Self::Read(what) => write!(formatter, "source read failed: {what}"),
+            Self::InvalidPlan(what) => write!(formatter, "invalid plan: {what}"),
+            Self::Sink(error) => write!(formatter, "output sink failed: {error}"),
         }
     }
 }
 
-impl std::error::Error for SalvageError {}
+impl std::error::Error for SalvageError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Sink(error) => Some(error),
+            _ => None,
+        }
+    }
+}
 
 /// A volume in memory for the salvage unit tests: writable for the crate's
 /// `mkfs` and its write path, readable as a salvage source.
