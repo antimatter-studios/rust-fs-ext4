@@ -122,6 +122,24 @@ expect fail "profile fast" fast true full true
 expect fail "unset code" full "<unset>" full true
 expect fail "code maybe" full maybe full true
 
+# a gate job that failed or was cancelled fails the verdict, even when every
+# job it gates reads as accepted
+all_ok="changes unit fixtures test test-arm64 suite-in-vm wasm semver msrv cli provenance"
+for result in failure cancelled; do
+  checks=$((checks + 1))
+  if { for j in $all_ok; do echo "$j success"; done; echo "unit-gate $result"; } |
+    PROFILE=full CODE=true bash "$here/ci-ok.sh" >/dev/null 2>&1; then
+    echo "FAIL  a $result gate job passed the verdict" >&2
+    fails=$((fails + 1))
+  fi
+done
+checks=$((checks + 1))
+if ! { for j in $all_ok; do echo "$j success"; done; echo "unit-gate skipped"; } |
+  PROFILE=full CODE=true bash "$here/ci-ok.sh" >/dev/null 2>&1; then
+  echo "FAIL  a skipped gate job with every job green failed the verdict" >&2
+  fails=$((fails + 1))
+fi
+
 if ((fails > 0)); then
   echo "test-ci-plan.sh: $fails of $checks checks failed" >&2
   exit 1
