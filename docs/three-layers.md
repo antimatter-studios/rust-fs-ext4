@@ -44,8 +44,8 @@ instead of refusing.
 | Group descriptors and their backup tables | `group_descriptors(source, sb, copy)`, `descriptor_table_copies` | Copy 0 is the primary; `META_BG` and the table after each superblock copy are both handled; a descriptor whose checksum fails is kept and marked |
 | Inodes | `read_inode` | Located through any copy of the descriptors; checksum judged, never trusted |
 | Damage to the above | `structure_damage` | Faulty and disagreeing copies, and the state the superblock records |
-| Extent trees and indirect blocks | (next) | Every extent reached, and where and why the walk broke |
-| Directories | (next) | Entries recovered past a bad `rec_len`, and deleted entries in the slack |
+| Extent trees and indirect blocks | `map_inode` | Every run reached, the map blocks, inline data, and where and why the walk stopped (bad header, pointer out of range, a block reached twice, unreadable); a map that reaches fewer blocks than `i_blocks` counts is broken |
+| Directories | `scan_dir_block`, `read_directory` | Linear, inline and hashed directories; entries recovered past a broken `rec_len`, and deleted entries left in a record's slack |
 | Journal | `jbd2::JournalSuperblock::parse`, `journal::walk` (mount-time, trusting) | A tolerant journal read is still to come |
 
 The salvage verbs, built on the structures above:
@@ -53,7 +53,7 @@ The salvage verbs, built on the structures above:
 | Verb | ext4 terms | State |
 |---|---|---|
 | Find candidates | Inodes in every group's inode table, live and deleted; superblock copies found by scanning | Next |
-| Walk extents | An inode's extent tree or indirect block map, as source byte ranges | Next |
+| Walk extents | An inode's extent tree or indirect block map, as source byte ranges | `map_inode` gives the runs; the verb is next |
 | Rebuild the tree | Directory entries from every directory inode, as parent claims; orphans and conflicts kept | Next |
 | Report damage | `structure_damage`, then inodes, maps and directories | Partial |
 | Read by extent | Raw source bytes, no file object needed | Next |

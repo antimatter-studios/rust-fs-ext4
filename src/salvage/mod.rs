@@ -23,10 +23,16 @@
 //! unchanged. `docs/three-layers.md` maps this crate's API onto the three
 //! layers (volume, primitives, files).
 
+pub mod dirs;
+pub mod maps;
 pub mod structures;
 
 use std::fmt;
 
+pub use dirs::{
+    read_directory, scan_dir_block, DirBlockScan, DirContext, DirectoryScan, FoundEntry,
+};
+pub use maps::{map_inode, BlockMap, MapEnd, MappedRun};
 pub use structures::{
     descriptor_table_copies, find_superblock, group_descriptors, read_inode, read_superblock_at,
     structure_damage, superblock_copies, DescriptorRecord, InodeRecord, SuperblockCopy,
@@ -134,3 +140,127 @@ impl fmt::Display for SalvageError {
 }
 
 impl std::error::Error for SalvageError {}
+
+/// A volume in memory for the salvage unit tests: writable for the crate's
+/// `mkfs` and its write path, readable as a salvage source.
+#[cfg(test)]
+pub(crate) mod test_volume {
+    use crate::block_io::BlockDevice;
+    use crate::features::FsFlavor;
+    use crate::fs::Filesystem;
+    use crate::mkfs::format_filesystem_with_flavor;
+    use std::collections::BTreeMap;
+    use std::sync::{Arc, Mutex};
+
+    /// The crate's `mkfs` writes only metadata, so a volume is kept as the
+    /// chunks written to it: four groups of 2 KiB blocks are 128 MiB, of
+    /// which a few hundred KiB are ever stored.
+    const CHUNK: u64 = 4096;
+
+    pub(crate) struct Memory {
+        size: u64,
+        chunks: Mutex<BTreeMap<u64, Vec<u8>>>,
+    }
+
+    impl Memory {
+        pub(crate) fn format(flavor: FsFlavor, mib: u64, block_size: u32) -> Arc<Self> {
+            let memory = Memory {
+                size: mib << 20,
+                chunks: Mutex::new(BTreeMap::new()),
+            };
+            format_filesystem_with_flavor(
+                &memory,
+                Some("salvage"),
+                Some([7; 16]),
+                mib << 20,
+                block_size,
+                flavor,
+            )
+            .unwrap();
+            Arc::new(memory)
+        }
+
+        /// The crate's own mount, to put files and directories on the
+        /// volume through the write path. Drop it before reading.
+        pub(crate) fn mount(self: &Arc<Self>) -> Filesystem {
+            Filesystem::mount(self.clone()).unwrap()
+        }
+
+        pub(crate) fn copy(&self, offset: u64, buf: &mut [u8]) {
+            let chunks = self.chunks.lock().unwrap();
+            let mut done = 0;
+            while done < buf.len() {
+                let at = offset + done as u64;
+                let within = (at % CHUNK) as usize;
+                let take = (CHUNK as usize - within).min(buf.len() - done);
+                let out = &mut buf[done..done + take];
+                match chunks.get(&(at / CHUNK)) {
+                    Some(chunk) => out.copy_from_slice(&chunk[within..within + take]),
+                    None => out.fill(0),
+                }
+                done += take;
+            }
+        }
+
+        pub(crate) fn poke(&self, offset: u64, bytes: &[u8]) {
+            let mut chunks = self.chunks.lock().unwrap();
+            let mut done = 0;
+            while done < bytes.len() {
+                let at = offset + done as u64;
+                let within = (at % CHUNK) as usize;
+                let take = (CHUNK as usize - within).min(bytes.len() - done);
+                let part = &bytes[done..done + take];
+                if let Some(chunk) = chunks.get_mut(&(at / CHUNK)) {
+                    chunk[within..within + take].copy_from_slice(part);
+                } else if part.iter().any(|&b| b != 0) {
+                    let mut chunk = vec![0; CHUNK as usize];
+                    chunk[within..within + take].copy_from_slice(part);
+                    chunks.insert(at / CHUNK, chunk);
+                }
+                done += take;
+            }
+        }
+
+        pub(crate) fn flip(&self, offset: u64) {
+            let mut byte = [0u8];
+            self.copy(offset, &mut byte);
+            self.poke(offset, &[byte[0] ^ 0xFF]);
+        }
+    }
+
+    impl BlockDevice for Memory {
+        fn read_at(&self, offset: u64, buf: &mut [u8]) -> crate::error::Result<()> {
+            self.copy(offset, buf);
+            Ok(())
+        }
+        fn write_at(&self, offset: u64, buf: &[u8]) -> crate::error::Result<()> {
+            self.poke(offset, buf);
+            Ok(())
+        }
+        fn size_bytes(&self) -> u64 {
+            self.size
+        }
+        fn is_writable(&self) -> bool {
+            true
+        }
+    }
+
+    impl fs_core::BlockRead for Memory {
+        fn read_at(&self, offset: u64, buf: &mut [u8]) -> fs_core::Result<()> {
+            match offset.checked_add(buf.len() as u64) {
+                Some(end) if end <= self.size => {
+                    self.copy(offset, buf);
+                    Ok(())
+                }
+                _ => Err(fs_core::Error::OutOfBounds {
+                    offset,
+                    len: buf.len() as u64,
+                    size: self.size,
+                }),
+            }
+        }
+        fn size_bytes(&self) -> u64 {
+            self.size
+        }
+    }
+}

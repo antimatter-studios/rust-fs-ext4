@@ -718,126 +718,18 @@ fn descriptor_damage(source: &dyn BlockRead, sb: &Superblock) -> Vec<Damage> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::block_io::BlockDevice;
     use crate::features::FsFlavor;
-    use crate::mkfs::format_filesystem_with_flavor;
-    use std::collections::BTreeMap;
-    use std::sync::Mutex;
-
-    /// The crate's `mkfs` writes only metadata, so a volume is kept as the
-    /// chunks written to it: four groups of 2 KiB blocks are 128 MiB, of
-    /// which a few hundred KiB are ever stored.
-    const CHUNK: u64 = 4096;
-
-    struct Memory {
-        size: u64,
-        chunks: Mutex<BTreeMap<u64, Vec<u8>>>,
-    }
-
-    impl Memory {
-        fn format(flavor: FsFlavor, mib: u64, block_size: u32) -> Self {
-            let memory = Memory {
-                size: mib << 20,
-                chunks: Mutex::new(BTreeMap::new()),
-            };
-            format_filesystem_with_flavor(
-                &memory,
-                Some("salvage"),
-                Some([7; 16]),
-                mib << 20,
-                block_size,
-                flavor,
-            )
-            .unwrap();
-            memory
-        }
-
-        fn copy(&self, offset: u64, buf: &mut [u8]) {
-            let chunks = self.chunks.lock().unwrap();
-            let mut done = 0;
-            while done < buf.len() {
-                let at = offset + done as u64;
-                let within = (at % CHUNK) as usize;
-                let take = (CHUNK as usize - within).min(buf.len() - done);
-                let out = &mut buf[done..done + take];
-                match chunks.get(&(at / CHUNK)) {
-                    Some(chunk) => out.copy_from_slice(&chunk[within..within + take]),
-                    None => out.fill(0),
-                }
-                done += take;
-            }
-        }
-
-        fn poke(&self, offset: u64, bytes: &[u8]) {
-            let mut chunks = self.chunks.lock().unwrap();
-            let mut done = 0;
-            while done < bytes.len() {
-                let at = offset + done as u64;
-                let within = (at % CHUNK) as usize;
-                let take = (CHUNK as usize - within).min(bytes.len() - done);
-                let part = &bytes[done..done + take];
-                if let Some(chunk) = chunks.get_mut(&(at / CHUNK)) {
-                    chunk[within..within + take].copy_from_slice(part);
-                } else if part.iter().any(|&b| b != 0) {
-                    let mut chunk = vec![0; CHUNK as usize];
-                    chunk[within..within + take].copy_from_slice(part);
-                    chunks.insert(at / CHUNK, chunk);
-                }
-                done += take;
-            }
-        }
-
-        fn flip(&self, offset: u64) {
-            let mut byte = [0u8];
-            self.copy(offset, &mut byte);
-            self.poke(offset, &[byte[0] ^ 0xFF]);
-        }
-    }
-
-    impl BlockDevice for Memory {
-        fn read_at(&self, offset: u64, buf: &mut [u8]) -> crate::error::Result<()> {
-            self.copy(offset, buf);
-            Ok(())
-        }
-        fn write_at(&self, offset: u64, buf: &[u8]) -> crate::error::Result<()> {
-            self.poke(offset, buf);
-            Ok(())
-        }
-        fn size_bytes(&self) -> u64 {
-            self.size
-        }
-        fn is_writable(&self) -> bool {
-            true
-        }
-    }
-
-    impl fs_core::BlockRead for Memory {
-        fn read_at(&self, offset: u64, buf: &mut [u8]) -> fs_core::Result<()> {
-            match offset.checked_add(buf.len() as u64) {
-                Some(end) if end <= self.size => {
-                    self.copy(offset, buf);
-                    Ok(())
-                }
-                _ => Err(fs_core::Error::OutOfBounds {
-                    offset,
-                    len: buf.len() as u64,
-                    size: self.size,
-                }),
-            }
-        }
-        fn size_bytes(&self) -> u64 {
-            self.size
-        }
-    }
+    use crate::salvage::test_volume::Memory;
+    use std::sync::Arc;
 
     /// 2 KiB blocks and 16384 blocks per group: 128 MiB is four groups,
     /// with backups in groups 1 and 3.
-    fn ext4() -> Memory {
+    fn ext4() -> Arc<Memory> {
         Memory::format(FsFlavor::Ext4, 128, 2048)
     }
 
     /// The crate's `mkfs` makes ext2 in one group only.
-    fn ext2() -> Memory {
+    fn ext2() -> Arc<Memory> {
         Memory::format(FsFlavor::Ext2, 8, 1024)
     }
 
