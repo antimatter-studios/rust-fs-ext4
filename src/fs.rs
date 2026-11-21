@@ -2073,9 +2073,10 @@ impl Filesystem {
                 has_filetype,
             );
         }
-        if !inode.has_extents() {
-            return Err(Error::Corrupt("legacy (non-extent) dirs not yet supported"));
-        }
+        // Extent-mapped and block-mapped (ext2, ext3) directories alike: one
+        // indirect-block cache across the listing, so each indirect block is
+        // read once rather than once per directory block.
+        let mut indirect = crate::indirect::IndirectCache::new();
 
         // Bound on entries buffered per listing. A crafted image with
         // `inode.size` claiming gigabytes would otherwise allocate
@@ -2094,9 +2095,18 @@ impl Filesystem {
         let total_blocks = inode.size.div_ceil(block_size as u64);
         let mut block_buf = vec![0u8; block_size as usize];
         for logical in 0..total_blocks {
-            let Some(phys) =
+            let phys = if inode.has_extents() {
                 crate::extent::map_logical(&inode.block, self.dev.as_ref(), block_size, logical)?
-            else {
+            } else {
+                crate::indirect::lookup(
+                    &inode.block,
+                    self.dev.as_ref(),
+                    block_size,
+                    logical,
+                    &mut indirect,
+                )?
+            };
+            let Some(phys) = phys else {
                 continue; // sparse hole
             };
             self.dev.read_at(phys * block_size as u64, &mut block_buf)?;
