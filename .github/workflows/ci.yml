@@ -343,6 +343,11 @@ jobs:
         run: scripts/ci-install-chore.sh
       - name: chore siblings
         run: chore siblings
+      - name: Upstream virtiofsd 1.14.0
+        # Ubuntu 24.04 packages virtiofsd 1.10.0, which never answers a
+        # non-UTF-8 xattr name (fs-linux-test-harness #274). The tag must
+        # match LINUX_HARNESS_REF in chores.yml.
+        uses: antimatter-studios/fs-linux-test-harness/.github/actions/install-virtiofsd@v0.9.1
       - name: KVM, QEMU and Vagrant
         id: vm-host
         run: ../fs-linux-test-harness/scripts/ci-setup-linux.sh
@@ -391,6 +396,11 @@ jobs:
             target
           key: ${{ runner.os }}-x86_64-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-x86_64-cargo-
+      - name: Upstream virtiofsd 1.14.0
+        # Ubuntu 24.04 packages virtiofsd 1.10.0, which never answers a
+        # non-UTF-8 xattr name (fs-linux-test-harness #274). The tag must
+        # match LINUX_HARNESS_REF in chores.yml.
+        uses: antimatter-studios/fs-linux-test-harness/.github/actions/install-virtiofsd@v0.9.1
       - name: KVM, QEMU and Vagrant
         id: vm-host
         run: ../fs-linux-test-harness/scripts/ci-setup-linux.sh
@@ -513,6 +523,11 @@ jobs:
         run: scripts/ci-install-chore.sh
       - name: chore siblings
         run: chore siblings
+      - name: Upstream virtiofsd 1.14.0
+        # Ubuntu 24.04 packages virtiofsd 1.10.0, which never answers a
+        # non-UTF-8 xattr name (fs-linux-test-harness #274). The tag must
+        # match LINUX_HARNESS_REF in chores.yml.
+        uses: antimatter-studios/fs-linux-test-harness/.github/actions/install-virtiofsd@v0.9.1
       - name: KVM, QEMU and Vagrant
         id: vm-host
         run: ../fs-linux-test-harness/scripts/ci-setup-linux.sh
