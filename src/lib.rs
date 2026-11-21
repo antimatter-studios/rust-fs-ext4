@@ -51,6 +51,7 @@ pub mod jbd2;
 pub mod journal;
 pub mod journal_apply;
 pub mod journal_writer;
+pub mod layers;
 pub mod mkfs;
 pub mod path;
 pub mod runtime;
