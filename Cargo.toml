@@ -138,6 +138,11 @@ codegen-units = 1
 opt-level = 3
 panic = "unwind"  # required for catch_unwind at FFI boundary (see src/capi.rs)
 
+[profile.test-opt]
+inherits = "release"
+lto = false
+codegen-units = 16
+
 [profile.dev]
 opt-level = 1
 panic = "unwind"

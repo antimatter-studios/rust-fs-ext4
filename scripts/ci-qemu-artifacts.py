@@ -22,7 +22,7 @@ def workload_plan(workload):
         return {"targets": ["--lib", "--test", "ro_compat_write_guard"], "profile": [],
                 "filter": ["--skip", "needs_host::"], "floor": 440}
     if workload == "full":
-        return {"targets": [], "profile": ["--release"], "filter": [], "floor": 1078}
+        return {"targets": [], "profile": ["--profile", "test-opt"], "filter": [], "floor": 1078}
     raise ValueError(f"unsupported workload: {workload}")
 
 

@@ -112,7 +112,7 @@ class ArtifactTests(unittest.TestCase):
         self.assertEqual(single["filter"], ["mount_and_umount_basic_image", "--exact", "--nocapture"])
         self.assertEqual(single["floor"], 1)
         self.assertEqual(self.module.workload_plan("smoke")["filter"], ["--skip", "needs_host::"])
-        self.assertEqual(self.module.workload_plan("full")["profile"], ["--release"])
+        self.assertEqual(self.module.workload_plan("full")["profile"], ["--profile", "test-opt"])
         with self.assertRaises(ValueError):
             self.module.workload_plan("unknown")
 

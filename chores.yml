@@ -556,7 +556,7 @@ tasks:
     # rather than skipped inside the tests, so what does not run there is
     # visible in the workflow rather than hidden in a green log.
     cmds:
-      - '../rust-fs-core/scripts/tier.sh test:images images 1400 60000 -- scripts/test.sh --locked --release $(scripts/test-targets.sh images)'
+      - '../rust-fs-core/scripts/tier.sh test:images images 1400 60000 -- scripts/test.sh --locked --profile test-opt $(scripts/test-targets.sh images)'
       - 'bash ../rust-fs-core/scripts/test-floor.sh images 450'
 
   test:oracle:
@@ -578,7 +578,7 @@ tasks:
     # boot that did not finish.
     cmds:
       - scripts/tools.sh --check
-      - '../rust-fs-core/scripts/tier.sh test:oracle oracle 3800 295000 -- scripts/test.sh --locked --release $(scripts/test-targets.sh oracle) -- --show-output'
+      - '../rust-fs-core/scripts/tier.sh test:oracle oracle 3800 295000 -- scripts/test.sh --locked --profile test-opt $(scripts/test-targets.sh oracle) -- --show-output'
       - 'bash ../rust-fs-core/scripts/test-floor.sh oracle 140'
 
   test:kernel:
@@ -610,7 +610,7 @@ tasks:
     # 940 / 66000 cap failed it with exit 65. 1180 / 86000 keeps about 30%
     # headroom over that log, replacing 940 / 66000.
     cmds:
-      - '../rust-fs-core/scripts/tier.sh test:kernel kernel 1180 86000 -- scripts/test.sh --locked --release $(scripts/test-targets.sh kernel) -- --show-output'
+      - '../rust-fs-core/scripts/tier.sh test:kernel kernel 1180 86000 -- scripts/test.sh --locked --profile test-opt $(scripts/test-targets.sh kernel) -- --show-output'
       # 27 executed in the merge queue on 2026-10-17 (run 38991557768);
       # cli_ls_recursive_kernel.rs adds one, cli_rm_kernel.rs two,
       # cli_mv_kernel.rs two, cli_ln_kernel.rs two, cli_mkdir_kernel.rs
@@ -650,7 +650,7 @@ tasks:
     # zero, not a refactor that merges two tests into one.
     cmds:
       - scripts/tools.sh --check
-      - '../rust-fs-core/scripts/tier.sh test:lwext4 lwext4 85 6800 -- scripts/test.sh --locked --release $(scripts/test-targets.sh lwext4) -- --show-output'
+      - '../rust-fs-core/scripts/tier.sh test:lwext4 lwext4 85 6800 -- scripts/test.sh --locked --profile test-opt $(scripts/test-targets.sh lwext4) -- --show-output'
       - 'bash ../rust-fs-core/scripts/test-floor.sh lwext4 7'
 
   tools:wasm:
@@ -770,7 +770,7 @@ tasks:
       - task: test:oracle
       - task: test:kernel
       - task: test:lwext4
-      - '../rust-fs-core/scripts/tier.sh "test:native (whole suite, release)" suite 3700 183000 -- scripts/test.sh --locked --release'
+      - '../rust-fs-core/scripts/tier.sh "test:native (whole suite, release)" suite 3700 183000 -- scripts/test.sh --locked --profile test-opt'
       # cli_export_kernel.rs adds two cases to the whole-suite floor.
       # cli_import_kernel.rs adds three more cases.
       # #536 adds one unit case and two kernel cases.
