@@ -34,7 +34,7 @@ run() {
     local dir="$1"
     shift
     if ! env -u RFE_KEEP_IMAGES -u FS_EXT4_TEST_TMPDIR "$@" ${dir:+FS_EXT4_TEST_TMPDIR="$dir"} \
-        "$REPO/scripts/test.sh" --locked --release --test "$TEST" > "$log" 2>&1; then
+        "$REPO/scripts/test.sh" --locked --profile test-opt --test "$TEST" > "$log" 2>&1; then
         note "cargo test --test $TEST failed; the tail of its log:"
         tail -n 15 "$log" >&2
         return 1

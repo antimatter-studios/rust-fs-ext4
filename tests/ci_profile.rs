@@ -1530,10 +1530,10 @@ fn the_pr_gate_builds_fixtures_once_in_the_harness_vm_and_tests_both_architectur
         commands.iter().any(|c| {
             let as_cargo = c.replace(TEST_WRAPPER, "cargo test");
             as_cargo.contains("cargo test")
-                && as_cargo.contains("--release")
+                && as_cargo.contains("--profile test-opt")
                 && !as_cargo.contains("test-targets.sh")
         }),
-        "chores.yml `test:native` must run the whole suite in the release profile; it runs \
+        "chores.yml `test:native` must run the whole suite in the test-opt profile; it runs \
          {commands:?}"
     );
     assert!(
@@ -3905,4 +3905,20 @@ fn the_chore_download_retries_a_transient_server_error() {
         "these chore downloads fail the job on one transient HTTP 5xx; \
          add `--retry 5 --retry-all-errors --retry-delay 2`: {bare:#?}"
     );
+}
+
+#[test]
+fn optimized_test_profile_disables_lto() {
+    let manifest = include_str!("../Cargo.toml");
+    let profile = manifest
+        .split("[profile.test-opt]")
+        .nth(1)
+        .expect("test-opt profile missing")
+        .split('[')
+        .next()
+        .unwrap();
+    let settings: Vec<_> = profile.lines().map(str::trim).collect();
+    assert!(settings.contains(&"inherits = \"release\""));
+    assert!(settings.contains(&"lto = false"));
+    assert!(settings.contains(&"codegen-units = 16"));
 }
