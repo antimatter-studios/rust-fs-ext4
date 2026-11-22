@@ -126,6 +126,9 @@ assert 'tee "$state/workload.log"' in host
 assert 'heartbeat' in host
 assert 'scripts/ci-qemu-boot.sh' in host
 assert 'mountpoint -q /boot/efi' in host
+assert 'EXT4_BENCHMARK_EFI_SOURCE' in host
+assert 'JobRunningTimeoutUSec' in host
+assert 'ActiveEnterTimestampMonotonic' in host
 assert 'systemctl is-active --quiet multi-user.target' in host
 assert "inputs.workload || 'single'" in (root / '.github/workflows/qemu-benchmark.yml').read_text()
 PY
