@@ -290,7 +290,16 @@ if [ "$arch" = aarch64 ]; then ready_check+=' && mountpoint -q /boot/efi'; fi
 ready_command="printf 'EXT4_BENCHMARK_SSH_CONNECTED\n'; if $ready_check; then exit 0; fi;
     date -u; cat /proc/uptime; cloud-init status --long || true;
     systemctl --failed --no-pager;
-    systemctl show boot-efi.mount -p Result -p ActiveState -p ActiveEnterTimestampMonotonic;
+    efi_source=\$(findmnt --fstab --target /boot/efi --noheadings --output SOURCE 2>/dev/null || true);
+    printf 'EXT4_BENCHMARK_EFI_SOURCE=%s\\n' \"\$efi_source\";
+    systemctl show boot-efi.mount -p What -p Result -p ActiveState -p ActiveEnterTimestampMonotonic;
+    if [ -n \"\$efi_source\" ]; then
+        case \"\$efi_source\" in PARTUUID=*) efi_device=/dev/disk/by-partuuid/\${efi_source#PARTUUID=} ;; *) efi_device=\$efi_source ;; esac;
+        efi_unit=\$(systemd-escape --path --suffix=device \"\$efi_device\" 2>/dev/null || true);
+        printf 'EXT4_BENCHMARK_EFI_DEVICE=%s\\n' \"\$efi_device\";
+        if [ -n \"\$efi_unit\" ]; then systemctl show \"\$efi_unit\" -p Result -p ActiveState -p JobRunningTimeoutUSec; fi;
+        readlink -e \"\$efi_device\" || true;
+    fi;
     journalctl -b -o short-monotonic --no-pager -n 30 -u boot-efi.mount -u systemd-udevd.service \
         -u cloud-init.service -u cloud-config.service -u cloud-final.service -u ssh.service;
     exit 1"
