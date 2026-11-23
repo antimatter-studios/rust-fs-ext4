@@ -13,13 +13,17 @@ def read_text(root, name):
     return (root / name).read_text().strip()
 
 
-def report(root, jobs, run):
-    expected = {"hosted-x64", "vps-x64", "hosted-arm64", "vps-arm64"}
+def report(root, jobs, run, workload, source_commit):
+    expected = {"hosted-x64": ("x86_64", "kvm"), "vps-x64": ("x86_64", "tcg"),
+                "hosted-arm64": ("aarch64", "tcg"), "vps-arm64": ("aarch64", "tcg")}
     by_name = {job["name"]: job for job in jobs["jobs"]}
     created = timestamp(run["created_at"])
     measurements = {}
     problems = []
+    if not source_commit:
+        problems.append("missing workflow source commit; cannot verify artifact identity")
     print("## QEMU pilot: time to a verified result")
+    print(f"Requested source: `{source_commit}`; workload: `{workload}`.")
     print("Queue wait is measured from workflow submission to the first job step.")
     print("Total time includes the job queue, setup, and workload; no hosted bootstrap gates the trials.")
     print()
@@ -33,8 +37,18 @@ def report(root, jobs, run):
             continue
         host = json.loads(host_path.read_text())
         name = host["job"]
+        if name not in expected:
+            problems.append(f"{name}: unexpected trial identity")
+            continue
         if host.get("source_dirty"):
             problems.append(f"{name}: source checkout is dirty; commit identity does not describe the workload")
+        if source_commit and host.get("source_commit") != source_commit:
+            problems.append(f"{name}: artifact source does not match workflow source {source_commit}")
+        if result.get("workload") != workload:
+            problems.append(f"{name}: artifact workload does not match requested workload {workload}")
+        if (result.get("guest_arch"), result.get("accelerator")) != expected[name]:
+            arch, accelerator = expected[name]
+            problems.append(f"{name}: expected {arch} / {accelerator}")
         if name in measurements:
             problems.append(f"{name}: duplicate result")
             continue
@@ -55,7 +69,7 @@ def report(root, jobs, run):
             problems.append(f"{name}: fell back to hosted; this is NOT a VPS measurement")
         if by_name.get(name, {}).get("conclusion") != "success":
             problems.append(f"{name}: job did not complete successfully")
-    for missing in sorted(expected - measurements.keys()):
+    for missing in sorted(expected.keys() - measurements.keys()):
         job = by_name.get(missing, {})
         problems.append(f"{missing}: no measurements (job {job.get('conclusion') or job.get('status', 'missing')})")
     for suffix in ("x64", "arm64"):
@@ -92,4 +106,4 @@ def report(root, jobs, run):
 
 if __name__ == "__main__":
     sys.exit(report(pathlib.Path(sys.argv[1]), json.loads(pathlib.Path(sys.argv[2]).read_text()),
-                    json.loads(pathlib.Path(sys.argv[3]).read_text())))
+                    json.loads(pathlib.Path(sys.argv[3]).read_text()), sys.argv[4], sys.argv[5]))

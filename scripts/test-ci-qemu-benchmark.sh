@@ -262,15 +262,59 @@ for name, arch in (("hosted-x64", "x86_64"), ("vps-x64", "x86_64"),
 jobs_path = root.parent / "jobs.json"
 jobs_path.write_text(json.dumps({"jobs": jobs}))
 run_path = root.parent / "run.json"
-run_path.write_text(json.dumps({"created_at": "1970-01-01T00:16:40Z"}))
+run_path.write_text(json.dumps({"created_at": "1970-01-01T00:16:40Z", "head_sha": "pull-request-head"}))
 
-def check(success, message):
-    result = subprocess.run([sys.executable, report, str(root), str(jobs_path), str(run_path)],
+def check(success, message, source_commit="same"):
+    result = subprocess.run([sys.executable, report, str(root), str(jobs_path), str(run_path), "smoke", source_commit],
                             capture_output=True, text=True)
     assert (result.returncode == 0) == success, result.stdout + result.stderr
     assert message in result.stdout, result.stdout
 
 check(True, "| 700 | 1800 | 2500 | passed |")
+for trial in root.iterdir():
+    identity_path = trial / "host.json"
+    identity = json.loads(identity_path.read_text())
+    identity["source_commit"] = "stale"
+    identity_path.write_text(json.dumps(identity))
+check(False, "does not match workflow source")
+for trial in root.iterdir():
+    identity_path = trial / "host.json"
+    identity = json.loads(identity_path.read_text())
+    identity["source_commit"] = "same"
+    identity_path.write_text(json.dumps(identity))
+for trial_name in ("hosted-arm64", "vps-arm64"):
+    result_path = root / trial_name / "result.json"
+    result = json.loads(result_path.read_text())
+    result["workload"] = "full"
+    result_path.write_text(json.dumps(result))
+check(False, "does not match requested workload smoke")
+for trial_name in ("hosted-arm64", "vps-arm64"):
+    result_path = root / trial_name / "result.json"
+    result = json.loads(result_path.read_text())
+    result["workload"] = "smoke"
+    result["guest_arch"] = "x86_64"
+    result_path.write_text(json.dumps(result))
+check(False, "expected aarch64 / tcg")
+for trial_name in ("hosted-arm64", "vps-arm64"):
+    result_path = root / trial_name / "result.json"
+    result = json.loads(result_path.read_text())
+    result["guest_arch"] = "aarch64"
+    result_path.write_text(json.dumps(result))
+accelerator_path = root / "hosted-x64" / "result.json"
+accelerator_original = accelerator_path.read_text()
+accelerator_result = json.loads(accelerator_original)
+accelerator_result["accelerator"] = "tcg"
+accelerator_path.write_text(json.dumps(accelerator_result))
+check(False, "expected x86_64 / kvm")
+accelerator_path.write_text(accelerator_original)
+check(False, "missing workflow source commit", source_commit="")
+identity_path = root / "hosted-x64" / "host.json"
+identity_original = identity_path.read_text()
+identity = json.loads(identity_original)
+identity["job"] = "unexpected-x64"
+identity_path.write_text(json.dumps(identity))
+check(False, "unexpected trial identity")
+identity_path.write_text(identity_original)
 target = root / "vps-arm64" / "result.json"
 original = target.read_text()
 value = json.loads(original)
