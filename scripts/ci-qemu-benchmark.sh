@@ -404,13 +404,22 @@ ssh "${ssh_args[@]}" 'tar -xzf - -C /rust-fs-core' <"$state/core-payload.tar.gz"
 if [ "$action" = serve ]; then
     if ! "$prepared_hit"; then
         # The same setup a full preparation runs (scripts/ci-qemu-guest.sh),
-        # in this live guest only: nothing here is published.
+        # in this live guest only: nothing here is published. It runs
+        # detached in the guest and is polled (scripts/ci-guest-detached.sh),
+        # because a host stall longer than SSH's keepalive ended it as one
+        # foreground SSH command (run 45282138545: status 255 in rustup).
         progress 'cold guest: installing the full preparation tools in this live guest'
-        ssh "${ssh_args[@]}" "cd /repo; export FLTH_GUEST=1 DEBIAN_FRONTEND=noninteractive \
-            RUSTUP_HOME=/var/lib/fs-ext4-rust/rustup CARGO_HOME=/var/lib/fs-ext4-rust/cargo; \
-            apt-get update && apt-get install -y time python3 binutils ripgrep ca-certificates && \
-            bash scripts/vm-setup.sh && bash ../rust-fs-core/scripts/guest-rust-toolchain.sh" \
-            2>&1 | tee "$state/cold-setup.log"
+        bash "$repo/scripts/ci-guest-detached.sh" ext4-cold-setup 5400 "$state/cold-setup.log" "$qemu_pid" \
+            -- "${ssh_args[@]}" <<'GUEST'
+set -e
+cd /repo
+export HOME=/root FLTH_GUEST=1 DEBIAN_FRONTEND=noninteractive
+export RUSTUP_HOME=/var/lib/fs-ext4-rust/rustup CARGO_HOME=/var/lib/fs-ext4-rust/cargo
+apt-get update
+apt-get install -y time python3 binutils ripgrep ca-certificates
+bash scripts/vm-setup.sh
+bash ../rust-fs-core/scripts/guest-rust-toolchain.sh
+GUEST
     fi
     # Short, because a socket path has a length limit: one connection is
     # shared by every call the command makes.

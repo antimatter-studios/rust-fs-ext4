@@ -844,13 +844,15 @@ tasks:
     # BUDGET: all script tests, including the whole-image-read guard, measured
     # 53 lines and 3021 bytes in PR #659's CI run 45090429034 and local rerun.
     # The v0.11.0 pin verdict is one byte longer than v0.9.1; every test passed.
+    # tests/scripts/test-guest-detached-setup.sh adds its "==" line and its
+    # PASS line, 2 lines and 130 bytes, measured locally: 55 and 3151.
     # By glob, so a test added later needs no edit here -- a guard that
     # has to be registered somewhere else is a guard that gets silently
     # skipped.
     cmds:
       - |
         set -eu
-        bash ../rust-fs-core/scripts/tier.sh test:scripts scripts 53 3021 -- bash -c '
+        bash ../rust-fs-core/scripts/tier.sh test:scripts scripts 55 3151 -- bash -c '
           set -eu
           for t in tests/scripts/*.sh; do
             echo "== $t"
