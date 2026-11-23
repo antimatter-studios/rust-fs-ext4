@@ -50,6 +50,8 @@ qemu_args() {
     if [ "$accel" = tcg ]; then cpu="${QEMU_TCG_CPU:-max}"; accelerator="${QEMU_TCG_ACCEL:-tcg,thread=multi}"; fi
     if [ "$accel" = hvf ]; then accelerator=hvf; fi
     [ "$arch" != aarch64 ] || machine=virt
+    # What the timing line and result.json report as this guest's setup.
+    qemu_summary="machine=$machine cpu=$cpu accel=$accelerator memory_mib=2048 smp=2"
     command_args=("qemu-system-$arch" -machine "$machine" -accel "$accelerator"
         -cpu "$cpu" -m 2048 -smp 2 -display none -monitor none -no-reboot
         -serial "file:$console" -drive "file=$disk,if=virtio,format=qcow2,discard=unmap"
@@ -128,10 +130,22 @@ cleanup() {
         if kill -0 "$qemu_pid" 2>/dev/null; then kill -KILL "$qemu_pid" 2>/dev/null || true; fi
         wait "$qemu_pid" 2>/dev/null || true
     fi
-    python3 - "$state/result.json" "$arch" "$accel" "$workload" "$started" "$status" "$action" "$failed_phase" <<'PY'
+    # One line per guest step, whatever the outcome: where it ran, how the
+    # guest was emulated, how long it took to boot and how long the work
+    # beside it or in it took. Unknown is said, not guessed.
+    boot_seconds="$(cat "$state/boot-seconds.txt" 2>/dev/null || echo unknown)"
+    workload_seconds="$(cat "$state/workload-seconds.txt" 2>/dev/null || echo unknown)"
+    printf '[%s] timing runner=%s arch=%s accelerator=%s qemu=[%s] host_cpus=%s build_jobs=%s test_jobs=%s boot_seconds=%s workload_seconds=%s elapsed_seconds=%s status=%s\n' \
+        "$(date -u +%FT%TZ)" "${RUNNER_NAME:-${BENCH_RUNNER_NAME:-local}}" "$arch" "$accel" "${qemu_summary:-unknown}" \
+        "$(nproc 2>/dev/null || echo unknown)" "${CARGO_BUILD_JOBS:-unset}" "${RUST_TEST_THREADS:-unset}" \
+        "$boot_seconds" "$workload_seconds" "$(( $(date +%s) - started ))" "$status" | tee "$state/timing.txt"
+    python3 - "$state/result.json" "$arch" "$accel" "$workload" "$started" "$status" "$action" "$failed_phase" \
+        "$boot_seconds" "$workload_seconds" "${qemu_summary:-unknown}" <<'PY'
 import json, os, pathlib, sys, time
-path, arch, accel, workload, started, status, purpose, phase = sys.argv[1:]
+path, arch, accel, workload, started, status, purpose, phase, boot, work, qemu = sys.argv[1:]
 finished = int(time.time())
+def seconds(value):
+    return int(value) if value.isdigit() else None
 samples = pathlib.Path(path).with_name("qemu-rss-kib.txt")
 rss = [int(line.strip()) for line in samples.read_text().splitlines() if line.strip()] if samples.exists() else []
 pathlib.Path(path).write_text(json.dumps({
@@ -150,6 +164,9 @@ pathlib.Path(path).write_text(json.dumps({
     "requested_runner": os.getenv("BENCH_REQUESTED_RUNNER", "local"),
     "selected_runner": os.getenv("BENCH_SELECTED_RUNNER", "local"),
     "run_id": os.getenv("GITHUB_RUN_ID"), "commit": os.getenv("GITHUB_SHA"),
+    "runner_name": os.getenv("RUNNER_NAME") or os.getenv("BENCH_RUNNER_NAME") or "local",
+    "qemu": qemu, "boot_seconds": seconds(boot), "workload_seconds": seconds(work),
+    "build_jobs": os.getenv("CARGO_BUILD_JOBS"), "test_jobs": os.getenv("RUST_TEST_THREADS"),
 }, indent=2) + "\n")
 PY
     rm -f "$disk" "$seed" "$state/key" "$state/key.pub" "$state/payload.tar.gz"
@@ -419,7 +436,9 @@ Host guest
 EOF
     progress "guest ready; running beside it: ${serve_command[*]}"
     result=0
+    workload_started="$(date +%s)"
     FS_EXT4_GUEST_SSH="$state/ssh_config" FS_EXT4_GUEST_ARCH="$arch" "${serve_command[@]}" || result=$?
+    printf '%s\n' "$(( $(date +%s) - workload_started ))" >"$state/workload-seconds.txt"
     ssh -F "$state/ssh_config" -O exit guest 2>/dev/null || true
     progress "served command finished; status=$result"
     exit "$result"
@@ -436,8 +455,10 @@ fi
 printf 'operation=%s\nworkload_budget_seconds=%s\n' "$action" "$workload_budget" >"$state/workload-policy.txt"
 guest_operation=run
 if "$preparation"; then guest_operation=prepare; fi
+workload_started="$(date +%s)"
 ssh "${ssh_args[@]}" "cd /repo; export FLTH_GUEST=1 BENCH_GUEST_KEY='$guest_key' BENCH_OPERATION='$guest_operation'; timeout --signal=TERM --kill-after=30s '$workload_budget' bash scripts/ci-qemu-guest.sh '$arch' '$workload'" \
     2>&1 | tee "$state/workload.log" || result=$?
+printf '%s\n' "$(( $(date +%s) - workload_started ))" >"$state/workload-seconds.txt"
 progress "collecting guest results; workload status=$result"
 if [ "$result" = 124 ]; then
     printf 'Guest workload exceeded its %ss deadline; this is a timeout, not evidence of a guest crash.\n' "$workload_budget" >&2
