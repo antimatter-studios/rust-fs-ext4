@@ -15,6 +15,87 @@ DIGEST = "a" * 64
 
 
 class EnvironmentCommands(unittest.TestCase):
+    def test_full_preparation_has_a_workload_specific_job_deadline(self):
+        workflow = (ROOT / ".github/workflows/qemu-prepare.yml").read_text()
+        preparation = workflow.split("  prepare:\n", 1)[1]
+        self.assertIn("timeout-minutes: ${{ inputs.workload == 'full' && 180 || 45 }}", preparation)
+
+    def test_warm_restore_recovers_ownership_before_its_separate_upload(self):
+        workflow = (ROOT / ".github/workflows/qemu-prepare.yml").read_text()
+        recovery = re.search(
+            r"      - name: Restore warm-restore diagnostic ownership\n(.*?)"
+            r"      - name: Preserve warm-restore evidence\n", workflow, re.S)
+        self.assertIsNotNone(recovery)
+        self.assertIn("if: always()", recovery[1])
+        self.assertIn("run: bash scripts/ci-qemu-diagnostics.sh", recovery[1])
+
+    def diagnostic_recovery_program(self):
+        action = (ROOT / ".github/actions/qemu-benchmark/action.yml").read_text()
+        recovery = re.search(
+            r"    - name: Restore diagnostic ownership after interruption\n(.*?)"
+            r"    - name: Preserve measurements and failures\n", action, re.S)
+        self.assertIsNotNone(recovery, "interrupted containers must not strand root-owned diagnostics")
+        self.assertIn("if: always()", recovery[1])
+        self.assertIn("run: bash scripts/ci-qemu-diagnostics.sh", recovery[1])
+        return "bash scripts/ci-qemu-diagnostics.sh"
+
+    def execute_diagnostic_recovery(self, failure=0):
+        shutil.copyfile(ROOT / "scripts/ci-qemu-diagnostics.sh",
+                        self.repo / "scripts/ci-qemu-diagnostics.sh")
+        sudo = self.root / "tools/sudo"
+        sudo.write_text('''#!/usr/bin/env python3
+import json, os, pathlib, sys
+arguments = sys.argv[1:]
+with open(os.environ['SUDO_TRACE'], 'a') as trace:
+    trace.write(json.dumps(arguments) + '\\n')
+assert arguments[:3] == ['-n', 'chown', '-hR'], arguments
+assert arguments[-2] == '--', arguments
+if int(os.environ['SUDO_FAILURE']):
+    sys.exit(int(os.environ['SUDO_FAILURE']))
+directory = pathlib.Path(arguments[-1])
+directory.chmod(0o700)
+for current, directories, files in os.walk(directory):
+    for name in directories:
+        child = pathlib.Path(current) / name
+        if not child.is_symlink():
+            child.chmod(0o700)
+''')
+        sudo.chmod(0o755)
+        return subprocess.run(
+            ["bash", "-c", self.diagnostic_recovery_program()], cwd=self.repo,
+            env=dict(self.env, SUDO_TRACE=str(self.root / "sudo.jsonl"),
+                     SUDO_FAILURE=str(failure)), capture_output=True, text=True,
+            check=False, timeout=5)
+
+    def test_interrupted_container_diagnostics_are_recovered_before_upload(self):
+        evidence = self.repo / "tmp/qemu-benchmark/interrupted"
+        evidence.mkdir(parents=True)
+        console = evidence / "console.log"
+        console.write_text("last progress before the job was cancelled\n")
+        evidence.chmod(0)
+        self.addCleanup(evidence.chmod, 0o700)
+        result = self.execute_diagnostic_recovery()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(console.read_text(), "last progress before the job was cancelled\n")
+        calls = [json.loads(line) for line in (self.root / "sudo.jsonl").read_text().splitlines()]
+        self.assertEqual(calls, [["-n", "chown", "-hR", f"{os.getuid()}:{os.getgid()}",
+                                 "--", "tmp/qemu-benchmark"]])
+
+    def test_diagnostic_recovery_ignores_missing_and_symlinked_roots(self):
+        outside = self.root / "outside"
+        outside.mkdir()
+        temporary = self.repo / "tmp"
+        temporary.mkdir()
+        (temporary / "qemu-images").symlink_to(outside, target_is_directory=True)
+        result = self.execute_diagnostic_recovery()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((self.root / "sudo.jsonl").exists())
+
+    def test_diagnostic_ownership_failures_remain_failures(self):
+        (self.repo / "tmp/qemu-benchmark").mkdir(parents=True)
+        result = self.execute_diagnostic_recovery(failure=33)
+        self.assertEqual(result.returncode, 33, result.stderr)
+
     def test_preparation_bootstrap_works_without_local_bin_on_path(self):
         workflow = (ROOT / ".github/workflows/qemu-prepare.yml").read_text()
         programs = [textwrap.dedent(match[2]) for match in re.finditer(

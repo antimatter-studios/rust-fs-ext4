@@ -73,6 +73,16 @@ Three independent SHA256 keys select images and OCI artifacts under
   resolved immutable `@sha256:` digest, not a mutable tag. Publishing preserves
   an existing recipe tag instead of overwriting it with a fresh apt resolution.
 
+Guest and executable artifact downloads resolve their recipe tag once, validate
+the returned SHA256 manifest digest, then pull only the immutable `@sha256:`
+reference. Each successful registry download retains that exact reference in
+`cache-reference.txt` beside the downloaded files. A manifest disappearing after
+resolution is a failed download, not a cache miss or permission to provision.
+Only an absent manifest at initial resolution permits the existing preparation
+or native-build policy to handle a cache miss; authentication and network errors
+remain fatal. Explicit local-directory reuse is unchanged and is not registry
+publication evidence.
+
 Runner placement and KVM/TCG are deliberately excluded: matching hosted and VPS
 trials reuse the same artifacts. A separate `QEMU guest preparation (pilot)`
 workflow supplies installed tools and kernel-made fixtures before measurement:
@@ -124,10 +134,22 @@ required predecessor queued ahead of every warm VPS run. On first use, wait for
 the preparation workflow to publish both images, then rerun the measurement
 workflow once. A missing-image failure before that is a prerequisite failure,
 not an emulator benchmark. Single-test measurements have a 10-minute guest
-workload deadline and 30-minute job limit. Preparation has a 30-minute guest
-setup/test deadline and a 45-minute job limit. Do not stretch these deadlines
-to repeat the failed cold experiment; if preparation or a warm single test is
-still impractical, stop the pilot instead of rolling it out.
+workload deadline and 30-minute job limit. Single-test preparation has a
+30-minute guest setup/test deadline and a 45-minute job limit. Do not stretch
+these single-test deadlines to repeat the failed cold experiment; if preparation
+or a warm single test is still impractical, stop the pilot instead of rolling
+it out. Full preparation retains its existing 7,200-second guest workload
+deadline and uses a 180-minute job limit, matching the full benchmark jobs.
+The outer limit covers preparation, publication and the separate warm-overlay
+verification; the old 45-minute limit cancelled progressing ARM64 full tests
+in run 45091356059 before publication. This is not full-workload success or
+permission to skip a test, publish a live disk or provision during warm trials.
+
+An always-run host step restores ownership of the generated diagnostic and
+image directories before artifact upload, without following symlink roots or
+recursive symlink targets. A cancelled container can miss its own exit trap
+and leave root-owned private directories; the host recovery preserves those
+logs for upload even then. Ownership-recovery errors remain visible failures.
 
 ## Running
 
@@ -256,7 +278,16 @@ that never becomes ready, and a readiness command that hangs.
 Artifacts retain guest and host identities, the exact QEMU command, boot time,
 setup/toolchain/fixture/native-compile/test timings, GNU time max RSS, sampled QEMU RSS,
 console and failure logs, and every passing test name. The report compares test
-sets and source/toolchain identities before accepting a comparison.
+sets and source/toolchain identities before accepting a comparison. It also
+independently reconciles raw test summaries with every passing-name occurrence,
+preserves the workload's existing executed-test floor, and rejects failed or
+ignored tests, filtered full workloads and empty or missing test evidence.
+Single workloads must execute exactly one test. Per-trial passed, failed and
+ignored counts accompany the timing table; matching empty files are not proof.
+Source cleanliness must be explicitly recorded as JSON `false`; missing, null
+or non-boolean evidence cannot prove that a commit describes the tested checkout.
+Hosted evidence must identify both `ubuntu-24.04` and `github-hosted`; a VPS
+runner or missing placement metadata cannot count as the hosted comparison.
 
 The primary metric is **time from workflow submission to a verified result**,
 not raw CPU speed. Job `started_at` can precede runner allocation, so queue

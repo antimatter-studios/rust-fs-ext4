@@ -281,7 +281,7 @@ class CacheCommandTests(unittest.TestCase):
             oras = tools / "oras"
             oras.write_text('#!/usr/bin/env bash\ncase "$1" in\n'
                             'login) cat >/dev/null; exit 0 ;;\n'
-                            'pull) echo "$CACHE_ERROR" >&2; exit 1 ;;\n'
+                            'resolve|pull) echo "$CACHE_ERROR" >&2; exit 1 ;;\n'
                             'esac\nexit 0\n')
             oras.chmod(0o755)
             environment = dict(os.environ, PATH=str(tools) + os.pathsep + os.environ["PATH"],
@@ -324,6 +324,118 @@ class CacheCommandTests(unittest.TestCase):
                 self.assertIn("BUILD_HOST_ARCH=x86_64", arguments)
                 self.assertFalse([argument for argument in arguments
                                   if argument.startswith(("--cpus", "--memory"))])
+
+class ImmutableCacheContract(unittest.TestCase):
+    def setUp(self):
+        self.scratch = tempfile.TemporaryDirectory()
+        self.addCleanup(self.scratch.cleanup)
+        self.root = pathlib.Path(self.scratch.name)
+        tools = self.root / "tools"
+        tools.mkdir()
+        oras = tools / "oras"
+        oras.write_text('#!/usr/bin/env bash\n'
+                        'printf "%s\\n" "$*" >>"$ORAS_CALLS"\n'
+                        'case "$1" in\n'
+                        'login) cat >/dev/null ;;\n'
+                        'resolve) if [ -n "${CACHE_RESOLVE_ERROR:-}" ]; then\n'
+                        'echo "$CACHE_RESOLVE_ERROR" >&2; exit 1; fi\n'
+                        'printf "%s\\n" "$CACHE_DIGEST" ;;\n'
+                        'pull) if [ -n "${CACHE_PULL_ERROR:-}" ]; then\n'
+                        'echo "$CACHE_PULL_ERROR" >&2; exit 1; fi ;;\n'
+                        'push) exit 0 ;;\n'
+                        '*) exit 99 ;;\nesac\n')
+        oras.chmod(0o755)
+        self.registry = "ghcr.io/example/repo/qemu-pilot"
+        self.digest = "sha256:" + "b" * 64
+        self.calls = self.root / "oras-calls"
+        self.output = self.root / "output"
+        self.environment = {name: value for name, value in os.environ.items()
+                            if name not in ("BENCH_CACHE_DIRECTORY", "CACHE_RESOLVE_ERROR",
+                                            "CACHE_PULL_ERROR")}
+        self.environment.update(PATH=str(tools) + os.pathsep + os.environ["PATH"],
+                                BENCH_CACHE_REGISTRY=self.registry,
+                                GH_TOKEN="not-a-real-token", GITHUB_ACTOR="example",
+                                GITHUB_REPOSITORY="example/repo",
+                                ORAS_CALLS=str(self.calls), CACHE_DIGEST=self.digest)
+
+    def run_cache(self, operation="pull", kind="guest", arch="x86_64", **environment):
+        result = subprocess.run(
+            ["bash", str(ROOT / "scripts/ci-qemu-cache.sh"), operation, kind, arch,
+             "a" * 64, str(self.output)],
+            env=dict(self.environment, **environment), capture_output=True, text=True,
+            check=False, timeout=10)
+        self.assertNotIn("not-a-real-token", result.stdout + result.stderr)
+        return result
+
+    def test_guest_and_test_pulls_use_resolved_digest(self):
+        for kind in ("guest", "tests"):
+            for arch in ("x86_64", "aarch64"):
+                with self.subTest(kind=kind, arch=arch):
+                    self.calls.write_text("")
+                    result = self.run_cache(kind=kind, arch=arch)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    calls = self.calls.read_text().splitlines()
+                    resolved = [call for call in calls if call.startswith("resolve ")]
+                    pulled = [call for call in calls if call.startswith("pull ")]
+                    self.assertEqual(len(resolved), 1, calls)
+                    self.assertIn(f"{self.registry}:{kind}-{arch}-" + "a" * 64, resolved[0])
+                    self.assertEqual(len(pulled), 1, calls)
+                    self.assertTrue(pulled[0].startswith(f"pull {self.registry}@{self.digest} "), calls)
+                    self.assertEqual((self.output / "cache-reference.txt").read_text(),
+                                     f"{self.registry}@{self.digest}\n")
+
+    def test_invalid_resolved_digests_fail_before_pull(self):
+        for digest in ("", "sha256:short", "sha512:" + "b" * 64,
+                       self.digest + "\n" + self.digest):
+            with self.subTest(digest=digest):
+                self.calls.write_text("")
+                result = self.run_cache(CACHE_DIGEST=digest)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn("invalid OCI cache manifest digest", result.stderr)
+                self.assertFalse(any(call.startswith("pull ")
+                                     for call in self.calls.read_text().splitlines()))
+                self.assertFalse((self.output / "cache-reference.txt").exists())
+
+    def test_resolution_failures_preserve_error_class(self):
+        reference = f"{self.registry}:guest-x86_64-" + "a" * 64
+        for message, expected in (("manifest unknown: not found", 3),
+                                  ("name_unknown", 3),
+                                  (f"Error: failed to resolve digest: {reference}: not found", 3),
+                                  ("unauthorized: permission denied", 1),
+                                  ("credential helper not found", 1),
+                                  ("network connection refused", 1)):
+            with self.subTest(message=message):
+                self.calls.write_text("")
+                result = self.run_cache(CACHE_RESOLVE_ERROR=message)
+                self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
+                self.assertFalse(any(call.startswith("pull ")
+                                     for call in self.calls.read_text().splitlines()))
+                self.assertFalse((self.output / "cache-reference.txt").exists())
+
+    def test_resolved_download_failures_are_not_cache_misses(self):
+        for message in ("manifest unknown: not found", "unauthorized: permission denied",
+                        "network connection refused"):
+            with self.subTest(message=message):
+                result = self.run_cache(CACHE_PULL_ERROR=message)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn(message, result.stderr)
+                self.assertFalse((self.output / "cache-reference.txt").exists())
+
+    def test_publication_does_not_resolve_or_download(self):
+        result = self.run_cache(operation="push")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        calls = self.calls.read_text().splitlines()
+        self.assertEqual(len([call for call in calls if call.startswith("push ")]), 1)
+        self.assertFalse(any(call.startswith(("resolve ", "pull ")) for call in calls))
+
+    def test_public_registry_pull_needs_no_login(self):
+        result = self.run_cache(GH_TOKEN="")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        calls = self.calls.read_text().splitlines()
+        self.assertFalse(any(call.startswith("login ") for call in calls))
+        self.assertTrue(any(call.startswith(f"pull {self.registry}@{self.digest} ")
+                            for call in calls))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
