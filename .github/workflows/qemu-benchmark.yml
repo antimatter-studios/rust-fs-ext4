@@ -12,6 +12,7 @@ on:
       - scripts/qemu-runner/**
       - scripts/qemu-guest-network.yaml
       - scripts/test-ci-qemu-benchmark.sh
+      - scripts/test-report-qemu-benchmark.py
       - scripts/report-qemu-benchmark.py
   workflow_dispatch:
     inputs:

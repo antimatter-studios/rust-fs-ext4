@@ -268,7 +268,12 @@ that never becomes ready, and a readiness command that hangs.
 Artifacts retain guest and host identities, the exact QEMU command, boot time,
 setup/toolchain/fixture/native-compile/test timings, GNU time max RSS, sampled QEMU RSS,
 console and failure logs, and every passing test name. The report compares test
-sets and source/toolchain identities before accepting a comparison.
+sets and source/toolchain identities before accepting a comparison. It also
+independently reconciles raw test summaries with every passing-name occurrence,
+preserves the workload's existing executed-test floor, and rejects failed or
+ignored tests, filtered full workloads and empty or missing test evidence.
+Single workloads must execute exactly one test. Per-trial passed, failed and
+ignored counts accompany the timing table; matching empty files are not proof.
 
 The primary metric is **time from workflow submission to a verified result**,
 not raw CPU speed. Job `started_at` can precede runner allocation, so queue

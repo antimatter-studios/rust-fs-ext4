@@ -240,6 +240,9 @@ report = sys.argv[1]
 root = pathlib.Path(sys.argv[2]) / "measurements"
 root.mkdir()
 jobs = []
+passing_names = "first\nsecond\n" + "".join(f"case_{index}\n" for index in range(438))
+test_log = "".join(f"test {name} ... ok\n" for name in passing_names.splitlines())
+test_log += "test result: ok. 440 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.00s\n"
 for name, arch in (("hosted-x64", "x86_64"), ("vps-x64", "x86_64"),
                    ("hosted-arm64", "aarch64"), ("vps-arm64", "aarch64")):
     trial = root / name
@@ -254,7 +257,8 @@ for name, arch in (("hosted-x64", "x86_64"), ("vps-x64", "x86_64"),
         "selected_runner": "antimatter-vps-linux-x64" if vps else "ubuntu-24.04",
     }))
     (trial / "host.json").write_text(json.dumps({"job": name, "source_commit": "same", "core_commit": "same"}))
-    (trial / "passing-tests.txt").write_text("first\nsecond\n")
+    (trial / "passing-tests.txt").write_text(passing_names)
+    (trial / "tests.log").write_text(test_log)
     (trial / "rustc.txt").write_text(f"host: {arch}-unknown-linux-gnu\n")
     for metadata in ("builder-image.txt", "build-packages.txt", "test-cache-key.txt", "guest-packages.txt"):
         (trial / metadata).write_text("matching-input\n")
@@ -329,7 +333,7 @@ check(False, "missing build_mode")
 target.write_text(original)
 (root / "vps-arm64" / "passing-tests.txt").write_text("different\n")
 check(False, "passing-tests.txt differs")
-(root / "vps-arm64" / "passing-tests.txt").write_text("first\nsecond\n")
+(root / "vps-arm64" / "passing-tests.txt").write_text(passing_names)
 value = json.loads(original)
 value["status"] = 137
 target.write_text(json.dumps(value))
@@ -340,5 +344,6 @@ PY
 
 python3 "$repo/scripts/test-ci-qemu-artifacts.py"
 python3 "$repo/scripts/test-ci-qemu-environment.py"
+python3 "$repo/scripts/test-report-qemu-benchmark.py"
 
 echo 'PASS: architecture, accelerator, queue accounting, fallback and matching-workload checks'

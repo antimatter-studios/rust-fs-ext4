@@ -2,6 +2,8 @@
 import datetime
 import json
 import pathlib
+import re
+import subprocess
 import sys
 
 
@@ -13,6 +15,39 @@ def read_text(root, name):
     return (root / name).read_text().strip()
 
 
+def executed_tests(root, workload, floor):
+    log = root / "tests.log"
+    if not log.exists():
+        return 0, 0, 0, ["missing tests.log; cannot verify executed tests"]
+    text = log.read_text()
+    summaries = re.findall(
+        r"^test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored; "
+        r"\d+ measured; (\d+) filtered out;", text, re.M)
+    if not summaries:
+        return 0, 0, 0, ["no executed test results"]
+    passed = sum(int(summary[1]) for summary in summaries)
+    failed = sum(int(summary[2]) for summary in summaries)
+    ignored = sum(int(summary[3]) for summary in summaries)
+    problems = []
+    if failed or ignored or any(summary[0] != "ok" for summary in summaries):
+        problems.append("failed or ignored tests")
+    if passed < floor:
+        problems.append(f"{passed} executed tests below test floor {floor}")
+    if workload == "single" and passed != 1:
+        problems.append("single workload must execute exactly one test")
+    if workload == "full" and any(int(summary[4]) for summary in summaries):
+        problems.append("filtered full-workload tests")
+    names = sorted(re.findall(r"^test (.+) \.\.\. ok$", text, re.M))
+    if len(names) != passed:
+        problems.append("passing-name count does not match executed summaries")
+    names_path = root / "passing-tests.txt"
+    if not names_path.exists():
+        problems.append("missing passing-tests.txt")
+    elif sorted(names_path.read_text().splitlines()) != names:
+        problems.append("passing-name evidence does not match tests.log")
+    return passed, failed, ignored, problems
+
+
 def report(root, jobs, run, workload, source_commit):
     expected = {"hosted-x64": ("x86_64", "kvm"), "vps-x64": ("x86_64", "tcg"),
                 "hosted-arm64": ("aarch64", "tcg"), "vps-arm64": ("aarch64", "tcg")}
@@ -20,6 +55,9 @@ def report(root, jobs, run, workload, source_commit):
     created = timestamp(run["created_at"])
     measurements = {}
     problems = []
+    floor = int(subprocess.check_output([
+        sys.executable, str(pathlib.Path(__file__).with_name("ci-qemu-artifacts.py")),
+        "floor", workload], text=True))
     if not source_commit:
         problems.append("missing workflow source commit; cannot verify artifact identity")
     print("## QEMU pilot: time to a verified result")
@@ -27,8 +65,8 @@ def report(root, jobs, run, workload, source_commit):
     print("Queue wait is measured from workflow submission to the first job step.")
     print("Total time includes the job queue, setup, and workload; no hosted bootstrap gates the trials.")
     print()
-    print("| Trial | Actual placement | Guest / accelerator | Queue (s) | Trial (s) | Total (s) | Result |")
-    print("|---|---|---|---:|---:|---:|---|")
+    print("| Trial | Actual placement | Guest / accelerator | Queue (s) | Trial (s) | Total (s) | Result | Passed | Failed | Ignored |")
+    print("|---|---|---|---:|---:|---:|---|---:|---:|---:|")
     for path in sorted(root.rglob("result.json")):
         result = json.loads(path.read_text())
         host_path = path.with_name("host.json")
@@ -59,8 +97,10 @@ def report(root, jobs, run, workload, source_commit):
         total = result["finished_unix"] - created
         placement = result["selected_runner"]
         verdict = "passed" if result["status"] == 0 else f"failed ({result['status']})"
+        passed, failed, ignored, test_problems = executed_tests(path.parent, workload, floor)
+        problems.extend(f"{name}: {problem}" for problem in test_problems)
         print(f"| {name} | {placement} | {result['guest_arch']} / {result['accelerator']} | "
-              f"{queue} | {result['elapsed_seconds']} | {total} | {verdict} |")
+              f"{queue} | {result['elapsed_seconds']} | {total} | {verdict} | {passed} | {failed} | {ignored} |")
         if result["status"] != 0:
             problems.append(f"{name}: workload failed; inspect guest, console and time logs")
         if name.startswith("vps-") and (
