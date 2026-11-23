@@ -276,6 +276,8 @@ Single workloads must execute exactly one test. Per-trial passed, failed and
 ignored counts accompany the timing table; matching empty files are not proof.
 Source cleanliness must be explicitly recorded as JSON `false`; missing, null
 or non-boolean evidence cannot prove that a commit describes the tested checkout.
+Hosted evidence must identify both `ubuntu-24.04` and `github-hosted`; a VPS
+runner or missing placement metadata cannot count as the hosted comparison.
 
 The primary metric is **time from workflow submission to a verified result**,
 not raw CPU speed. Job `started_at` can precede runner allocation, so queue

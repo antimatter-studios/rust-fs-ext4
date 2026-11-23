@@ -96,7 +96,7 @@ def report(root, jobs, run, workload, source_commit):
         allocation = timestamp(steps[0]["started_at"]) if steps else result["job_arrival_unix"]
         queue = max(0, allocation - created)
         total = result["finished_unix"] - created
-        placement = result["selected_runner"]
+        placement = result.get("selected_runner", "unverified")
         verdict = "passed" if result["status"] == 0 else f"failed ({result['status']})"
         passed, failed, ignored, test_problems = executed_tests(path.parent, workload, floor)
         problems.extend(f"{name}: {problem}" for problem in test_problems)
@@ -104,6 +104,10 @@ def report(root, jobs, run, workload, source_commit):
               f"{queue} | {result['elapsed_seconds']} | {total} | {verdict} | {passed} | {failed} | {ignored} |")
         if result["status"] != 0:
             problems.append(f"{name}: workload failed; inspect guest, console and time logs")
+        if name.startswith("hosted-") and (
+            placement != "ubuntu-24.04" or result.get("runner_environment") != "github-hosted"
+        ):
+            problems.append(f"{name}: not the requested hosted runner; this is NOT a hosted measurement")
         if name.startswith("vps-") and (
             placement != "antimatter-vps-linux-x64" or result["runner_environment"] != "self-hosted"
         ):

@@ -79,6 +79,34 @@ class ExecutedTestEvidence(unittest.TestCase):
     def test_matching_smoke_workload_passes(self):
         self.check_report(0)
 
+    def check_hosted_placement(self, field, value):
+        for name in ("hosted-x64", "hosted-arm64"):
+            with self.subTest(trial=name):
+                result_path = self.root / name / "result.json"
+                original = result_path.read_text()
+                result = json.loads(original)
+                if value is None:
+                    del result[field]
+                else:
+                    result[field] = value
+                result_path.write_text(json.dumps(result))
+                try:
+                    self.check_report(1, message=f"{name}: not the requested hosted runner")
+                finally:
+                    result_path.write_text(original)
+
+    def test_hosted_trial_on_vps_runner_is_rejected(self):
+        self.check_hosted_placement("selected_runner", "antimatter-vps-linux-x64")
+
+    def test_hosted_trial_on_self_hosted_environment_is_rejected(self):
+        self.check_hosted_placement("runner_environment", "self-hosted")
+
+    def test_hosted_trial_without_runner_label_is_rejected(self):
+        self.check_hosted_placement("selected_runner", None)
+
+    def test_hosted_trial_without_runner_environment_is_rejected(self):
+        self.check_hosted_placement("runner_environment", None)
+
     def source_cleanliness(self, value):
         identity_path = self.root / "hosted-x64" / "host.json"
         identity = json.loads(identity_path.read_text())
