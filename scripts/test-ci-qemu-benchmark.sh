@@ -347,6 +347,75 @@ target.rename(target.with_suffix(".missing"))
 check(False, "no measurements")
 PY
 
+# Runner scheduling telemetry: cgroup v2, cgroup v1, and a runner that exposes
+# none of it. A counter that is absent is printed as `missing`, never a number.
+python3 - "$repo" "$scratch" <<'PY'
+import os
+import pathlib
+import re
+import subprocess
+import sys
+
+root, scratch = map(pathlib.Path, sys.argv[1:])
+script = root / 'scripts/ci-host-pressure.sh'
+
+def tree(name, files):
+    base = scratch / 'pressure' / name
+    for relative, text in files.items():
+        path = base / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+    (base / 'proc').mkdir(parents=True, exist_ok=True)
+    (base / 'cgroup').mkdir(parents=True, exist_ok=True)
+    return base
+
+def sample(base):
+    environment = dict(os.environ, HOST_PRESSURE_PROC=str(base / 'proc'),
+                       HOST_PRESSURE_CGROUP=str(base / 'cgroup'))
+    result = subprocess.run(['bash', str(script)], env=environment, text=True, capture_output=True)
+    assert result.returncode == 0, result
+    lines = result.stdout.splitlines()
+    assert len(lines) == 1, result.stdout
+    assert re.match(r'^host-pressure \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ ', lines[0]), lines[0]
+    return lines[0]
+
+psi = 'some avg10=12.50 avg60=8.00 avg300=3.00 total=123\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n'
+v2 = sample(tree('v2', {
+    'proc/loadavg': '3.10 2.50 1.75 4/321 999\n',
+    'proc/pressure/cpu': psi,
+    'cgroup/cgroup.controllers': 'cpu memory\n',
+    'cgroup/cpu.pressure': psi,
+    'cgroup/cpu.stat': 'usage_usec 9\nnr_periods 40\nnr_throttled 7\nthrottled_usec 5500\n',
+    'cgroup/cpu.max': '200000 100000\n',
+}))
+for field in ('loadavg=3.10/2.50/1.75', 'tasks=4/321', 'psi.cpu.some.avg10=12.50',
+              'psi.cpu.full.total=0', 'cgroup.cpu.some.avg60=8.00', 'cgroup.nr_periods=40',
+              'cgroup.nr_throttled=7', 'cgroup.throttled_usec=5500', 'cgroup.cpu.max=200000/100000'):
+    assert ' ' + field in v2, (field, v2)
+assert 'missing' not in v2, v2
+
+v1 = sample(tree('v1', {
+    'proc/loadavg': '0.50 0.40 0.30 1/100 5\n',
+    'cgroup/cpu/cpu.stat': 'nr_periods 10\nnr_throttled 2\n',
+}))
+for field in ('psi.cpu=missing', 'cgroup.cpu.pressure=missing', 'cgroup.nr_periods=10',
+              'cgroup.nr_throttled=2', 'cgroup.throttled_time=missing'):
+    assert ' ' + field in v1, (field, v1)
+
+bare = sample(tree('none', {}))
+for field in ('loadavg=missing', 'psi.cpu=missing', 'cgroup.cpu.pressure=missing',
+              'cgroup.cpu.stat=missing'):
+    assert ' ' + field in bare, (field, bare)
+assert not re.search(r'(throttled|periods|avg10)\S*=\d', bare), bare
+
+# Only the CI VM jobs sample it, from the heartbeat, into uploaded evidence.
+host = (root / 'scripts/ci-qemu-benchmark.sh').read_text()
+sampler = host[host.index('qemu_pid=$!'):host.index('sampler_pid=$!')]
+assert 'if [ "$action" = serve ]; then' in sampler, sampler
+assert 'scripts/ci-host-pressure.sh" | tee -a "$state/host-pressure.txt" || true' in sampler, sampler
+assert sampler.index('ci-host-pressure.sh') > sampler.index('sample % 30'), sampler
+PY
+
 python3 "$repo/scripts/test-ci-qemu-artifacts.py"
 python3 "$repo/scripts/test-ci-qemu-environment.py"
 python3 "$repo/scripts/test-report-qemu-benchmark.py"

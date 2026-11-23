@@ -284,6 +284,12 @@ qemu_pid=$!
                 "$(date -u +%FT%TZ)" "$arch" "$accel" "$(( $(date +%s) - started ))" \
                 "$(cat "$state/phase")" "$(ps -o %cpu=,rss= -p "$qemu_pid")"
             [ ! -s "$console" ] || tail -1 "$console"
+            # The CI VM jobs only: the runner's own load, CPU pressure and
+            # cgroup throttling beside the guest, in the job log and in the
+            # uploaded evidence. The pilot's runs are unchanged.
+            if [ "$action" = serve ]; then
+                bash "$repo/scripts/ci-host-pressure.sh" | tee -a "$state/host-pressure.txt" || true
+            fi
         fi
         sample=$((sample + 1))
         sleep 1
