@@ -73,6 +73,16 @@ Three independent SHA256 keys select images and OCI artifacts under
   resolved immutable `@sha256:` digest, not a mutable tag. Publishing preserves
   an existing recipe tag instead of overwriting it with a fresh apt resolution.
 
+Guest and executable artifact downloads resolve their recipe tag once, validate
+the returned SHA256 manifest digest, then pull only the immutable `@sha256:`
+reference. Each successful registry download retains that exact reference in
+`cache-reference.txt` beside the downloaded files. A manifest disappearing after
+resolution is a failed download, not a cache miss or permission to provision.
+Only an absent manifest at initial resolution permits the existing preparation
+or native-build policy to handle a cache miss; authentication and network errors
+remain fatal. Explicit local-directory reuse is unchanged and is not registry
+publication evidence.
+
 Runner placement and KVM/TCG are deliberately excluded: matching hosted and VPS
 trials reuse the same artifacts. A separate `QEMU guest preparation (pilot)`
 workflow supplies installed tools and kernel-made fixtures before measurement:
