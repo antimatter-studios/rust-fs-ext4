@@ -145,11 +145,15 @@ verification; the old 45-minute limit cancelled progressing ARM64 full tests
 in run 45091356059 before publication. This is not full-workload success or
 permission to skip a test, publish a live disk or provision during warm trials.
 
-An always-run host step restores ownership of the generated diagnostic and
-image directories before artifact upload, without following symlink roots or
-recursive symlink targets. A cancelled container can miss its own exit trap
-and leave root-owned private directories; the host recovery preserves those
-logs for upload even then. Ownership-recovery errors remain visible failures.
+An always-run step restores ownership of the generated diagnostic and image
+directories before artifact upload, without requesting host privilege. It uses
+the already-local runner recorded by GHCR digest, with pulls disabled, no
+network, a read-only container filesystem, and only one generated directory
+bound at a time. Only ownership and directory-access capabilities remain.
+Neither symlink roots nor recursive symlink targets are followed. A cancelled
+container can miss its own exit trap and leave private directories; this
+isolated recovery preserves those logs for upload even then. Missing immutable
+runner identity and ownership-recovery errors remain visible failures.
 
 ## Running
 
