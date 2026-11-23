@@ -113,6 +113,8 @@ progress() {
 cleanup() {
     status=$?
     trap - EXIT
+    failed_phase="$(cat "$state/phase" 2>/dev/null || true)"
+    printf '[%s] stopping; status=%s; phase=%s\n' "$(date -u +%FT%TZ)" "$status" "$failed_phase"
     if [ -n "$sampler_pid" ]; then
         kill "$sampler_pid" 2>/dev/null || true
         wait "$sampler_pid" 2>/dev/null || true
@@ -126,15 +128,15 @@ cleanup() {
         if kill -0 "$qemu_pid" 2>/dev/null; then kill -KILL "$qemu_pid" 2>/dev/null || true; fi
         wait "$qemu_pid" 2>/dev/null || true
     fi
-    python3 - "$state/result.json" "$arch" "$accel" "$workload" "$started" "$status" "$action" <<'PY'
+    python3 - "$state/result.json" "$arch" "$accel" "$workload" "$started" "$status" "$action" "$failed_phase" <<'PY'
 import json, os, pathlib, sys, time
-path, arch, accel, workload, started, status, purpose = sys.argv[1:]
+path, arch, accel, workload, started, status, purpose, phase = sys.argv[1:]
 finished = int(time.time())
 samples = pathlib.Path(path).with_name("qemu-rss-kib.txt")
 rss = [int(line.strip()) for line in samples.read_text().splitlines() if line.strip()] if samples.exists() else []
 pathlib.Path(path).write_text(json.dumps({
     "guest_arch": arch, "accelerator": accel, "workload": workload,
-    "status": int(status), "elapsed_seconds": finished - int(started),
+    "status": int(status), "phase": phase, "elapsed_seconds": finished - int(started),
     "started_unix": int(started), "finished_unix": finished,
     "job_ready_unix": int(os.getenv("BENCH_READY_AT", started)),
     "job_arrival_unix": int(os.getenv("BENCH_JOB_STARTED_AT", started)),
@@ -156,7 +158,7 @@ PY
     rm -f "$state/seed/user-data" "$state/seed/meta-data"
     rm -f "$state/seed/network-config"
     rmdir "$state/seed" 2>/dev/null || true
-    echo "QEMU benchmark: status=$status; evidence=$state"
+    echo "QEMU benchmark: status=$status; phase=$failed_phase; evidence=$state"
     if [ "$status" -ne 0 ] && [ -f "$console" ]; then tail -40 "$console" >&2; fi
     exit "$status"
 }
@@ -370,12 +372,17 @@ printf '%s\n' "$(( $(date +%s) - boot_started ))" >"$state/boot-seconds.txt"
 progress "guest ready after $(cat "$state/boot-seconds.txt")s; checking architecture"
 actual_arch="$(ssh "${ssh_args[@]}" uname -m)"
 [ "$actual_arch" = "$arch" ] || { echo "wrong guest architecture: expected $arch, got $actual_arch" >&2; exit 1; }
+# One phase per SSH call after readiness, so a failed call is named by the
+# status line and result.json rather than left as "checking architecture".
+progress "guest architecture is $actual_arch; packing the repository payload"
 COPYFILE_DISABLE=1 tar --no-xattrs -czf "$state/payload.tar.gz" --exclude=.git --exclude=target --exclude=tmp \
     --exclude=.vm-share --exclude=.vagrant --exclude='test-disks/*.img' \
     -C "$repo" .
+progress "sending the repository payload ($(( $(wc -c <"$state/payload.tar.gz") )) bytes)"
 ssh "${ssh_args[@]}" 'rm -rf /repo /rust-fs-core /benchmark-target; mkdir -p /repo /rust-fs-core; tar -xzf - -C /repo' <"$state/payload.tar.gz"
 COPYFILE_DISABLE=1 tar --no-xattrs -czf "$state/core-payload.tar.gz" --exclude=.git --exclude=target --exclude=tmp \
     -C "$repo/../rust-fs-core" .
+progress "sending the rust-fs-core payload ($(( $(wc -c <"$state/core-payload.tar.gz") )) bytes)"
 ssh "${ssh_args[@]}" 'tar -xzf - -C /rust-fs-core' <"$state/core-payload.tar.gz"
 if [ "$action" = serve ]; then
     if ! "$prepared_hit"; then
