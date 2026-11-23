@@ -35,25 +35,10 @@ env:
   CHORE_VERSION: '0.11.0'
 
 jobs:
-  hosted-x64:
-    if: >-
-      github.actor == 'christhomas' && github.triggering_actor == 'christhomas' &&
-      (github.event.sender.login == 'christhomas' || github.event.sender.login == '') &&
-      (github.event.pull_request.user.login == 'christhomas' || github.event.pull_request.user.login == '')
-    runs-on: antimatter-vps-linux-x64
-    timeout-minutes: ${{ inputs.workload == 'full' && 180 || 30 }}
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/qemu-benchmark
-        with:
-          arch: x86_64
-          accelerator: kvm
-          requested-runner: antimatter-vps-linux-x64
-          selected-runner: antimatter-vps-linux-x64
-          workload: ${{ inputs.workload || 'single' }}
-
+  # Every trial runs on the Antimatter VPS runner. There is no hosted trial:
+  # a job named for a hosted placement that ran on the VPS would report a
+  # comparison that was never measured, so the report covers the VPS
+  # placements only and claims no hosted comparison.
   vps-x64:
     if: >-
       github.actor == 'christhomas' && github.triggering_actor == 'christhomas' &&
@@ -68,25 +53,6 @@ jobs:
       - uses: ./.github/actions/qemu-benchmark
         with:
           arch: x86_64
-          accelerator: tcg
-          requested-runner: antimatter-vps-linux-x64
-          selected-runner: antimatter-vps-linux-x64
-          workload: ${{ inputs.workload || 'single' }}
-
-  hosted-arm64:
-    if: >-
-      github.actor == 'christhomas' && github.triggering_actor == 'christhomas' &&
-      (github.event.sender.login == 'christhomas' || github.event.sender.login == '') &&
-      (github.event.pull_request.user.login == 'christhomas' || github.event.pull_request.user.login == '')
-    runs-on: antimatter-vps-linux-x64
-    timeout-minutes: ${{ inputs.workload == 'full' && 180 || 30 }}
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/qemu-benchmark
-        with:
-          arch: aarch64
           accelerator: tcg
           requested-runner: antimatter-vps-linux-x64
           selected-runner: antimatter-vps-linux-x64
@@ -116,7 +82,7 @@ jobs:
       always() && github.actor == 'christhomas' && github.triggering_actor == 'christhomas' &&
       (github.event.sender.login == 'christhomas' || github.event.sender.login == '') &&
       (github.event.pull_request.user.login == 'christhomas' || github.event.pull_request.user.login == '')
-    needs: [hosted-x64, vps-x64, hosted-arm64, vps-arm64]
+    needs: [vps-x64, vps-arm64]
     runs-on: antimatter-vps-linux-x64
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262

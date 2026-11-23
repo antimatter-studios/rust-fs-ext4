@@ -186,11 +186,16 @@ import re
 import sys
 
 workflow = pathlib.Path(sys.argv[1]).read_text()
-for name in ("hosted-x64", "vps-x64", "hosted-arm64", "vps-arm64"):
+# Every trial is a VPS trial. A hosted-named job that ran on the VPS would
+# report a hosted comparison that was never measured, so none may exist.
+jobs = re.findall(r"^  ([A-Za-z0-9_-]+):\n", workflow.split("\njobs:\n", 1)[1], re.M)
+assert jobs == ["vps-x64", "vps-arm64", "report"], jobs
+for name in jobs:
     job = re.search(rf"^  {name}:\n(.*?)(?=^  \S|\Z)", workflow, re.M | re.S).group(1)
-    assert not re.search(r"^    needs:", job, re.M), f"{name} must not wait for a hosted bootstrap"
-    label = "antimatter-vps-linux-x64" if name.startswith("vps-") else "ubuntu-24.04"
-    assert f"    runs-on: {label}\n" in job, f"{name} must measure its intended placement"
+    assert "    runs-on: antimatter-vps-linux-x64\n" in job, f"{name} must measure its intended placement"
+for name in ("vps-x64", "vps-arm64"):
+    job = re.search(rf"^  {name}:\n(.*?)(?=^  \S|\Z)", workflow, re.M | re.S).group(1)
+    assert not re.search(r"^    needs:", job, re.M), f"{name} must not wait for a bootstrap job"
     for identity in ("github.actor", "github.triggering_actor", "github.event.sender.login",
                      "github.event.pull_request.user.login"):
         assert f"{identity} == 'christhomas'" in job, f"{name} must check {identity}"
@@ -243,18 +248,16 @@ jobs = []
 passing_names = "first\nsecond\n" + "".join(f"case_{index}\n" for index in range(438))
 test_log = "".join(f"test {name} ... ok\n" for name in passing_names.splitlines())
 test_log += "test result: ok. 440 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.00s\n"
-for name, arch in (("hosted-x64", "x86_64"), ("vps-x64", "x86_64"),
-                   ("hosted-arm64", "aarch64"), ("vps-arm64", "aarch64")):
+for name, arch in (("vps-x64", "x86_64"), ("vps-arm64", "aarch64")):
     trial = root / name
     trial.mkdir()
-    vps = name.startswith("vps")
     (trial / "result.json").write_text(json.dumps({
-        "guest_arch": arch, "accelerator": "tcg" if vps or arch == "aarch64" else "kvm",
+        "guest_arch": arch, "accelerator": "tcg",
         "workload": "smoke", "guest_memory_mib": 2048, "guest_cpus": 2, "build_mode": "host-prebuilt",
         "status": 0, "elapsed_seconds": 1800, "finished_unix": 3500,
         "job_ready_unix": 1100, "job_arrival_unix": 1705,
-        "runner_environment": "self-hosted" if vps else "github-hosted",
-        "selected_runner": "antimatter-vps-linux-x64" if vps else "ubuntu-24.04",
+        "runner_environment": "self-hosted",
+        "selected_runner": "antimatter-vps-linux-x64",
     }))
     (trial / "host.json").write_text(json.dumps({
         "job": name, "source_commit": "same", "core_commit": "same", "source_dirty": False,
@@ -288,33 +291,33 @@ for trial in root.iterdir():
     identity = json.loads(identity_path.read_text())
     identity["source_commit"] = "same"
     identity_path.write_text(json.dumps(identity))
-for trial_name in ("hosted-arm64", "vps-arm64"):
+for trial_name in ("vps-arm64",):
     result_path = root / trial_name / "result.json"
     result = json.loads(result_path.read_text())
     result["workload"] = "full"
     result_path.write_text(json.dumps(result))
 check(False, "does not match requested workload smoke")
-for trial_name in ("hosted-arm64", "vps-arm64"):
+for trial_name in ("vps-arm64",):
     result_path = root / trial_name / "result.json"
     result = json.loads(result_path.read_text())
     result["workload"] = "smoke"
     result["guest_arch"] = "x86_64"
     result_path.write_text(json.dumps(result))
 check(False, "expected aarch64 / tcg")
-for trial_name in ("hosted-arm64", "vps-arm64"):
+for trial_name in ("vps-arm64",):
     result_path = root / trial_name / "result.json"
     result = json.loads(result_path.read_text())
     result["guest_arch"] = "aarch64"
     result_path.write_text(json.dumps(result))
-accelerator_path = root / "hosted-x64" / "result.json"
+accelerator_path = root / "vps-x64" / "result.json"
 accelerator_original = accelerator_path.read_text()
 accelerator_result = json.loads(accelerator_original)
-accelerator_result["accelerator"] = "tcg"
+accelerator_result["accelerator"] = "kvm"
 accelerator_path.write_text(json.dumps(accelerator_result))
-check(False, "expected x86_64 / kvm")
+check(False, "expected x86_64 / tcg")
 accelerator_path.write_text(accelerator_original)
 check(False, "missing workflow source commit", source_commit="")
-identity_path = root / "hosted-x64" / "host.json"
+identity_path = root / "vps-x64" / "host.json"
 identity_original = identity_path.read_text()
 identity = json.loads(identity_original)
 identity["job"] = "unexpected-x64"
@@ -333,9 +336,9 @@ del value["build_mode"]
 target.write_text(json.dumps(value))
 check(False, "missing build_mode")
 target.write_text(original)
-(root / "vps-arm64" / "passing-tests.txt").write_text("different\n")
-check(False, "passing-tests.txt differs")
-(root / "vps-arm64" / "passing-tests.txt").write_text(passing_names)
+(root / "vps-arm64" / "rustc.txt").rename(root / "vps-arm64" / "rustc.missing")
+check(False, "vps-arm64: missing rustc.txt")
+(root / "vps-arm64" / "rustc.missing").rename(root / "vps-arm64" / "rustc.txt")
 value = json.loads(original)
 value["status"] = 137
 target.write_text(json.dumps(value))

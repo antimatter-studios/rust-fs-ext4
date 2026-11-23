@@ -135,7 +135,9 @@ for current, directories, files in os.walk(directory):
         programs = [textwrap.dedent(match[2]) for match in re.finditer(
             r"(?m)^([ ]+)run: \|\n((?:\1  [^\n]*\n|[ \t]*\n)+)", workflow)
             if "bash scripts/ci-install-chore.sh" in match[2]]
-        self.assertEqual(len(programs), 2)
+        # One bootstrap: the x86_64 runner environment. The VPS runner is
+        # x86_64, so the ARM64 guest is prepared in that same environment.
+        self.assertEqual(len(programs), 1)
         for index, program in enumerate(programs):
             with self.subTest(bootstrap=index):
                 home = self.root / f"home-{index}"

@@ -23,18 +23,16 @@ class ExecutedTestEvidence(unittest.TestCase):
         self.root = pathlib.Path(self.scratch.name)
         self.jobs = {"jobs": []}
         self.run = {"created_at": "1970-01-01T00:16:40Z"}
-        for name, arch in (("hosted-x64", "x86_64"), ("vps-x64", "x86_64"),
-                           ("hosted-arm64", "aarch64"), ("vps-arm64", "aarch64")):
+        for name, arch in (("vps-x64", "x86_64"), ("vps-arm64", "aarch64")):
             trial = self.root / name
             trial.mkdir()
-            vps = name.startswith("vps")
             (trial / "result.json").write_text(json.dumps({
-                "guest_arch": arch, "accelerator": "tcg" if vps or arch == "aarch64" else "kvm",
+                "guest_arch": arch, "accelerator": "tcg",
                 "workload": "smoke", "guest_memory_mib": 2048, "guest_cpus": 2,
                 "build_mode": "host-prebuilt", "status": 0, "elapsed_seconds": 1800,
                 "finished_unix": 3500, "job_arrival_unix": 1705,
-                "runner_environment": "self-hosted" if vps else "github-hosted",
-                "selected_runner": "antimatter-vps-linux-x64" if vps else "ubuntu-24.04",
+                "runner_environment": "self-hosted",
+                "selected_runner": "antimatter-vps-linux-x64",
             }))
             (trial / "host.json").write_text(json.dumps({
                 "job": name, "source_commit": "source", "core_commit": "core",
@@ -80,7 +78,7 @@ class ExecutedTestEvidence(unittest.TestCase):
         self.check_report(0)
 
     def check_timing(self, field, value, message):
-        result_path = self.root / "hosted-x64" / "result.json"
+        result_path = self.root / "vps-x64" / "result.json"
         result = json.loads(result_path.read_text())
         result[field] = value
         result_path.write_text(json.dumps(result))
@@ -104,14 +102,14 @@ class ExecutedTestEvidence(unittest.TestCase):
 
     def test_without_steps_uses_job_arrival_time(self):
         self.jobs["jobs"][0]["steps"] = []
-        result_path = self.root / "hosted-x64" / "result.json"
+        result_path = self.root / "vps-x64" / "result.json"
         result = json.loads(result_path.read_text())
         result["job_arrival_unix"] = 1700
         result_path.write_text(json.dumps(result))
         self.check_report(0)
 
-    def check_hosted_placement(self, field, value):
-        for name in ("hosted-x64", "hosted-arm64"):
+    def check_vps_placement(self, field, value):
+        for name in ("vps-x64", "vps-arm64"):
             with self.subTest(trial=name):
                 result_path = self.root / name / "result.json"
                 original = result_path.read_text()
@@ -122,30 +120,54 @@ class ExecutedTestEvidence(unittest.TestCase):
                     result[field] = value
                 result_path.write_text(json.dumps(result))
                 try:
-                    self.check_report(1, message=f"{name}: not the requested hosted runner")
+                    self.check_report(1, message=f"{name}: fell back to hosted; this is NOT a VPS measurement")
                 finally:
                     result_path.write_text(original)
 
-    def test_hosted_trial_on_vps_runner_is_rejected(self):
-        self.check_hosted_placement("selected_runner", "antimatter-vps-linux-x64")
+    def test_vps_trial_on_hosted_runner_is_rejected(self):
+        self.check_vps_placement("selected_runner", "ubuntu-24.04")
 
-    def test_hosted_trial_on_self_hosted_environment_is_rejected(self):
-        self.check_hosted_placement("runner_environment", "self-hosted")
+    def test_vps_trial_on_hosted_environment_is_rejected(self):
+        self.check_vps_placement("runner_environment", "github-hosted")
 
-    def test_hosted_trial_without_runner_label_is_rejected(self):
-        self.check_hosted_placement("selected_runner", None)
+    def test_vps_trial_without_runner_label_is_rejected(self):
+        self.check_vps_placement("selected_runner", None)
 
-    def test_hosted_trial_without_runner_environment_is_rejected(self):
-        self.check_hosted_placement("runner_environment", None)
+    def test_vps_trial_without_runner_environment_is_rejected(self):
+        self.check_vps_placement("runner_environment", None)
+
+    def test_hosted_named_trial_is_rejected(self):
+        # No hosted trial runs, so a result claiming one is not a measurement.
+        trial = self.root / "hosted-x64"
+        trial.mkdir()
+        for filename in (self.root / "vps-x64").iterdir():
+            (trial / filename.name).write_bytes(filename.read_bytes())
+        identity = json.loads((trial / "host.json").read_text())
+        identity["job"] = "hosted-x64"
+        (trial / "host.json").write_text(json.dumps(identity))
+        self.check_report(1, message="hosted-x64: unexpected trial identity")
+
+    def test_report_claims_no_hosted_comparison(self):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            qemu_report.report(self.root, self.jobs, self.run, "smoke", "source")
+        self.assertIn("no hosted placement was measured or compared", output.getvalue())
+
+    def test_missing_trial_description_is_rejected(self):
+        result_path = self.root / "vps-arm64" / "result.json"
+        result = json.loads(result_path.read_text())
+        del result["guest_cpus"]
+        result_path.write_text(json.dumps(result))
+        self.check_report(1, message="vps-arm64: missing guest_cpus")
 
     def source_cleanliness(self, value):
-        identity_path = self.root / "hosted-x64" / "host.json"
+        identity_path = self.root / "vps-x64" / "host.json"
         identity = json.loads(identity_path.read_text())
         identity["source_dirty"] = value
         identity_path.write_text(json.dumps(identity))
 
     def test_missing_source_cleanliness_is_rejected(self):
-        identity_path = self.root / "hosted-x64" / "host.json"
+        identity_path = self.root / "vps-x64" / "host.json"
         identity = json.loads(identity_path.read_text())
         del identity["source_dirty"]
         identity_path.write_text(json.dumps(identity))

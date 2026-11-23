@@ -74,8 +74,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # The VPS runner is x86_64 without KVM, so both guests are prepared
+          # under TCG, in the x86_64 runner environment published above.
           - arch: x86_64
-            accelerator: kvm
+            accelerator: tcg
           - arch: aarch64
             accelerator: tcg
     runs-on: antimatter-vps-linux-x64
@@ -84,15 +86,6 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
-      - name: Publish native ARM64 environment before ARM64 preparation
-        if: matrix.arch == 'aarch64'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          BENCH_CACHE_REGISTRY: ghcr.io/${{ github.repository }}/qemu-pilot
-        run: |
-          bash scripts/ci-install-chore.sh
-          "$HOME/.local/bin/chore" siblings
-          bash scripts/ci-qemu-environment.sh prepare aarch64
       - uses: ./.github/actions/qemu-benchmark
         with:
           mode: prepare

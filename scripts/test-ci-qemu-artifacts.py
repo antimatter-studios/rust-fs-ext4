@@ -116,18 +116,23 @@ class ArtifactTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.module.workload_plan("unknown")
 
-    def test_cold_guests_require_explicit_native_preparation(self):
+    def test_cold_guests_require_explicit_preparation(self):
         policy = self.module.guest_policy
         for arch in ("x86_64", "aarch64"):
             with self.subTest(arch=arch), self.assertRaisesRegex(ValueError, "prepared guest"):
                 policy("run", arch, "tcg", "x86_64", False)
             policy("run", arch, "tcg", "x86_64", True)
-        with self.assertRaisesRegex(ValueError, "native"):
-            policy("prepare", "aarch64", "tcg", "x86_64", False)
-        with self.assertRaisesRegex(ValueError, "KVM"):
-            policy("prepare", "x86_64", "tcg", "x86_64", False)
+        # The x86_64 VPS runner has no KVM: it prepares both guests under TCG.
+        policy("prepare", "aarch64", "tcg", "x86_64", False)
+        policy("prepare", "x86_64", "tcg", "x86_64", False)
         policy("prepare", "x86_64", "kvm", "x86_64", False)
         policy("prepare", "aarch64", "tcg", "aarch64", False)
+        # Hardware acceleration is never emulated: KVM needs a native x86_64 host.
+        for arch, host in (("aarch64", "x86_64"), ("x86_64", "aarch64"), ("aarch64", "aarch64")):
+            with self.subTest(arch=arch, host=host), self.assertRaisesRegex(ValueError, "native x86_64"):
+                policy("prepare", arch, "kvm", host, False)
+        with self.assertRaisesRegex(ValueError, "HVF"):
+            policy("prepare", "x86_64", "hvf", "x86_64", False)
 
     def test_collects_tests_and_cli_without_running_either(self):
         records = [self.record(self.executable("test-bin")),

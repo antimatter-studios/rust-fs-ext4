@@ -45,10 +45,15 @@ def guest_policy(action, arch, accelerator, host_arch, cache_hit):
         raise ValueError("prepared guest cache miss; run the QEMU guest preparation workflow first; cold setup is forbidden in measured trials")
     if action == "prepare-local":
         return
-    if arch != host_arch:
-        raise ValueError("guest preparation requires a matching native host, not cross-architecture TCG")
-    if arch == "x86_64" and accelerator != "kvm":
-        raise ValueError("x86_64 guest preparation requires KVM")
+    # A prepared guest holds what its setup installed and built inside the
+    # guest, for the guest's architecture; the accelerator that ran the setup
+    # does not change those bytes. The CI runner is x86_64 without KVM, so it
+    # prepares both guests under TCG. Hardware acceleration still needs the
+    # matching native host: it is never emulated.
+    if accelerator == "kvm" and not (arch == host_arch == "x86_64"):
+        raise ValueError("KVM guest preparation requires a native x86_64 host")
+    if accelerator not in ("kvm", "tcg", "hvf"):
+        raise ValueError(f"unsupported accelerator: {accelerator}")
 
 
 def digest_file(path):
