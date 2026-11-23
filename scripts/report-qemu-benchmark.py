@@ -78,8 +78,9 @@ def report(root, jobs, run, workload, source_commit):
         if name not in expected:
             problems.append(f"{name}: unexpected trial identity")
             continue
-        if host.get("source_dirty"):
-            problems.append(f"{name}: source checkout is dirty; commit identity does not describe the workload")
+        if host.get("source_dirty") is not False:
+            problems.append(f"{name}: source checkout is dirty or source cleanliness is not verified; "
+                            "commit identity does not describe the workload")
         if source_commit and host.get("source_commit") != source_commit:
             problems.append(f"{name}: artifact source does not match workflow source {source_commit}")
         if result.get("workload") != workload:

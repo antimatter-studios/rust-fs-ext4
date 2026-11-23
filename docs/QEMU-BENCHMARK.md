@@ -274,6 +274,8 @@ preserves the workload's existing executed-test floor, and rejects failed or
 ignored tests, filtered full workloads and empty or missing test evidence.
 Single workloads must execute exactly one test. Per-trial passed, failed and
 ignored counts accompany the timing table; matching empty files are not proof.
+Source cleanliness must be explicitly recorded as JSON `false`; missing, null
+or non-boolean evidence cannot prove that a commit describes the tested checkout.
 
 The primary metric is **time from workflow submission to a verified result**,
 not raw CPU speed. Job `started_at` can precede runner allocation, so queue

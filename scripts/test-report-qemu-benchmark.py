@@ -38,6 +38,7 @@ class ExecutedTestEvidence(unittest.TestCase):
             }))
             (trial / "host.json").write_text(json.dumps({
                 "job": name, "source_commit": "source", "core_commit": "core",
+                "source_dirty": False,
             }))
             for filename in ("rustc.txt", "builder-image.txt", "build-packages.txt",
                              "test-cache-key.txt", "guest-packages.txt"):
@@ -77,6 +78,35 @@ class ExecutedTestEvidence(unittest.TestCase):
 
     def test_matching_smoke_workload_passes(self):
         self.check_report(0)
+
+    def source_cleanliness(self, value):
+        identity_path = self.root / "hosted-x64" / "host.json"
+        identity = json.loads(identity_path.read_text())
+        identity["source_dirty"] = value
+        identity_path.write_text(json.dumps(identity))
+
+    def test_missing_source_cleanliness_is_rejected(self):
+        identity_path = self.root / "hosted-x64" / "host.json"
+        identity = json.loads(identity_path.read_text())
+        del identity["source_dirty"]
+        identity_path.write_text(json.dumps(identity))
+        self.check_report(1, message="source cleanliness is not verified")
+
+    def test_null_source_cleanliness_is_rejected(self):
+        self.source_cleanliness(None)
+        self.check_report(1, message="source cleanliness is not verified")
+
+    def test_numeric_source_cleanliness_is_rejected(self):
+        self.source_cleanliness(0)
+        self.check_report(1, message="source cleanliness is not verified")
+
+    def test_empty_source_cleanliness_is_rejected(self):
+        self.source_cleanliness("")
+        self.check_report(1, message="source cleanliness is not verified")
+
+    def test_dirty_source_is_rejected(self):
+        self.source_cleanliness(True)
+        self.check_report(1, message="source checkout is dirty")
 
     def test_report_contract_changes_trigger_the_workflow(self):
         workflow = pathlib.Path(__file__).resolve().parent.parent / ".github/workflows/qemu-benchmark.yml"

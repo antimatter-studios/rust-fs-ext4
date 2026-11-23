@@ -256,7 +256,9 @@ for name, arch in (("hosted-x64", "x86_64"), ("vps-x64", "x86_64"),
         "runner_environment": "self-hosted" if vps else "github-hosted",
         "selected_runner": "antimatter-vps-linux-x64" if vps else "ubuntu-24.04",
     }))
-    (trial / "host.json").write_text(json.dumps({"job": name, "source_commit": "same", "core_commit": "same"}))
+    (trial / "host.json").write_text(json.dumps({
+        "job": name, "source_commit": "same", "core_commit": "same", "source_dirty": False,
+    }))
     (trial / "passing-tests.txt").write_text(passing_names)
     (trial / "tests.log").write_text(test_log)
     (trial / "rustc.txt").write_text(f"host: {arch}-unknown-linux-gnu\n")
