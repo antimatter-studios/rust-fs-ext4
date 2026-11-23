@@ -18,7 +18,7 @@ mkdir -p tmp/qemu-results
 evidence=/repo/tmp/qemu-results
 exec > >(tee "$evidence/guest.log") 2>&1
 uname -a >"$evidence/guest-uname.txt"
-export DEBIAN_FRONTEND=noninteractive CARGO_BUILD_JOBS=2
+export DEBIAN_FRONTEND=noninteractive
 export RUSTUP_HOME=/var/lib/fs-ext4-rust/rustup CARGO_HOME=/var/lib/fs-ext4-rust/cargo
 export CARGO_TARGET_DIR=/benchmark-target
 export PATH="$CARGO_HOME/bin:$PATH"

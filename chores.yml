@@ -338,7 +338,9 @@ vars:
   # one. The shared guest is sized by a host resource profile.
   # v0.9.1: a macOS host needs the virtiofsd port 1.14.0.1 or newer, and a
   # grep check under pipefail no longer fails on its own match.
-  LINUX_HARNESS_REF: v0.9.1
+  # v0.11.0: guest test concurrency follows the resource profile, and each
+  # guest run gets a private disk-backed temporary directory.
+  LINUX_HARNESS_REF: v0.11.0
 
 # The harness's consumer tasks, as `chore vm:<task>`. OPTIONAL because the
 # harness is a sibling that `chore siblings` itself checks out: without
@@ -827,14 +829,15 @@ tasks:
   test:scripts:
     desc: The shell tests (tests/scripts/*.sh), every one by glob
     # BUDGET: all script tests, including the whole-image-read guard, measured
-    # 53 lines and 3020 bytes in PR #638's local full script-tier run.
+    # 53 lines and 3021 bytes in PR #659's CI run 45090429034 and local rerun.
+    # The v0.11.0 pin verdict is one byte longer than v0.9.1; every test passed.
     # By glob, so a test added later needs no edit here -- a guard that
     # has to be registered somewhere else is a guard that gets silently
     # skipped.
     cmds:
       - |
         set -eu
-        bash ../rust-fs-core/scripts/tier.sh test:scripts scripts 53 3020 -- bash -c '
+        bash ../rust-fs-core/scripts/tier.sh test:scripts scripts 53 3021 -- bash -c '
           set -eu
           for t in tests/scripts/*.sh; do
             echo "== $t"
