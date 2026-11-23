@@ -4,7 +4,7 @@ name: branch-reap
 # still needs it: the default, protected, merge-queue and wip/ branches, a
 # branch an open pull request is based on or headed by, and one pushed to
 # after its merge are all kept. The rules and the delete are rust-fs-core's
-# (branch-reap.yml, scripts/branch-reap.sh). GitHub's own delete-on-merge
+# (scripts/branch-reap.sh). GitHub's own delete-on-merge
 # stays off: it deletes a branch a stacked pull request is still based on.
 on:
   pull_request:
@@ -15,9 +15,31 @@ permissions:
 
 jobs:
   reap:
+    if: github.event.pull_request.merged == true && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: antimatter-vps-linux-x64
+    timeout-minutes: 5
     permissions:
       contents: write
       pull-requests: read
-    uses: antimatter-studios/rust-fs-core/.github/workflows/branch-reap.yml@eb057d1ba40ddfd78007660ea58ecd24181627bd # v0.5.1
-    with:
-      core-ref: v0.5.1
+    steps:
+      - name: rust-fs-core's branch-reap.sh, at the pinned commit
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          repository: antimatter-studios/rust-fs-core
+          ref: eb057d1ba40ddfd78007660ea58ecd24181627bd
+          path: rust-fs-core
+          persist-credentials: false
+          sparse-checkout: scripts/branch-reap.sh
+          sparse-checkout-cone-mode: false
+      - name: git pushes with this run's token
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh auth setup-git
+      - name: delete the merged branch, unless something still needs it
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ github.event.pull_request.head.ref }}
+          MERGED: ${{ github.event.pull_request.head.sha }}
+          PR: ${{ github.event.pull_request.number }}
+        run: bash rust-fs-core/scripts/branch-reap.sh "$REPO" "$BRANCH" "$MERGED" "$PR"

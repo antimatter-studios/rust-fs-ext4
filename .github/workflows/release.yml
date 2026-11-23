@@ -7,9 +7,7 @@ on:
 
 # EVERY JOB READS, AND ONE JOB WRITES (#329).
 #
-# `contents: write` is held by the `cli` job alone, which calls
-# rust-fs-core's release-cli workflow; there, only its `attach` job holds
-# it, and that job checks nothing out. Every action here is pinned to
+# `contents: write` is held by the `attach` job alone, which checks nothing out. Every action here is pinned to
 # a commit SHA, with the tag it stood for beside it: a tag is a pointer its
 # owner can move, and a job holding a token should not run whatever it
 # points at today. Every checkout sets `persist-credentials: false`, so no
@@ -37,7 +35,7 @@ jobs:
   test:
     name: test
     needs: test-gate
-    runs-on: ${{ needs.test-gate.outputs.runner }}
+    runs-on: antimatter-vps-linux-x64
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
@@ -93,35 +91,150 @@ jobs:
       - name: chore test
         run: chore test
 
-  # THE RELEASE TARBALL is rust-fs-core's release-cli workflow, called here
-  # (#481). It builds the multi-call binary natively on darwin-arm64 and
-  # linux-x86_64, packages it with `../rust-fs-core/scripts/package-cli.sh` from what
-  # Cargo.toml's [package.metadata.package-cli] declares -- bin/rust-fs-ext4,
-  # mkfs.ext4, fsck.ext4 and fs.ext4 as relative symlinks to it, the man
-  # pages and completions the binary writes, share/rust-fs-ext4/CAVEATS and
-  # LICENSE -- and checks it; then its one write job attests both tarballs
-  # and attaches them to this tag's release. This repository once carried
-  # its own copy of all of that, and the family's copies drifted.
-  #
-  # Pinned to a commit SHA, with the tag it stood for beside it: the called
-  # workflow runs with the grants below, and a tag can be moved. core-ref
-  # is the tag chores.yml pins the sibling to, and toolchain the one
-  # rust-toolchain.toml pins; tests/ci_profile.rs holds all three to that.
-  #
-  # The attestation is signed by the called workflow, so a download is
-  # checked with `gh attestation verify <tarball> --repo
-  # antimatter-studios/rust-fs-ext4 --signer-workflow
-  # antimatter-studios/rust-fs-core/.github/workflows/release-cli.yml`.
   cli:
     needs: [test, publish]
+    name: package the tools (${{ matrix.label }})
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        label: [darwin-arm64, linux-x86_64]
+    runs-on: antimatter-vps-linux-x64
+    steps:
+      - name: Verify build platform before packaging
+        env:
+          LABEL: ${{ matrix.label }}
+        run: |
+          case "$LABEL:$(uname -s):$(uname -m)" in
+            linux-x86_64:Linux:x86_64|darwin-arm64:Darwin:arm64) ;;
+            *) echo "::error::No verified native build path for $LABEL on this runner"; exit 1 ;;
+          esac
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - name: refuse anything but a version tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$GITHUB_REF" in
+            refs/tags/v*) ;;
+            *) echo "::error::release-cli packages a version tag, not $GITHUB_REF" >&2; exit 1 ;;
+          esac
+
+      - name: clone the rust-fs-core sibling
+        shell: bash
+        env:
+          CORE_REF: v0.5.1
+        run: git clone --depth 1 --branch "$CORE_REF" https://github.com/antimatter-studios/rust-fs-core.git ../rust-fs-core
+
+      - name: the CHANGELOG describes this version
+        uses: antimatter-studios/agent-skills/.github/actions/changelog-notes@ed0b96812c5908478dcd84543debf4d5f8bf87e3
+        with:
+          tag: ${{ github.ref_name }}
+          output-file: notes/release-notes.md
+
+      - name: keep the notes for the attach job
+        if: matrix.label == 'linux-x86_64'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-notes
+          path: notes/release-notes.md
+          if-no-files-found: error
+          retention-days: 7
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable, 2026-09-27
+        with:
+          toolchain: 1.95.0
+
+      - name: build the multi-call binary
+        shell: bash
+        run: cargo build --release --locked --features cli --bin "${GITHUB_REPOSITORY##*/}"
+
+      - name: package and check the tarball
+        id: pack
+        shell: bash
+        env:
+          LABEL: ${{ matrix.label }}
+        run: |
+          set -euo pipefail
+          bash ../rust-fs-core/scripts/package-cli.sh "${GITHUB_REF_NAME#v}" "$LABEL" > "$RUNNER_TEMP/tarball"
+          tarball="$(tail -n 1 "$RUNNER_TEMP/tarball")"
+          echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
+          {
+            echo "### $tarball"
+            echo ""
+            echo '```'
+            if command -v sha256sum >/dev/null 2>&1; then
+              echo "sha256 $(sha256sum "$tarball" | cut -d' ' -f1)"
+            else
+              echo "sha256 $(shasum -a 256 "$tarball" | cut -d' ' -f1)"
+            fi
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: keep the tarball for the attach job
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: cli-${{ matrix.label }}
+          path: ${{ steps.pack.outputs.tarball }}
+          if-no-files-found: error
+          retention-days: 7
+
+  attach:
+    name: attest and attach the tools
+    needs: cli
+    runs-on: antimatter-vps-linux-x64
     permissions:
       contents: write
       id-token: write
       attestations: write
-    uses: antimatter-studios/rust-fs-core/.github/workflows/release-cli.yml@eb057d1ba40ddfd78007660ea58ecd24181627bd # v0.5.1
-    with:
-      core-ref: v0.5.1
-      toolchain: 1.95.0
+    steps:
+      - name: collect every leg's tarball
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: cli-*
+          path: dist
+          merge-multiple: true
+
+      - name: the release notes the package job read from the CHANGELOG
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-notes
+          path: notes
+
+      - name: one asset per platform, no more and no fewer
+        shell: bash
+        env:
+          EXPECTED: '2'
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          assets=(dist/*.tar.gz dist/*.zip)
+          everything=(dist/*)
+          if [ "${#assets[@]}" -ne "$EXPECTED" ] || [ "${#everything[@]}" -ne "${#assets[@]}" ]; then
+            echo "::error::expected $EXPECTED assets (one per package leg) and nothing else, found ${everything[*]}" >&2
+            exit 1
+          fi
+
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/*
+
+      - name: attach the tarballs to the GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release edit "$GITHUB_REF_NAME" --notes-file notes/release-notes.md
+          else
+            gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" --notes-file notes/release-notes.md
+          fi
+          gh release upload "$GITHUB_REF_NAME" dist/* --clobber
 
   publish-gate:
     needs: [test]
@@ -136,7 +249,7 @@ jobs:
   publish:
     name: publish to crates.io
     needs: [test, publish-gate]
-    runs-on: ${{ needs.publish-gate.outputs.runner }}
+    runs-on: antimatter-vps-linux-x64
     environment: release
     permissions:
       id-token: write

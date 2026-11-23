@@ -1,6 +1,6 @@
 name: QEMU TCG flag experiment
 # Measures what each emulated-CPU option does to an ARM64 guest's boot and
-# test time, on GitHub-hosted runners of both architectures. It does not gate
+# test time, on the VPS runner. It does not gate
 # anything. Dispatch it after `qemu-prepare.yml` has published the guest and
 # test bundle for the commit.
 
@@ -23,13 +23,12 @@ env:
 
 jobs:
   flags:
-    name: ${{ matrix.variant }} on ${{ matrix.runner }}
+    name: ${{ matrix.variant }} on antimatter-vps-linux-x64
     if: >-
       github.actor == 'christhomas' && github.triggering_actor == 'christhomas'
     strategy:
       fail-fast: false
       matrix:
-        runner: [ubuntu-24.04-arm, ubuntu-24.04]
         variant: [baseline, baseline-repeat, pauth-impdef, pauth-off, tb-1024, cortex-a72, impdef-tb-1024]
         # `variant` is an axis, so each entry below attaches its options to
         # that variant only. Keys that are not axes would be applied to every
@@ -42,7 +41,7 @@ jobs:
           - { variant: tb-1024, cpu: max, accel: 'tcg,thread=multi,tb-size=1024' }
           - { variant: cortex-a72, cpu: cortex-a72, accel: 'tcg,thread=multi' }
           - { variant: impdef-tb-1024, cpu: 'max,pauth-impdef=on', accel: 'tcg,thread=multi,tb-size=1024' }
-    runs-on: ${{ matrix.runner }}
+    runs-on: antimatter-vps-linux-x64
     timeout-minutes: 150
     env:
       QEMU_TCG_CPU: ${{ matrix.cpu }}
@@ -55,14 +54,14 @@ jobs:
         with:
           arch: aarch64
           accelerator: tcg
-          requested-runner: ${{ matrix.runner }}
-          selected-runner: ${{ matrix.runner }}
+          requested-runner: antimatter-vps-linux-x64
+          selected-runner: antimatter-vps-linux-x64
           workload: ${{ inputs.workload }}
-          label: ${{ matrix.variant }}-${{ matrix.runner }}
+          label: ${{ matrix.variant }}-antimatter-vps-linux-x64
       - name: Summarise this variant
         if: always()
         run: |
-          python3 - "${{ matrix.variant }}" "${{ matrix.runner }}" <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
+          python3 - "${{ matrix.variant }}" "antimatter-vps-linux-x64" <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
           import json, pathlib, sys
           variant, runner = sys.argv[1:]
           for path in sorted(pathlib.Path("tmp/qemu-benchmark").rglob("result.json")):

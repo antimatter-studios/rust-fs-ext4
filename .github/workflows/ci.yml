@@ -145,7 +145,7 @@ jobs:
   changes:
     name: changes (does this need the full pipeline?)
     needs: changes-gate
-    runs-on: ${{ needs.changes-gate.outputs.runner }}
+    runs-on: antimatter-vps-linux-x64
     outputs:
       code: ${{ steps.c.outputs.code }}
       # Full for every event (scripts/ci-plan.sh).
@@ -218,7 +218,7 @@ jobs:
   unit:
     name: unit (no tools, no fixtures)
     needs: [changes, unit-gate]
-    runs-on: ${{ needs.unit-gate.outputs.runner }}
+    runs-on: antimatter-vps-linux-x64
     steps:
       - uses: actions/checkout@v4
       - name: C toolchain for the gated runner
@@ -331,7 +331,7 @@ jobs:
     name: fixtures (harness VM, x86_64 KVM)
     needs: [changes, fixtures-gate]
     if: needs.changes.outputs.profile == 'full' && needs.changes.outputs.code == 'true'
-    runs-on: ${{ needs.fixtures-gate.outputs.runner }}
+    runs-on: antimatter-vps-linux-x64
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -380,7 +380,7 @@ jobs:
   test:
     name: test (x86_64, oracles in the VM)
     needs: [fixtures, test-gate]
-    runs-on: ${{ needs.test-gate.outputs.runner }}
+    runs-on: antimatter-vps-linux-x64
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
@@ -476,7 +476,7 @@ jobs:
   test-arm64:
     name: test (aarch64, no KVM on this runner)
     needs: [fixtures, test-arm64-gate]
-    runs-on: ${{ needs.test-arm64-gate.outputs.runner }}
+    runs-on: antimatter-vps-linux-x64
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -545,7 +545,7 @@ jobs:
   suite-in-vm:
     name: suite in the guest (the macOS path)
     needs: [fixtures, suite-in-vm-gate]
-    runs-on: ${{ needs.suite-in-vm-gate.outputs.runner }}
+    runs-on: antimatter-vps-linux-x64
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
@@ -612,7 +612,7 @@ jobs:
     name: wasm32 (browser build, tests under Node)
     needs: [changes, wasm-gate]
     if: needs.changes.outputs.profile == 'full'
-    runs-on: ${{ needs.wasm-gate.outputs.runner }}
+    runs-on: antimatter-vps-linux-x64
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -669,7 +669,7 @@ jobs:
     # not declare (#120). No fixtures, no VM -- only the registry.
     name: semver (public API against crates.io)
     needs: [changes, semver-gate]
-    runs-on: ${{ needs.semver-gate.outputs.runner }}
+    runs-on: antimatter-vps-linux-x64
     timeout-minutes: 30
     env:
       # The version ../rust-fs-core/scripts/semver-check.sh expects. A prebuilt binary,
@@ -728,7 +728,7 @@ jobs:
   msrv:
     name: msrv (Cargo.toml rust-version)
     needs: [changes, msrv-gate]
-    runs-on: ${{ needs.msrv-gate.outputs.runner }}
+    runs-on: antimatter-vps-linux-x64
     steps:
       - uses: actions/checkout@v4
       - name: C toolchain for the gated runner
@@ -769,7 +769,7 @@ jobs:
     name: cli (the installed tools, on PATH)
     needs: [changes, cli-gate]
     if: needs.changes.outputs.profile == 'full'
-    runs-on: ${{ needs.cli-gate.outputs.runner }}
+    runs-on: antimatter-vps-linux-x64
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -840,7 +840,7 @@ jobs:
   provenance:
     name: provenance (no kernel or e2fsprogs internals named)
     needs: [changes, provenance-gate]
-    runs-on: ${{ needs.provenance-gate.outputs.runner }}
+    runs-on: antimatter-vps-linux-x64
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -870,7 +870,7 @@ jobs:
     name: ci-ok
     if: always()
     needs: [changes-gate, changes, unit-gate, unit, fixtures-gate, fixtures, test-gate, test, test-arm64-gate, test-arm64, suite-in-vm-gate, suite-in-vm, wasm-gate, wasm, semver-gate, semver, msrv-gate, msrv, cli-gate, cli, provenance-gate, provenance, ci-ok-gate]
-    runs-on: ${{ needs.ci-ok-gate.outputs.runner || 'ubuntu-latest' }}
+    runs-on: antimatter-vps-linux-x64
     steps:
       - uses: actions/checkout@v4
       - name: Every job ran and succeeded

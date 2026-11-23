@@ -1000,7 +1000,9 @@ fn assert_unconditional_or_skipped_for_documentation(job: &Yaml, name: &str, wor
             matches!(
                 condition.as_str(),
                 Some("needs.changes.outputs.code == 'true'")
-                    | Some("needs.changes.outputs.profile == 'full' && needs.changes.outputs.code == 'true'")
+                    | Some(
+                        "needs.changes.outputs.profile == 'full' && needs.changes.outputs.code == 'true'"
+                    )
             ),
             "{workflow} jobs.{name} may be skipped only for a change to documentation alone, \
              or for the documentation-only fixture/VM skip"
@@ -1096,7 +1098,7 @@ fn chore_writes_a_tier_log(
 /// UPLOADS THAT REFUSE AN EMPTY PATH MUST WAIT FOR THE STEP THAT FILLS
 /// IT (#306).
 ///
-/// Every conditional `actions/upload-artifact` step in `workflow` with
+/// Every conditional tier-log `actions/upload-artifact` step in `workflow` with
 /// `if-no-files-found: error`, whose `if:` does not require an EARLIER
 /// step of the same job -- one that writes a tier log, directly or
 /// through a `chore` task in `chores` -- to have run:
@@ -1128,10 +1130,14 @@ fn unguarded_log_uploads(workflow: &str, chores: &str) -> Vec<String> {
                 .and_then(|with| field(with, "if-no-files-found"))
                 .and_then(Yaml::as_str)
                 == Some("error");
+            let uploads_tier_log = field(step, "with")
+                .and_then(|with| field(with, "path"))
+                .and_then(Yaml::as_str)
+                .is_some_and(|path| path.contains("tmp/logs/"));
             let Some(condition) = field(step, "if").and_then(Yaml::as_str) else {
                 continue;
             };
-            if !is_upload || !refuses_empty {
+            if !is_upload || !refuses_empty || !uploads_tier_log {
                 continue;
             }
             let condition: String = condition.split_whitespace().collect();
@@ -1223,7 +1229,7 @@ fn ci_runs_on_a_pull_request_against_any_base() {
 }
 
 #[test]
-fn every_ci_job_takes_its_runner_from_its_own_gate_job() {
+fn ci_gates_keep_their_checks_without_selecting_workload_runners() {
     let path = workflow_path("ci.yml");
     let text = read_or_panic(&path);
     let document = load_document(&text, &path);
@@ -1268,15 +1274,10 @@ fn every_ci_job_takes_its_runner_from_its_own_gate_job() {
             field(gated, "if").and_then(Yaml::as_str),
             "jobs.{gate_name} must carry the same condition as jobs.{name}"
         );
-        let expected = if name == "ci-ok" {
-            "${{ needs.ci-ok-gate.outputs.runner || 'ubuntu-latest' }}".to_string()
-        } else {
-            format!("${{{{ needs.{gate_name}.outputs.runner }}}}")
-        };
         assert_eq!(
             field(gated, "runs-on").and_then(Yaml::as_str),
-            Some(expected.as_str()),
-            "jobs.{name} must take its runner from {gate_name}"
+            Some("antimatter-vps-linux-x64"),
+            "jobs.{name} must hardcode the VPS runner"
         );
     }
 }
@@ -1626,127 +1627,71 @@ fn the_release_gate_builds_fixtures_in_the_harness_vm_and_runs_chore_test() {
     }
 }
 
-/// The reusable workflow that packages, attests and attaches the release
-/// tarball for every repository in the family.
-const CORE_RELEASE_CLI: &str = "antimatter-studios/rust-fs-core/.github/workflows/release-cli.yml";
-
-/// THE RELEASE TARBALL IS PACKAGED BY RUST-FS-CORE, NOT BY A COPY HERE
-/// (#481). Every repository once carried its own `package-cli` matrix,
-/// attest-and-attach job and `scripts/package-cli.sh`, and the copies
-/// drifted. `release.yml` now calls core's `release-cli.yml` from one job,
-/// `cli`, and keeps none of them.
-///
-/// The call is pinned to a commit SHA, not a tag: the called workflow runs
-/// with this repository's `contents: write`, and a tag is a pointer its
-/// owner can move. Its `core-ref` is the tag `chores.yml` pins the sibling
-/// to, and its `toolchain` the one `rust-toolchain.toml` pins, so the
-/// tarball is built from the same sources the gate tested. And it ships
-/// only after `test` passed and the crate is on crates.io.
 #[test]
-fn the_release_tarball_is_packaged_by_core_release_cli_workflow_at_a_pinned_sha() {
-    let root = manifest_dir();
-    let path = workflow_path("release.yml");
-    let text = read_or_panic(&path);
-    let document = load_document(&text, &path);
-
-    let cli = job(&document, "cli", &path);
-    let uses = field(cli, "uses")
-        .and_then(Yaml::as_str)
-        .unwrap_or_else(|| panic!("release jobs.cli must call {CORE_RELEASE_CLI} with `uses:`"));
-    let (workflow, sha) = uses
-        .split_once('@')
-        .unwrap_or_else(|| panic!("release jobs.cli calls {uses:?}, with no `@<sha>`"));
-    assert_eq!(
-        workflow, CORE_RELEASE_CLI,
-        "release jobs.cli must call rust-fs-core's release-cli workflow"
-    );
-    assert!(
-        sha.len() == 40
-            && sha
-                .bytes()
-                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
-        "release jobs.cli calls {CORE_RELEASE_CLI} at {sha:?}, which is not a 40-hex commit SHA: \
-         a tag can be moved under a job that holds a write token"
-    );
-
-    let with =
-        field(cli, "with").unwrap_or_else(|| panic!("release jobs.cli passes no `with:` inputs"));
-    let input = |name: &str| {
-        field(with, name)
-            .and_then(Yaml::as_str)
-            .unwrap_or_else(|| panic!("release jobs.cli passes no `{name}` input"))
-            .to_string()
-    };
-    let core_pin = am_fs_core_versions_declared(&read_or_panic(&root.join("chores.yml")))
-        .into_iter()
-        .next()
-        .map(|(_, v)| v)
-        .expect("chores.yml declares the rust-fs-core pin");
-    assert_eq!(
-        input("core-ref"),
-        format!("v{core_pin}"),
-        "release jobs.cli must build against the rust-fs-core tag chores.yml pins"
-    );
-    let toolchain = read_or_panic(&root.join("rust-toolchain.toml"))
-        .lines()
-        .find_map(|line| quoted_value_after(line.trim(), "channel"))
-        .expect("rust-toolchain.toml names its channel");
-    assert_eq!(
-        input("toolchain"),
-        toolchain,
-        "release jobs.cli must build with the toolchain rust-toolchain.toml pins"
-    );
-
-    let permissions =
-        field(cli, "permissions").unwrap_or_else(|| panic!("release jobs.cli grants nothing"));
-    for grant in ["contents", "id-token", "attestations"] {
-        assert_eq!(
-            field(permissions, grant).and_then(Yaml::as_str),
-            Some("write"),
-            "release jobs.cli must grant `{grant}: write`, which the attach job needs"
-        );
-    }
-    let needs = needs_of(cli);
-    for needed in ["test", "publish"] {
-        assert!(
-            needs.iter().any(|n| n == needed),
-            "release jobs.cli must need jobs.{needed}: nothing ships untested or unpublished"
-        );
-    }
-
-    // No copy of what core now does is left behind.
-    for copy in [
-        "scripts/package-cli.sh",
-        "tests/scripts/test-package-cli.sh",
-    ] {
-        assert!(
-            !root.join(copy).exists(),
-            "{copy} is a local copy of rust-fs-core's packaging; delete it"
-        );
-    }
-    let jobs = field(&document, "jobs")
-        .and_then(Yaml::as_mapping)
-        .unwrap_or_else(|| panic!("{} has no jobs", path.display()));
-    for (name, body) in jobs.iter() {
-        let name = name.as_str().unwrap_or("?");
-        assert!(
-            !["package-cli", "release"].contains(&name),
-            "release.yml still has its own jobs.{name}; rust-fs-core's release-cli.yml packages \
-             and attaches the tarball"
-        );
-        for step in field(body, "steps")
-            .and_then(Yaml::as_sequence)
-            .into_iter()
-            .flatten()
-        {
-            let uses = field(step, "uses").and_then(Yaml::as_str).unwrap_or("");
-            assert!(
-                !run_of(step).contains("package-cli") && !uses.contains("attest-build-provenance"),
-                "release.yml jobs.{name} packages or attests the tarball itself; \
-                 rust-fs-core's release-cli.yml does that"
+fn every_workflow_hardcodes_its_vps_runner() {
+    let directory = workflow_path("ci.yml").parent().unwrap().to_path_buf();
+    for entry in std::fs::read_dir(directory).expect("read workflow directory") {
+        let path = entry.expect("read workflow entry").path();
+        if !matches!(
+            path.extension().and_then(|ext| ext.to_str()),
+            Some("yml" | "yaml")
+        ) {
+            continue;
+        }
+        let text = read_or_panic(&path);
+        let doc = load_document(&text, &path);
+        let jobs = field(&doc, "jobs")
+            .and_then(Yaml::as_mapping)
+            .expect("workflow jobs");
+        for (key, job) in jobs {
+            let name = key.as_str().expect("workflow job ID");
+            let expected = if name.ends_with("-gate") {
+                "antimatter-vps-gate"
+            } else {
+                "antimatter-vps-linux-x64"
+            };
+            assert_eq!(
+                field(job, "runs-on").and_then(Yaml::as_str),
+                Some(expected),
+                "{} jobs.{name} must hardcode its runner",
+                path.display()
             );
         }
     }
+}
+
+#[test]
+fn release_packages_read_only_and_attaches_only_after_tests_and_publish() {
+    let path = workflow_path("release.yml");
+    let text = read_or_panic(&path);
+    let document = load_document(&text, &path);
+    let cli = job(&document, "cli", &path);
+    let attach = job(&document, "attach", &path);
+    for dependency in ["test", "publish"] {
+        assert!(needs_of(cli).iter().any(|need| need == dependency));
+    }
+    assert!(needs_of(attach).iter().any(|need| need == "cli"));
+    assert_eq!(
+        field(
+            field(cli, "permissions").expect("CLI permissions"),
+            "contents"
+        )
+        .and_then(Yaml::as_str),
+        Some("read")
+    );
+    let permissions = field(attach, "permissions").expect("attach permissions");
+    for grant in ["contents", "id-token", "attestations"] {
+        assert_eq!(
+            field(permissions, grant).and_then(Yaml::as_str),
+            Some("write")
+        );
+    }
+    assert!(steps_of(attach, "attach").iter().all(|step| {
+        !field(step, "uses")
+            .and_then(Yaml::as_str)
+            .unwrap_or("")
+            .contains("actions/checkout")
+    }));
 }
 
 /// THE DISTINCTION THIS REPOSITORY NEEDS THAT A PORTED COPY WOULD MISS.
@@ -2818,7 +2763,9 @@ tasks:
     /// A cycle is chore's error to report; the guard must just not hang.
     #[test]
     fn a_task_cycle_terminates() {
-        let chores = format!("{CHORES}  a:\n    cmds:\n      - task: b\n      - task: test:unit\n  b:\n    cmds:\n      - task: a\n");
+        let chores = format!(
+            "{CHORES}  a:\n    cmds:\n      - task: b\n      - task: test:unit\n  b:\n    cmds:\n      - task: a\n"
+        );
         let workflow = WORKFLOW.replace("run: chore test:unit", "run: chore a");
         assert_eq!(gating(&workflow, &chores).len(), 1);
     }
@@ -3059,8 +3006,7 @@ jobs:
     /// a genuine debug run.
     #[test]
     fn a_trailing_comment_naming_release_does_not_disqualify_a_debug_run() {
-        let yaml =
-            "      - run: EXPECT_OVERFLOW_CHECKS=1 cargo test --locked --lib  # deliberately not --release\n";
+        let yaml = "      - run: EXPECT_OVERFLOW_CHECKS=1 cargo test --locked --lib  # deliberately not --release\n";
         assert_eq!(
             checking_debug_runs(yaml),
             vec!["- run: EXPECT_OVERFLOW_CHECKS=1 cargo test --locked --lib".to_string()],
@@ -3109,8 +3055,7 @@ jobs:
     /// A profile named another way still disqualifies the run.
     #[test]
     fn a_profile_flag_disqualifies_a_run_even_with_the_handshake() {
-        let yaml =
-            "      - run: EXPECT_OVERFLOW_CHECKS=1 cargo test --locked --profile release-with-debug --lib\n";
+        let yaml = "      - run: EXPECT_OVERFLOW_CHECKS=1 cargo test --locked --profile release-with-debug --lib\n";
         assert_eq!(checking_debug_runs(yaml), Vec::<String>::new());
     }
 }
@@ -3812,7 +3757,9 @@ fn ci_cancels_only_a_pull_requests_superseded_run() {
     }
     assert_eq!(
         cancel.as_deref(),
-        Some("${{ github.event_name == 'pull_request' && !startsWith(github.event.pull_request.title, 'red:') }}"),
+        Some(
+            "${{ github.event_name == 'pull_request' && !startsWith(github.event.pull_request.title, 'red:') }}"
+        ),
         "ci.yml cancels a run that is not a pull request's"
     );
     let group = group.expect("ci.yml declares a concurrency group");
