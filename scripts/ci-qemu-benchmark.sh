@@ -92,6 +92,14 @@ fi
 
 mkdir -p tmp/qemu-benchmark tmp/qemu-images
 state="$(mktemp -d "$repo/tmp/qemu-benchmark/$arch-$accel.XXXXXX")"
+# CI's VM jobs serve as root in a container over the host runner's workspace
+# (ci-qemu-runner.sh serve). The runner owns the evidence directory from the
+# start, still mode 0700, so it can upload the evidence even when the
+# container dies before its EXIT trap hands the files back. Files kept
+# private (the guest's SSH key) stay root's and unreadable to the runner.
+if [ "$action" = serve ] && [ -n "${EVIDENCE_OWNER:-}" ]; then
+    chown "$EVIDENCE_OWNER" "$state"
+fi
 disk="$state/guest.qcow2"
 seed="$state/seed.iso"
 console="$state/console.log"
