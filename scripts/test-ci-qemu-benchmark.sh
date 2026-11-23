@@ -91,7 +91,7 @@ progress() { printf '%s\\n' "$*"; }
         'a progressing TCG boot must survive 900 seconds and permit a slow SSH handshake',
         accelerator, never_ready, result.returncode, result.stdout, result.stderr)
     if expected:
-        limit = 1800 if accelerator == 'tcg' else 900
+        limit = 3600 if accelerator == 'tcg' else 900
         assert f'guest boot exceeded {limit} seconds' in result.stderr, result.stderr
     else:
         assert int((state / 'boot-seconds.txt').read_text()) == 1200

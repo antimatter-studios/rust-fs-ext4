@@ -19,6 +19,17 @@ config="${FS_EXT4_GUEST_SSH:-}"
     exit 1
 }
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+# The resource profile's limits, which `serve` read from the harness: the
+# in-guest build and test run with as many jobs and threads as it allows,
+# not one per guest CPU, as the harness's own guest runs do.
+limits=""
+for name in CARGO_BUILD_JOBS FLTH_BUILD_JOBS FLTH_TEST_JOBS RUST_TEST_THREADS; do
+    [[ "${!name:-}" =~ ^[1-9][0-9]*$ ]] || {
+        echo "ci-guest-suite.sh: $name is not set; 'scripts/ci-qemu-runner.sh serve' sets it from the resource profile." >&2
+        exit 1
+    }
+    limits+=" $name=${!name}"
+done
 ssh_guest() { ssh -F "$config" guest "$@"; }
 
 ssh_guest 'rm -rf /repo /rust-fs-core /share/siblings && mkdir -p /repo /share/siblings' </dev/null
@@ -33,6 +44,6 @@ for sibling in rust-fs-core; do
         ssh_guest "mkdir -p /share/siblings/$sibling && tar -xf - -C /share/siblings/$sibling"
 done
 
-command="cd /repo && FLTH_GUEST=1 exec bash scripts/guest-suite.sh"
+command="cd /repo && FLTH_GUEST=1$limits exec bash scripts/guest-suite.sh"
 for word in "$@"; do command+=" $(printf %q "$word")"; done
 exec ssh -n -F "$config" guest "$command"

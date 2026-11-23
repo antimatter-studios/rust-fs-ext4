@@ -312,7 +312,7 @@ ssh_args=(-F /dev/null -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=n
     -o ServerAliveCountMax=4 -p "$port" root@127.0.0.1)
 boot_started="$(date +%s)"
 boot_deadline_seconds=900
-if [ "$accel" = tcg ]; then boot_deadline_seconds=1800; fi
+if [ "$accel" = tcg ]; then boot_deadline_seconds=3600; fi
 printf 'boot_budget_seconds=%s\nssh_connect_seconds=30\nprobe_budget_seconds=120\n' \
     "$boot_deadline_seconds" >"$state/boot-policy.txt"
 emergency_reported=false

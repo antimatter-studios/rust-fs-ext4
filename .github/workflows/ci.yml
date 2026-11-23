@@ -351,7 +351,10 @@ jobs:
     runs-on: antimatter-vps-linux-x64
     # The runner has no KVM: the guest is emulated (TCG), several times slower
     # than the KVM guest this job used to boot.
-    timeout-minutes: 150
+    # One build job and one test thread (FLTH_RESOURCE_PROFILE low, applied by
+    # scripts/ci-qemu-runner.sh serve) keep the 4-CPU runner's load down, and
+    # take longer: the limit is long so a slow, healthy run finishes.
+    timeout-minutes: 240
     steps:
       - uses: actions/checkout@v4
       - name: Install chore
@@ -405,7 +408,10 @@ jobs:
     runs-on: antimatter-vps-linux-x64
     # Every test executable runs in the emulated (TCG) guest: the runner has
     # no KVM, and that is several times slower than the KVM guest was.
-    timeout-minutes: 360
+    # One build job and one test thread (FLTH_RESOURCE_PROFILE low, applied by
+    # scripts/ci-qemu-runner.sh serve) keep the 4-CPU runner's load down, and
+    # take longer: the limit is long so a slow, healthy run finishes.
+    timeout-minutes: 600
     steps:
       - uses: actions/checkout@v4
       - name: C toolchain for the gated runner
@@ -514,7 +520,10 @@ jobs:
     runs-on: antimatter-vps-linux-x64
     # The runner is x86_64 without KVM: every test executable runs in an
     # emulated (TCG) ARM64 guest.
-    timeout-minutes: 300
+    # One build job and one test thread (FLTH_RESOURCE_PROFILE low, applied by
+    # scripts/ci-qemu-runner.sh serve) keep the 4-CPU runner's load down, and
+    # take longer: the limit is long so a slow, healthy run finishes.
+    timeout-minutes: 480
     steps:
       - uses: actions/checkout@v4
       - name: C toolchain for the gated runner
@@ -624,7 +633,10 @@ jobs:
     runs-on: antimatter-vps-linux-x64
     # The guest compiles the whole suite emulated (TCG): the runner has no
     # KVM, and that is several times slower than the KVM guest was.
-    timeout-minutes: 420
+    # One build job and one test thread (FLTH_RESOURCE_PROFILE low, applied by
+    # scripts/ci-qemu-runner.sh serve) keep the 4-CPU runner's load down, and
+    # take longer: the limit is long so a slow, healthy run finishes.
+    timeout-minutes: 600
     steps:
       - uses: actions/checkout@v4
       - name: Install chore

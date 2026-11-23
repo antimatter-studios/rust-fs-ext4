@@ -22,7 +22,7 @@ fi
 environment=()
 for name in GH_TOKEN GITHUB_ACTOR GITHUB_REPOSITORY GITHUB_RUN_ID GITHUB_RUN_ATTEMPT GITHUB_JOB GITHUB_SHA \
     GITHUB_ACTIONS BENCH_CACHE_REGISTRY BENCH_READY_AT BENCH_JOB_STARTED_AT BENCH_REQUESTED_RUNNER \
-    BENCH_SELECTED_RUNNER BENCH_RUNNER_ENVIRONMENT BENCH_RUNNER_NAME QEMU_TCG_CPU QEMU_TCG_ACCEL; do
+    BENCH_SELECTED_RUNNER BENCH_RUNNER_ENVIRONMENT BENCH_RUNNER_NAME QEMU_TCG_CPU QEMU_TCG_ACCEL RUNNER_NAME; do
     if [ -n "${!name:-}" ]; then environment+=(-e "$name"); fi
 done
 # The runner container gets no CPU or memory limit from this script. The
@@ -55,6 +55,28 @@ if [ "$operation" = serve ]; then
         CARGO_TERM_COLOR FLTH_RESOURCE_PROFILE OUTPUT_BUDGET_VERBOSE OUTPUT_BUDGET_FAIL_TAIL; do
         if [ -n "${!name:-}" ]; then environment+=(-e "$name"); fi
     done
+    # THE RESOURCE PROFILE'S LIMITS. The guest is emulated, and the runner
+    # has 4 CPUs: Cargo's default of one job per CPU, and libtest's one
+    # thread per CPU, beside the guest's own CPU threads, drove the load
+    # past 100 and killed the container and the guest's kernel. The harness
+    # says what FLTH_RESOURCE_PROFILE allows (`vm.sh config`; `low` is one
+    # build job and one test thread), and the same numbers go to Cargo
+    # here, to every test executable cargo runs in the guest
+    # (scripts/ci-guest-run.sh passes RUST_* on) and to the in-guest suite
+    # (scripts/ci-guest-suite.sh). No profile, no default: it fails.
+    harness_vm="$repo/../fs-linux-test-harness/scripts/vm.sh"
+    [ -x "$harness_vm" ] || { echo 'serve reads the resource profile from the harness; run chore siblings first' >&2; exit 1; }
+    profile_config="$(cd "$repo" && "$harness_vm" config)"
+    build_jobs="$(printf '%s\n' "$profile_config" | sed -n 's/^vm\.build_jobs=//p')"
+    test_jobs="$(printf '%s\n' "$profile_config" | sed -n 's/^vm\.test_jobs=//p')"
+    resource_profile="$(printf '%s\n' "$profile_config" | sed -n 's/^resource\.profile=//p')"
+    [[ "$build_jobs" =~ ^[1-9][0-9]*$ && "$test_jobs" =~ ^[1-9][0-9]*$ ]] || {
+        echo "serve: the harness gave no build and test job limits (build=$build_jobs test=$test_jobs)" >&2
+        exit 1
+    }
+    echo "serve: resource profile $resource_profile: CARGO_BUILD_JOBS=$build_jobs RUST_TEST_THREADS=$test_jobs"
+    environment+=(-e "CARGO_BUILD_JOBS=$build_jobs" -e "FLTH_BUILD_JOBS=$build_jobs"
+        -e "FLTH_TEST_JOBS=$test_jobs" -e "RUST_TEST_THREADS=$test_jobs")
     # Cargo builds here and its target runner runs each test executable in
     # the guest (scripts/ci-guest-run.sh): natively for an x86_64 guest, and
     # for an ARM64 guest with the environment's cross toolchain.
