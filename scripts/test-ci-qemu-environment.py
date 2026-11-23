@@ -15,6 +15,121 @@ DIGEST = "a" * 64
 
 
 class EnvironmentCommands(unittest.TestCase):
+    def test_full_preparation_has_a_workload_specific_job_deadline(self):
+        workflow = (ROOT / ".github/workflows/qemu-prepare.yml").read_text()
+        preparation = workflow.split("  prepare:\n", 1)[1]
+        self.assertIn("timeout-minutes: ${{ inputs.workload == 'full' && 180 || 45 }}", preparation)
+
+    def test_warm_restore_recovers_ownership_before_its_separate_upload(self):
+        workflow = (ROOT / ".github/workflows/qemu-prepare.yml").read_text()
+        recovery = re.search(
+            r"      - name: Restore warm-restore diagnostic ownership\n(.*?)"
+            r"      - name: Preserve warm-restore evidence\n", workflow, re.S)
+        self.assertIsNotNone(recovery)
+        self.assertIn("if: always()", recovery[1])
+        self.assertIn("run: bash scripts/ci-qemu-diagnostics.sh", recovery[1])
+
+    def diagnostic_recovery_program(self):
+        action = (ROOT / ".github/actions/qemu-benchmark/action.yml").read_text()
+        recovery = re.search(
+            r"    - name: Restore diagnostic ownership after interruption\n(.*?)"
+            r"    - name: Preserve measurements and failures\n", action, re.S)
+        self.assertIsNotNone(recovery, "interrupted containers must not strand root-owned diagnostics")
+        self.assertIn("if: always()", recovery[1])
+        self.assertIn("run: bash scripts/ci-qemu-diagnostics.sh", recovery[1])
+        return "bash scripts/ci-qemu-diagnostics.sh"
+
+    def execute_diagnostic_recovery(self, failure=0, image="ghcr.io/example/repo/qemu-pilot@sha256:" + DIGEST):
+        shutil.copyfile(ROOT / "scripts/ci-qemu-diagnostics.sh",
+                        self.repo / "scripts/ci-qemu-diagnostics.sh")
+        evidence = self.repo / "tmp/qemu-benchmark"
+        if evidence.is_dir() and not evidence.is_symlink() and image is not None:
+            (evidence / "runner-image.txt").write_text(image + "\n")
+        docker = self.root / "tools/docker"
+        docker.write_text('''#!/usr/bin/env python3
+import json, os, pathlib, sys
+arguments = sys.argv[1:]
+with open(os.environ['DOCKER_TRACE'], 'a') as trace:
+    trace.write(json.dumps(arguments) + '\\n')
+assert arguments[:2] == ['run', '--rm'], arguments
+assert arguments[arguments.index('--entrypoint') + 1] == 'chown', arguments
+assert arguments[-4] == '-hRP', arguments
+assert arguments[-2] == '--', arguments
+assert arguments[-1] == '/evidence', arguments
+if int(os.environ['RECOVERY_FAILURE']):
+    sys.exit(int(os.environ['RECOVERY_FAILURE']))
+mount = arguments[arguments.index('--mount') + 1]
+directory = pathlib.Path(mount.removeprefix('type=bind,src=').removesuffix(',dst=/evidence'))
+directory.chmod(0o700)
+for current, directories, files in os.walk(directory):
+    for name in directories:
+        child = pathlib.Path(current) / name
+        if not child.is_symlink():
+            child.chmod(0o700)
+''')
+        docker.chmod(0o755)
+        return subprocess.run(
+            ["bash", "-c", self.diagnostic_recovery_program()], cwd=self.repo,
+            env=dict(self.env, RECOVERY_FAILURE=str(failure)), capture_output=True, text=True,
+            check=False, timeout=5)
+
+    def test_interrupted_container_diagnostics_are_recovered_before_upload(self):
+        evidence = self.repo / "tmp/qemu-benchmark/interrupted"
+        evidence.mkdir(parents=True)
+        console = evidence / "console.log"
+        console.write_text("last progress before the job was cancelled\n")
+        evidence.chmod(0)
+        self.addCleanup(evidence.chmod, 0o700)
+        result = self.execute_diagnostic_recovery()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(console.read_text(), "last progress before the job was cancelled\n")
+        self.assertEqual(self.calls(), [[
+            "run", "--rm", "--pull=never", "--network", "none", "--read-only",
+            "--cap-drop", "ALL", "--cap-add", "CHOWN", "--cap-add", "DAC_OVERRIDE",
+            "--security-opt", "no-new-privileges", "--user", "0:0",
+            "--mount", f"type=bind,src={self.repo.resolve()}/tmp/qemu-benchmark,dst=/evidence",
+            "--entrypoint", "chown", "ghcr.io/example/repo/qemu-pilot@sha256:" + DIGEST,
+            "-hRP", f"{os.getuid()}:{os.getgid()}", "--", "/evidence"]])
+
+    def test_diagnostic_recovery_ignores_missing_and_symlinked_roots(self):
+        outside = self.root / "outside"
+        outside.mkdir()
+        temporary = self.repo / "tmp"
+        temporary.mkdir()
+        (temporary / "qemu-images").symlink_to(outside, target_is_directory=True)
+        result = self.execute_diagnostic_recovery()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((self.root / "docker.jsonl").exists())
+
+    def test_diagnostic_ownership_failures_remain_failures(self):
+        (self.repo / "tmp/qemu-benchmark").mkdir(parents=True)
+        result = self.execute_diagnostic_recovery(failure=33)
+        self.assertEqual(result.returncode, 33, result.stderr)
+
+    def test_diagnostic_recovery_rejects_missing_or_mutable_runner_identity(self):
+        (self.repo / "tmp/qemu-benchmark").mkdir(parents=True)
+        for image in (None, "ghcr.io/example/repo/qemu-pilot:latest", "--privileged",
+                      "ghcr.io/example/repo/qemu-pilot@sha256:" + DIGEST + "\nextra"):
+            with self.subTest(image=image):
+                result = self.execute_diagnostic_recovery(image=image)
+                self.assertNotEqual(result.returncode, 0, result.stderr)
+                self.assertIn("diagnostic recovery requires", result.stderr)
+                self.assertFalse((self.root / "docker.jsonl").exists())
+
+    def test_diagnostic_recovery_scopes_both_roots_without_following_links(self):
+        (self.repo / "tmp/qemu-benchmark").mkdir(parents=True)
+        images = self.repo / "tmp/qemu-images"
+        images.mkdir()
+        outside = self.root / "outside"
+        outside.mkdir(mode=0o755)
+        (images / "external").symlink_to(outside, target_is_directory=True)
+        result = self.execute_diagnostic_recovery()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(self.calls()), 2)
+        self.assertEqual(self.calls()[1][self.calls()[1].index("--mount") + 1],
+                         f"type=bind,src={images.resolve()},dst=/evidence")
+        self.assertEqual(outside.stat().st_mode & 0o777, 0o755)
+
     def test_preparation_bootstrap_works_without_local_bin_on_path(self):
         workflow = (ROOT / ".github/workflows/qemu-prepare.yml").read_text()
         programs = [textwrap.dedent(match[2]) for match in re.finditer(

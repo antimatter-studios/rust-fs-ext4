@@ -12,6 +12,7 @@ on:
       - scripts/qemu-runner/**
       - scripts/qemu-guest-network.yaml
       - scripts/test-ci-qemu-benchmark.sh
+      - scripts/test-report-qemu-benchmark.py
       - scripts/report-qemu-benchmark.py
   workflow_dispatch:
     inputs:
@@ -128,7 +129,9 @@ jobs:
       - name: Compare total time to result, not execution speed alone
         env:
           GH_TOKEN: ${{ github.token }}
+          WORKLOAD: ${{ inputs.workload || 'single' }}
+          SOURCE_COMMIT: ${{ github.sha }}
         run: |
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100" > tmp/benchmark-jobs.json
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" > tmp/benchmark-run.json
-          python3 scripts/report-qemu-benchmark.py tmp/benchmark-artifacts tmp/benchmark-jobs.json tmp/benchmark-run.json | tee -a "$GITHUB_STEP_SUMMARY"
+          python3 scripts/report-qemu-benchmark.py tmp/benchmark-artifacts tmp/benchmark-jobs.json tmp/benchmark-run.json "$WORKLOAD" "$SOURCE_COMMIT" | tee -a "$GITHUB_STEP_SUMMARY"

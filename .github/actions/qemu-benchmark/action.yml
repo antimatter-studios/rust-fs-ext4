@@ -70,6 +70,10 @@ runs:
         GH_TOKEN: ${{ github.token }}
         BENCH_CACHE_REGISTRY: ghcr.io/${{ github.repository }}/qemu-pilot
       run: bash scripts/ci-qemu-runner.sh "$MODE" "$ARCH" "$ACCELERATOR" "$WORKLOAD"
+    - name: Restore diagnostic ownership after interruption
+      if: always()
+      shell: bash
+      run: bash scripts/ci-qemu-diagnostics.sh
     - name: Preserve measurements and failures
       if: always()
       uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

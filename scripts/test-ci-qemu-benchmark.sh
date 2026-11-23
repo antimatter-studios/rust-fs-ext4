@@ -240,6 +240,9 @@ report = sys.argv[1]
 root = pathlib.Path(sys.argv[2]) / "measurements"
 root.mkdir()
 jobs = []
+passing_names = "first\nsecond\n" + "".join(f"case_{index}\n" for index in range(438))
+test_log = "".join(f"test {name} ... ok\n" for name in passing_names.splitlines())
+test_log += "test result: ok. 440 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.00s\n"
 for name, arch in (("hosted-x64", "x86_64"), ("vps-x64", "x86_64"),
                    ("hosted-arm64", "aarch64"), ("vps-arm64", "aarch64")):
     trial = root / name
@@ -253,8 +256,11 @@ for name, arch in (("hosted-x64", "x86_64"), ("vps-x64", "x86_64"),
         "runner_environment": "self-hosted" if vps else "github-hosted",
         "selected_runner": "antimatter-vps-linux-x64" if vps else "ubuntu-24.04",
     }))
-    (trial / "host.json").write_text(json.dumps({"job": name, "source_commit": "same", "core_commit": "same"}))
-    (trial / "passing-tests.txt").write_text("first\nsecond\n")
+    (trial / "host.json").write_text(json.dumps({
+        "job": name, "source_commit": "same", "core_commit": "same", "source_dirty": False,
+    }))
+    (trial / "passing-tests.txt").write_text(passing_names)
+    (trial / "tests.log").write_text(test_log)
     (trial / "rustc.txt").write_text(f"host: {arch}-unknown-linux-gnu\n")
     for metadata in ("builder-image.txt", "build-packages.txt", "test-cache-key.txt", "guest-packages.txt"):
         (trial / metadata).write_text("matching-input\n")
@@ -262,15 +268,59 @@ for name, arch in (("hosted-x64", "x86_64"), ("vps-x64", "x86_64"),
 jobs_path = root.parent / "jobs.json"
 jobs_path.write_text(json.dumps({"jobs": jobs}))
 run_path = root.parent / "run.json"
-run_path.write_text(json.dumps({"created_at": "1970-01-01T00:16:40Z"}))
+run_path.write_text(json.dumps({"created_at": "1970-01-01T00:16:40Z", "head_sha": "pull-request-head"}))
 
-def check(success, message):
-    result = subprocess.run([sys.executable, report, str(root), str(jobs_path), str(run_path)],
+def check(success, message, source_commit="same"):
+    result = subprocess.run([sys.executable, report, str(root), str(jobs_path), str(run_path), "smoke", source_commit],
                             capture_output=True, text=True)
     assert (result.returncode == 0) == success, result.stdout + result.stderr
     assert message in result.stdout, result.stdout
 
 check(True, "| 700 | 1800 | 2500 | passed |")
+for trial in root.iterdir():
+    identity_path = trial / "host.json"
+    identity = json.loads(identity_path.read_text())
+    identity["source_commit"] = "stale"
+    identity_path.write_text(json.dumps(identity))
+check(False, "does not match workflow source")
+for trial in root.iterdir():
+    identity_path = trial / "host.json"
+    identity = json.loads(identity_path.read_text())
+    identity["source_commit"] = "same"
+    identity_path.write_text(json.dumps(identity))
+for trial_name in ("hosted-arm64", "vps-arm64"):
+    result_path = root / trial_name / "result.json"
+    result = json.loads(result_path.read_text())
+    result["workload"] = "full"
+    result_path.write_text(json.dumps(result))
+check(False, "does not match requested workload smoke")
+for trial_name in ("hosted-arm64", "vps-arm64"):
+    result_path = root / trial_name / "result.json"
+    result = json.loads(result_path.read_text())
+    result["workload"] = "smoke"
+    result["guest_arch"] = "x86_64"
+    result_path.write_text(json.dumps(result))
+check(False, "expected aarch64 / tcg")
+for trial_name in ("hosted-arm64", "vps-arm64"):
+    result_path = root / trial_name / "result.json"
+    result = json.loads(result_path.read_text())
+    result["guest_arch"] = "aarch64"
+    result_path.write_text(json.dumps(result))
+accelerator_path = root / "hosted-x64" / "result.json"
+accelerator_original = accelerator_path.read_text()
+accelerator_result = json.loads(accelerator_original)
+accelerator_result["accelerator"] = "tcg"
+accelerator_path.write_text(json.dumps(accelerator_result))
+check(False, "expected x86_64 / kvm")
+accelerator_path.write_text(accelerator_original)
+check(False, "missing workflow source commit", source_commit="")
+identity_path = root / "hosted-x64" / "host.json"
+identity_original = identity_path.read_text()
+identity = json.loads(identity_original)
+identity["job"] = "unexpected-x64"
+identity_path.write_text(json.dumps(identity))
+check(False, "unexpected trial identity")
+identity_path.write_text(identity_original)
 target = root / "vps-arm64" / "result.json"
 original = target.read_text()
 value = json.loads(original)
@@ -285,7 +335,7 @@ check(False, "missing build_mode")
 target.write_text(original)
 (root / "vps-arm64" / "passing-tests.txt").write_text("different\n")
 check(False, "passing-tests.txt differs")
-(root / "vps-arm64" / "passing-tests.txt").write_text("first\nsecond\n")
+(root / "vps-arm64" / "passing-tests.txt").write_text(passing_names)
 value = json.loads(original)
 value["status"] = 137
 target.write_text(json.dumps(value))
@@ -296,5 +346,6 @@ PY
 
 python3 "$repo/scripts/test-ci-qemu-artifacts.py"
 python3 "$repo/scripts/test-ci-qemu-environment.py"
+python3 "$repo/scripts/test-report-qemu-benchmark.py"
 
 echo 'PASS: architecture, accelerator, queue accounting, fallback and matching-workload checks'

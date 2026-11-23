@@ -46,11 +46,22 @@ if [ -n "${GH_TOKEN:-}" ]; then
 fi
 reference="$registry:$kind-$arch-$key"
 if [ "$operation" = pull ]; then
-    if oras pull "$reference" --output "$directory" "${auth[@]}" >"$config/pull.log" 2>&1; then
+    if digest="$(oras resolve "$reference" "${auth[@]}" 2>"$config/resolve.log")"; then
+        cat "$config/resolve.log" >&2
+    else
+        cat "$config/resolve.log" >&2
+        if grep -Eiq 'manifest[ _]unknown|name[ _]unknown' "$config/resolve.log" ||
+            grep -Fq "$reference: not found" "$config/resolve.log"; then
+            printf 'OCI cache miss: %s\n' "$reference"
+            exit 3
+        fi
+        exit 1
+    fi
+    [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo 'invalid OCI cache manifest digest' >&2; exit 1; }
+    immutable="$registry@$digest"
+    if oras pull "$immutable" --output "$directory" "${auth[@]}" >"$config/pull.log" 2>&1; then
         cat "$config/pull.log"
-    elif grep -Eiq 'not found|manifest_unknown|name_unknown' "$config/pull.log"; then
-        printf 'OCI cache miss: %s\n' "$reference"
-        exit 3
+        printf '%s\n' "$immutable" >"$directory/cache-reference.txt"
     else
         cat "$config/pull.log" >&2
         exit 1
