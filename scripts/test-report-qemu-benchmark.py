@@ -3,9 +3,13 @@ import contextlib
 import importlib.util
 import io
 import json
+import http.server
+import os
 import pathlib
+import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 
 
@@ -258,7 +262,84 @@ class ExecutedTestEvidence(unittest.TestCase):
         self.check_report(0)
 
 
+class ReportInputFetch(unittest.TestCase):
+    """The report job's API inputs arrive without `gh`, which the VPS lacks."""
+
+    FETCH = pathlib.Path(__file__).with_name("ci-qemu-run-api.py")
+    WORKFLOW = pathlib.Path(__file__).resolve().parent.parent / ".github/workflows/qemu-benchmark.yml"
+
+    def setUp(self):
+        self.requests = []
+        self.status = 200
+        self.body = b'{"jobs": []}'
+        test = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                test.requests.append((self.path, dict(self.headers)))
+                self.send_response(test.status)
+                self.end_headers()
+                self.wfile.write(test.body)
+
+            def log_message(self, *args):
+                pass
+
+        self.server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.addCleanup(self.server.server_close)
+        self.addCleanup(self.server.shutdown)
+        self.scratch = tempfile.TemporaryDirectory()
+        self.addCleanup(self.scratch.cleanup)
+        self.output = pathlib.Path(self.scratch.name) / "out.json"
+
+    def fetch(self, path, token="secret-token"):
+        # A PATH holding only this Python: no gh can be found.
+        bin_dir = pathlib.Path(self.scratch.name) / "bin"
+        bin_dir.mkdir(exist_ok=True)
+        environment = {"PATH": str(bin_dir), "GH_TOKEN": token,
+                       "GITHUB_API_URL": f"http://127.0.0.1:{self.server.server_port}"}
+        return subprocess.run([sys.executable, str(self.FETCH), path, str(self.output)],
+                              env=environment, capture_output=True, text=True)
+
+    def test_fetch_needs_no_gh(self):
+        path = "repos/o/r/actions/runs/7/attempts/2/jobs?per_page=100"
+        result = self.fetch(path)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.output.read_bytes(), self.body)
+        self.assertEqual(self.requests[0][0], "/" + path)
+        self.assertEqual(self.requests[0][1]["Authorization"], "Bearer secret-token")
+
+    def test_http_failure_fails_and_writes_nothing(self):
+        self.status = 403
+        result = self.fetch("repos/o/r/actions/runs/7")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("HTTP 403", result.stderr)
+        self.assertFalse(self.output.exists())
+
+    def test_non_json_body_fails(self):
+        self.body = b"<html>"
+        self.assertNotEqual(self.fetch("repos/o/r/actions/runs/7").returncode, 0)
+        self.assertFalse(self.output.exists())
+
+    def test_missing_token_fails(self):
+        result = self.fetch("repos/o/r/actions/runs/7", token="")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.requests, [])
+
+    def test_workflow_fetches_both_inputs_without_gh(self):
+        step = self.WORKFLOW.read_text().split("  report:\n", 1)[1]
+        self.assertNotRegex(step, r"(?m)^\s+gh ")
+        self.assertIn('python3 scripts/ci-qemu-run-api.py "repos/$GITHUB_REPOSITORY/actions/runs/'
+                      '$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100" '
+                      "tmp/benchmark-jobs.json", step)
+        self.assertIn('python3 scripts/ci-qemu-run-api.py "repos/$GITHUB_REPOSITORY/actions/runs/'
+                      '$GITHUB_RUN_ID" tmp/benchmark-run.json', step)
+        self.assertIn("GH_TOKEN: ${{ github.token }}", step)
+
+
 if __name__ == "__main__":
-    suite = unittest.defaultTestLoader.loadTestsFromTestCase(ExecutedTestEvidence)
+    loader = unittest.defaultTestLoader
+    suite = unittest.TestSuite([loader.loadTestsFromTestCase(ExecutedTestEvidence),
+                                loader.loadTestsFromTestCase(ReportInputFetch)])
     result = unittest.TextTestRunner(verbosity=2).run(suite)
     sys.exit(not result.wasSuccessful())
