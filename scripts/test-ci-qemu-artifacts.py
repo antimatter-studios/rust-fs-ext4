@@ -127,6 +127,9 @@ class ArtifactTests(unittest.TestCase):
         policy("prepare", "x86_64", "tcg", "x86_64", False)
         policy("prepare", "x86_64", "kvm", "x86_64", False)
         policy("prepare", "aarch64", "tcg", "aarch64", False)
+        # CI's VM jobs set a cold guest up live and publish nothing.
+        policy("serve", "x86_64", "tcg", "x86_64", False)
+        policy("serve", "aarch64", "tcg", "x86_64", False)
         # Hardware acceleration is never emulated: KVM needs a native x86_64 host.
         for arch, host in (("aarch64", "x86_64"), ("x86_64", "aarch64"), ("aarch64", "aarch64")):
             with self.subTest(arch=arch, host=host), self.assertRaisesRegex(ValueError, "native x86_64"):

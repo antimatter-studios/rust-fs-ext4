@@ -495,8 +495,10 @@ tasks:
       - test-disks/ext4-largedir.img
       - test-disks/ext4-manyfiles.img
       - test-disks/ext4-whole-disk.img
-    # A hung boot must not hold up the shared guest for ever.
-    timeout: 60m
+    # A hung boot must not hold up the shared guest for ever. Long enough for
+    # CI's emulated (TCG) guest on a runner without KVM, which builds the same
+    # images several times slower than a KVM guest.
+    timeout: 120m
     on_timeout:
       - cmd: '../fs-linux-test-harness/scripts/vm.sh down || ../fs-linux-test-harness/scripts/vm.sh destroy'
     cmds: ['test-disks/build-fixtures.sh']
@@ -685,8 +687,10 @@ tasks:
     # scripts/guest-suite.sh, through the harness's [test] guest_command.
     # The toolchain and the build directory live on the VM's own disk, so
     # the first run pays a full build and later runs are incremental.
-    # The guest stays up afterwards, for the next run.
-    timeout: 120m
+    # The guest stays up afterwards, for the next run. Long enough for CI's
+    # emulated (TCG) guest on a runner without KVM, which compiles the suite
+    # several times slower than a KVM guest.
+    timeout: 360m
     on_timeout:
       - cmd: '../fs-linux-test-harness/scripts/vm.sh down || ../fs-linux-test-harness/scripts/vm.sh destroy'
     cmds:
@@ -698,21 +702,6 @@ tasks:
       # nothing uncommitted.
       - |
         set -eu
-        [ -x ../fs-linux-test-harness/scripts/vm.sh ] || {
-          echo "test:vm needs the harness sibling -- run 'chore siblings'." >&2
-          exit 1
-        }
-        share="$(../fs-linux-test-harness/scripts/vm.sh share)"
-        for sibling in rust-fs-core; do
-          [ -e "../$sibling/.git" ] || {
-            echo "test:vm: ../$sibling is not checked out -- run 'chore siblings'." >&2
-            exit 1
-          }
-          dest="$share/siblings/$sibling"
-          rm -rf "$dest"
-          mkdir -p "$dest"
-          git -C "../$sibling" archive --format=tar HEAD | tar -x -C "$dest"
-        done
         # --verbose is ours, not cargo's: tier.sh reads it out of CLI_ARGS
         # and streams, and it must not also reach the in-guest `cargo test`,
         # where it would mean something else entirely.
@@ -721,9 +710,33 @@ tasks:
           case "$arg" in --verbose|-v) continue ;; esac
           guest_args="$guest_args $arg"
         done
-        # shellcheck disable=SC2086  # the words are the point
-        bash ../rust-fs-core/scripts/tier.sh test:vm vm 3900 193000 -- \
-          ../fs-linux-test-harness/scripts/vm.sh guest-test $guest_args
+        # A CI runner without KVM runs the same in-guest suite in the guest
+        # `scripts/ci-qemu-runner.sh serve` booted beside this task, which
+        # stages the same siblings (scripts/ci-guest-suite.sh).
+        if [ -n "${FS_EXT4_GUEST_SSH:-}" ]; then
+          # shellcheck disable=SC2086  # the words are the point
+          bash ../rust-fs-core/scripts/tier.sh test:vm vm 3900 193000 -- \
+            scripts/ci-guest-suite.sh $guest_args
+        else
+          [ -x ../fs-linux-test-harness/scripts/vm.sh ] || {
+            echo "test:vm needs the harness sibling -- run 'chore siblings'." >&2
+            exit 1
+          }
+          share="$(../fs-linux-test-harness/scripts/vm.sh share)"
+          for sibling in rust-fs-core; do
+            [ -e "../$sibling/.git" ] || {
+              echo "test:vm: ../$sibling is not checked out -- run 'chore siblings'." >&2
+              exit 1
+            }
+            dest="$share/siblings/$sibling"
+            rm -rf "$dest"
+            mkdir -p "$dest"
+            git -C "../$sibling" archive --format=tar HEAD | tar -x -C "$dest"
+          done
+          # shellcheck disable=SC2086  # the words are the point
+          bash ../rust-fs-core/scripts/tier.sh test:vm vm 3900 193000 -- \
+            ../fs-linux-test-harness/scripts/vm.sh guest-test $guest_args
+        fi
         # cli_export_kernel.rs adds two cases to the whole-suite floor.
         # cli_import_kernel.rs adds three more cases.
         # #536 adds one unit case and two kernel cases.

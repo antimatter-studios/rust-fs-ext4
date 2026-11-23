@@ -34,12 +34,15 @@ def normalize_arch(arch):
 
 
 def guest_policy(action, arch, accelerator, host_arch, cache_hit):
-    if action not in ("run", "prepare", "prepare-local"):
+    if action not in ("run", "prepare", "prepare-local", "serve"):
         raise ValueError(f"unsupported guest operation: {action}")
     arch, host_arch = normalize_arch(arch), normalize_arch(host_arch)
     if accelerator == "hvf" and (arch != "aarch64" or host_arch != "aarch64"):
         raise ValueError("HVF requires a native ARM64 guest and host")
     if cache_hit:
+        return
+    if action == "serve":
+        # CI's VM jobs: a cold guest is set up live and never published.
         return
     if action == "run":
         raise ValueError("prepared guest cache miss; run the QEMU guest preparation workflow first; cold setup is forbidden in measured trials")

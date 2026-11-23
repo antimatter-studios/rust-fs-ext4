@@ -12,7 +12,8 @@ action="${1:-}"
 arch="${2:-}"
 accel="${3:-}"
 workload="${4:-smoke}"
-case "$action" in plan|run|prepare|prepare-local) ;; *) echo 'usage: ci-qemu-benchmark.sh plan|run|prepare|prepare-local x86_64|aarch64 kvm|tcg|hvf [single|smoke|full]' >&2; exit 2 ;; esac
+case "$action" in plan|run|prepare|prepare-local|serve) ;; *) echo 'usage: ci-qemu-benchmark.sh plan|run|prepare|prepare-local x86_64|aarch64 kvm|tcg|hvf [single|smoke|full]
+       ci-qemu-benchmark.sh serve x86_64|aarch64 kvm|tcg full -- <command...>' >&2; exit 2 ;; esac
 case "$arch" in amd64) arch=x86_64 ;; arm64) arch=aarch64 ;; esac
 case "$arch/$accel" in x86_64/kvm|x86_64/tcg|aarch64/tcg|aarch64/hvf) ;; *) echo "unsupported guest/accelerator: $arch/$accel" >&2; exit 2 ;; esac
 if [ "$action" = prepare-local ] && [ "${GITHUB_ACTIONS:-}" = true ]; then
@@ -22,6 +23,19 @@ fi
 preparation=false
 case "$action" in prepare|prepare-local) preparation=true ;; esac
 case "$workload" in single|smoke|full) ;; *) echo "unsupported workload: $workload" >&2; exit 2 ;; esac
+# SERVE: boot the guest the `full` preparation describes, then run a command
+# HERE, beside it, with FS_EXT4_GUEST_SSH naming an ssh config whose host
+# `guest` is that guest. CI's VM jobs run their chore tasks this way on a
+# runner without KVM: they build on this host and run in the guest. A guest
+# cache miss sets the same tools up in this live guest and publishes nothing.
+serve_command=()
+if [ "$action" = serve ]; then
+    [ "$workload" = full ] || { echo 'serve uses the full guest preparation' >&2; exit 2; }
+    shift 4 || { echo 'serve needs -- <command...>' >&2; exit 2; }
+    [ "${1:-}" = -- ] && shift
+    [ "$#" -gt 0 ] || { echo 'serve needs -- <command...>' >&2; exit 2; }
+    serve_command=("$@")
+fi
 
 disk=guest.qcow2
 seed=seed.iso
@@ -191,6 +205,7 @@ PY
     printf 'guest\tmiss\t%s\n' "$guest_key" >>"$state/cache-events.tsv"
 fi
 printf '%s\n' "$(( $(date +%s) - guest_restore_started ))" >"$state/guest-image-seconds.txt"
+if [ "$action" != serve ]; then
 progress 'restoring source-keyed native test bundle'
 build_started="$(date +%s)"
 if bash "$repo/scripts/ci-qemu-cache.sh" pull tests "$arch" "$test_key" "$state/test-bundle"; then
@@ -211,6 +226,7 @@ printf '%s\n' "$(( $(date +%s) - build_started ))" >"$state/host-build-seconds.t
 for metadata in rustc.txt compile.time builder-image.txt build-host-arch.txt build-packages.txt test-cache-key.txt; do
     cp "$state/test-bundle/$metadata" "$state/$metadata"
 done
+fi
 if "$preparation" && "$prepared_hit"; then
     progress 'prepared guest and test bundle are already available; no VM setup needed'
     exit 0
@@ -347,6 +363,46 @@ ssh "${ssh_args[@]}" 'rm -rf /repo /rust-fs-core /benchmark-target; mkdir -p /re
 COPYFILE_DISABLE=1 tar --no-xattrs -czf "$state/core-payload.tar.gz" --exclude=.git --exclude=target --exclude=tmp \
     -C "$repo/../rust-fs-core" .
 ssh "${ssh_args[@]}" 'tar -xzf - -C /rust-fs-core' <"$state/core-payload.tar.gz"
+if [ "$action" = serve ]; then
+    if ! "$prepared_hit"; then
+        # The same setup a full preparation runs (scripts/ci-qemu-guest.sh),
+        # in this live guest only: nothing here is published.
+        progress 'cold guest: installing the full preparation tools in this live guest'
+        ssh "${ssh_args[@]}" "cd /repo; export FLTH_GUEST=1 DEBIAN_FRONTEND=noninteractive \
+            RUSTUP_HOME=/var/lib/fs-ext4-rust/rustup CARGO_HOME=/var/lib/fs-ext4-rust/cargo; \
+            apt-get update && apt-get install -y time python3 binutils ripgrep ca-certificates && \
+            bash scripts/vm-setup.sh && bash ../rust-fs-core/scripts/guest-rust-toolchain.sh" \
+            2>&1 | tee "$state/cold-setup.log"
+    fi
+    # Short, because a socket path has a length limit: one connection is
+    # shared by every call the command makes.
+    control="/tmp/ext4-guest-$(basename "$state")"
+    cat >"$state/ssh_config" <<EOF
+Host guest
+    HostName 127.0.0.1
+    Port $port
+    User root
+    IdentityFile $state/key
+    IdentitiesOnly yes
+    IdentityAgent none
+    BatchMode yes
+    StrictHostKeyChecking yes
+    UserKnownHostsFile $state/known_hosts
+    GlobalKnownHostsFile /dev/null
+    ConnectTimeout 30
+    ServerAliveInterval 15
+    ServerAliveCountMax 8
+    ControlMaster auto
+    ControlPath $control
+    ControlPersist 900
+EOF
+    progress "guest ready; running beside it: ${serve_command[*]}"
+    result=0
+    FS_EXT4_GUEST_SSH="$state/ssh_config" FS_EXT4_GUEST_ARCH="$arch" "${serve_command[@]}" || result=$?
+    ssh -F "$state/ssh_config" -O exit guest 2>/dev/null || true
+    progress "served command finished; status=$result"
+    exit "$result"
+fi
 tar -cf - -C "$state/test-bundle" test-bundle.json test-bundle.tar.gz | \
     ssh "${ssh_args[@]}" 'mkdir -p /repo/tmp/test-bundle; tar -xf - -C /repo/tmp/test-bundle'
 progress "running guest workload=$workload (live setup and prebuilt test output; no guest compilation)"

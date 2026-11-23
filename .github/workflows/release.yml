@@ -16,6 +16,9 @@ on:
 # unpinned action or persists its token.
 permissions:
   contents: read
+  # jobs.test pulls the published runner environment and guest images
+  # (ghcr.io/<repository>/qemu-pilot); nothing here publishes them.
+  packages: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -36,6 +39,9 @@ jobs:
     name: test
     needs: test-gate
     runs-on: antimatter-vps-linux-x64
+    # Fixtures and every test executable run in the emulated (TCG) guest:
+    # the runner has no KVM.
+    timeout-minutes: 480
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
@@ -58,11 +64,12 @@ jobs:
 
       # The same gate as a pull request's CI, through the same chore
       # tasks: the siblings at their pinned refs (rust-fs-core for its
-      # scripts), the oracle tools, the kernel-made fixtures in
-      # the fs-linux-test-harness VM (ubuntu-latest is x86_64 with KVM),
-      # lint, and the whole suite -- which includes the e2fsck checks of
-      # the mkfs.ext4 tool (tests/mkfs_bin_fsck_oracle.rs) that used to
-      # be a job of their own here.
+      # scripts), the kernel-made fixtures and the oracle tools in the
+      # emulated Debian guest `scripts/ci-qemu-runner.sh serve` boots (the
+      # runner has no KVM; see ci.yml), lint, and the whole suite -- which
+      # includes the e2fsck checks of the mkfs.ext4 tool
+      # (tests/mkfs_bin_fsck_oracle.rs) that used to be a job of their own
+      # here.
       - name: install chore
         run: scripts/ci-install-chore.sh
       - name: chore siblings
@@ -72,24 +79,18 @@ jobs:
           toolchain: 1.95.0
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      # The VM host first: `chore tools` fails a Linux host without
-      # Vagrant, QEMU and /dev/kvm, and this is the step that installs
-      # them (tests/scripts/test-vm-host-before-tools.sh).
-      - name: Upstream virtiofsd 1.14.0
-        # Ubuntu 24.04 packages virtiofsd 1.10.0, which never answers a
-        # non-UTF-8 xattr name (fs-linux-test-harness #274). The tag must
-        # match LINUX_HARNESS_REF in chores.yml.
-        uses: antimatter-studios/fs-linux-test-harness/.github/actions/install-virtiofsd@v0.11.0
-      - name: KVM, QEMU and Vagrant
-        run: ../fs-linux-test-harness/scripts/ci-setup-linux.sh
-      - name: chore tools
-        run: chore tools
-      - name: chore fixtures
-        run: chore fixtures
+      - name: chore fixtures, in the emulated guest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BENCH_CACHE_REGISTRY: ghcr.io/${{ github.repository }}/qemu-pilot
+        run: bash scripts/ci-qemu-runner.sh serve x86_64 tcg full -- chore fixtures
       - name: chore lint
         run: chore lint
-      - name: chore test
-        run: chore test
+      - name: chore test, every test executable in the emulated guest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BENCH_CACHE_REGISTRY: ghcr.io/${{ github.repository }}/qemu-pilot
+        run: bash scripts/ci-qemu-runner.sh serve x86_64 tcg full -- chore test
 
   cli:
     needs: [test, publish]
