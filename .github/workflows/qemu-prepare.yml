@@ -78,10 +78,12 @@ jobs:
           # under TCG, in the x86_64 runner environment published above.
           - arch: x86_64
             accelerator: tcg
+            prepare_minutes: 45
           - arch: aarch64
             accelerator: tcg
+            prepare_minutes: 120
     runs-on: antimatter-vps-linux-x64
-    timeout-minutes: ${{ inputs.workload == 'full' && 180 || 45 }}
+    timeout-minutes: ${{ inputs.workload == 'full' && 180 || matrix.prepare_minutes }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:

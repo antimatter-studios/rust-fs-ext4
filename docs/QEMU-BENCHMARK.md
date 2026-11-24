@@ -136,16 +136,25 @@ required predecessor queued ahead of every warm VPS run. On first use, wait for
 the preparation workflow to publish both images, then rerun the measurement
 workflow once. A missing-image failure before that is a prerequisite failure,
 not an emulator benchmark. Single-test measurements have a 10-minute guest
-workload deadline and 30-minute job limit. Single-test preparation has a
-30-minute guest setup/test deadline and a 45-minute job limit. Do not stretch
-these single-test deadlines to repeat the failed cold experiment; if preparation
-or a warm single test is still impractical, stop the pilot instead of rolling
-it out. Full preparation retains its existing 7,200-second guest workload
-deadline and uses a 180-minute job limit, matching the full benchmark jobs.
-The outer limit covers preparation, publication and the separate warm-overlay
-verification; the old 45-minute limit cancelled progressing ARM64 full tests
-in run 45091356059 before publication. This is not full-workload success or
-permission to skip a test, publish a live disk or provision during warm trials.
+workload deadline and a 30-minute job limit. Single-test preparation keeps its
+30-minute guest setup/test deadline. Its outer job limit covers cold setup,
+publication and a separate warm-overlay verification. The same outer limits
+apply to smoke preparation: 45 minutes for x86_64 and 120 for aarch64. Full
+preparation keeps its 7,200-second guest workload deadline and 180-minute job
+limit on both architectures, matching the full benchmark jobs.
+
+In run 45313336976, x86_64 finished in 31m38s, including 5m42s of warm
+verification. The aarch64 job (138188330073) took 18m25s to boot and reached
+guest setup 24 minutes into the job. GitHub cancelled it at its 45-minute
+limit, still in setup; run 45299228221 also reached setup and was cancelled
+at that limit. For aarch64, allow 24 minutes to reach setup, 30 for the
+single-test guest deadline, 6 for publication and warm startup/transfer,
+30 for warm boot (a served aarch64 guest on the same PR took nearly that
+long to boot), and 10 for the warm single test. The 120-minute job limit
+leaves 20 minutes above that 100-minute estimate. This is an estimate, not
+a measured ARM64 finish or a reason to change the guest workload deadlines.
+If preparation or warm single-test verification still cannot finish within
+their guest deadlines, stop the pilot instead of rolling it out.
 
 An always-run step restores ownership of the generated diagnostic and image
 directories before artifact upload, without requesting host privilege. It uses
