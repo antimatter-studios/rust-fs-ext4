@@ -127,5 +127,71 @@ status=$?
 [ "$status" = 1 ] || note "qemu: status $status, not 1"
 grep -q "QEMU (pid $dead_qemu) exited" "$scratch/qemu/out" || note 'qemu: no reason given'
 
+cold_setup=$(sed -n "/<<'GUEST'/,/^GUEST\$/p" "$REPO/scripts/ci-qemu-benchmark.sh" | sed '1d;$d')
+mkdir -p "$scratch/dns-bin" "$scratch/dns/repo/scripts" "$scratch/dns/rust-fs-core/scripts"
+printf 'echo vm-setup\napt-get update -qq\n' >"$scratch/dns/repo/scripts/vm-setup.sh"
+printf 'echo toolchain-setup\n' >"$scratch/dns/rust-fs-core/scripts/guest-rust-toolchain.sh"
+cat >"$scratch/dns-bin/timeout" <<'EOF'
+#!/usr/bin/env bash
+shift
+exec "$@"
+EOF
+cat >"$scratch/dns-bin/getent" <<'EOF'
+#!/usr/bin/env bash
+[[ "$*" == 'ahostsv4 deb.debian.org' ]] || exit 2
+case "$DNS_CASE" in
+    healthy) exit 0 ;;
+    transient) [ -f "$CASE/probed" ] && exit 0; touch "$CASE/probed"; exit 2 ;;
+    fallback) [ -s "$CASE/resolver" ] ;;
+    unavailable) exit 2 ;;
+esac
+EOF
+cat >"$scratch/dns-bin/ip" <<'EOF'
+#!/usr/bin/env bash
+echo 'default via 10.0.2.2 dev enp0s3 proto static'
+EOF
+cat >"$scratch/dns-bin/resolvectl" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in
+    'dns enp0s3 1.1.1.1 8.8.8.8') echo fallback >"$CASE/resolver" ;;
+    'dns enp0s3 10.0.2.3') : >"$CASE/resolver"; echo 'restored QEMU DNS' ;;
+    'flush-caches') ;;
+    status) echo 'resolver status snapshot' ;;
+    *) exit 1 ;;
+esac
+EOF
+cat >"$scratch/dns-bin/apt-get" <<'EOF'
+#!/usr/bin/env bash
+echo "apt-get $*"
+[ -z "${APT_CONFIG:-}" ] || cat "$APT_CONFIG"
+if [ "$DNS_CASE" = unavailable ]; then
+    echo "Temporary failure resolving 'deb.debian.org'" >&2
+    exit 100
+fi
+EOF
+printf '#!/usr/bin/env bash\nexit 0\n' >"$scratch/dns-bin/sleep"
+chmod +x "$scratch/dns-bin/"*
+for scenario in healthy transient fallback unavailable; do
+    case_dir="$scratch/dns/$scenario"
+    mkdir -p "$case_dir"
+    status=0
+    output=$(env PATH="$scratch/dns-bin:$PATH" CASE="$case_dir" DNS_CASE="$scenario" TMPDIR="$case_dir" \
+        bash -c 'cd() { builtin cd "$(dirname "$CASE")/repo"; }; source /dev/stdin' <<<"$cold_setup" 2>&1) || status=$?
+    if [ "$scenario" = unavailable ]; then
+        [ "$status" = 100 ] || note "DNS $scenario: status $status, expected 100"
+        [[ "$output" == *'restored QEMU DNS'*'resolver status snapshot'* ]] || note "DNS $scenario: missing failure evidence"
+        [[ "$output" != *'apt-get install '* ]] || note "DNS $scenario: install ran after failed index update"
+    else
+        [ "$status" = 0 ] || note "DNS $scenario: status $status, expected 0"
+        [[ "$output" == *'apt-get install '*vm-setup*'apt-get update -qq'*toolchain-setup* ]] || note "DNS $scenario: setup did not run in full"
+    fi
+    if [ "$scenario" = fallback ]; then
+        [ -s "$case_dir/resolver" ] || note 'DNS fallback: alternate resolver was not retained after a successful probe'
+    else
+        [ ! -s "$case_dir/resolver" ] || note "DNS $scenario: unexpectedly retained alternate resolver"
+    fi
+    [[ "$output" == *'Acquire::Retries "5";'*'Acquire::Retries::Delay::Maximum "15";'*'APT::Update::Error-Mode "any";'* ]] || note "DNS $scenario: missing apt retry or strict update policy"
+done
+
 if [ "$fails" -ne 0 ]; then exit 1; fi
 echo 'PASS  a detached guest setup outlives SSH stalls and fails only for a stated reason'

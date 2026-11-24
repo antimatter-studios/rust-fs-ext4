@@ -409,17 +409,70 @@ if [ "$action" = serve ]; then
         # because a host stall longer than SSH's keepalive ended it as one
         # foreground SSH command (run 45282138545: status 255 in rustup).
         progress 'cold guest: installing the full preparation tools in this live guest'
+        cold_status=0
         bash "$repo/scripts/ci-guest-detached.sh" ext4-cold-setup 5400 "$state/cold-setup.log" "$qemu_pid" \
-            -- "${ssh_args[@]}" <<'GUEST'
-set -e
+            -- "${ssh_args[@]}" <<'GUEST' || cold_status=$?
+set -euo pipefail
 cd /repo
 export HOME=/root FLTH_GUEST=1 DEBIAN_FRONTEND=noninteractive
 export RUSTUP_HOME=/var/lib/fs-ext4-rust/rustup CARGO_HOME=/var/lib/fs-ext4-rust/cargo
+apt_config="$(mktemp)"
+export APT_CONFIG="$apt_config"
+guest_dns_state() {
+    echo 'Guest DNS state:'
+    ls -l /etc/resolv.conf || true
+    cat /etc/resolv.conf || true
+    ip -4 route || true
+    timeout 10 resolvectl status || true
+}
+finish_cold_setup() {
+    local status=$?
+    if [ "$status" -ne 0 ]; then
+        guest_dns_state
+        timeout 15 getent ahostsv4 deb.debian.org || echo 'Guest Debian mirror lookup failed'
+    fi
+    rm -f "$apt_config" || true
+    exit "$status"
+}
+trap finish_cold_setup EXIT
+cat >"$apt_config" <<'APT'
+Acquire::Retries "5";
+Acquire::Retries::Delay::Maximum "15";
+APT::Update::Error-Mode "any";
+APT
+mirror_resolves() { timeout 15 getent ahostsv4 deb.debian.org >/dev/null; }
+if ! mirror_resolves; then
+    sleep 3
+    if ! mirror_resolves; then
+        echo 'QEMU guest DNS failed twice; trying direct DNS for this live guest'
+        guest_dns_state
+        interface=$(ip -4 route show default via 10.0.2.2 | awk '/ dev / {for (field=1; field<NF; field++) if ($field == "dev") {print $(field+1); exit}}')
+        if [ -n "$interface" ] && timeout 10 resolvectl dns "$interface" 1.1.1.1 8.8.8.8; then
+            timeout 10 resolvectl flush-caches || true
+            if mirror_resolves; then
+                echo 'Guest Debian mirror resolves through direct DNS'
+            else
+                echo 'Direct DNS did not resolve the Debian mirror; restoring QEMU DNS before apt retries'
+                timeout 10 resolvectl dns "$interface" 10.0.2.3 || true
+                timeout 10 resolvectl flush-caches || true
+            fi
+        fi
+    fi
+fi
 apt-get update
 apt-get install -y time python3 binutils ripgrep ca-certificates
 bash scripts/vm-setup.sh
 bash ../rust-fs-core/scripts/guest-rust-toolchain.sh
 GUEST
+        if [ "$cold_status" -ne 0 ]; then
+            {
+                echo 'Resolver in the environment running QEMU:'
+                ls -l /etc/resolv.conf || true
+                cat /etc/resolv.conf || true
+                python3 "$repo/scripts/ci-qemu-probe.py" 15 getent ahostsv4 deb.debian.org || echo 'QEMU host Debian mirror lookup failed'
+            } >"$state/host-dns.txt" 2>&1
+            exit "$cold_status"
+        fi
     fi
     # Short, because a socket path has a length limit: one connection is
     # shared by every call the command makes.
