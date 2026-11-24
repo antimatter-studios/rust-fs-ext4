@@ -305,6 +305,8 @@ jobs:
         run: bash tests/scripts/test-term-stops-run.sh
       - name: The test artifact handoff refuses missing, wrong or corrupt input
         run: bash tests/test-ci-test-bundle.sh
+      - name: The builder image handoff uses the pullable registry digest
+        run: bash tests/test-ci-test-builder-image.sh
       - name: A signal to scripts/guest-scratch.sh alone stops its command
         # Here because the shell tier runs only in the full profile, after every
         # test tier. This guard needs no fixture and no VM, and the script it
