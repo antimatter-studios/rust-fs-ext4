@@ -131,7 +131,11 @@ HARNESS_VM="$REPO/../fs-linux-test-harness/scripts/vm.sh"
 # standard input, and why Bash 3.2 does not start it with INT ignored.
 [[ -z "$STOP_STATUS" ]] || exit "$STOP_STATUS"
 set -m
-${session[@]+"${session[@]}"} cargo test --features cli "$@" &
+if [[ "${FS_EXT4_PREBUILT_REPO:-}" == "$REPO" ]]; then
+    python3 "$REPO/scripts/ci-test-bundle.py" run "$@" &
+else
+    ${session[@]+"${session[@]}"} cargo test --features cli "$@" &
+fi
 CHILD_PID=$!
 set +m
 # One that landed after the check above and before the command had a name.

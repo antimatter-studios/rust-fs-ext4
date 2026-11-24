@@ -14,27 +14,21 @@ name: CI
 #
 #   THE VM JOBS RUN ON A RUNNER WITHOUT KVM. Every job runs on the
 #   antimatter-vps-linux-x64 runner, which is x86_64 and has no /dev/kvm,
-#   so the harness VM (KVM only) cannot boot there. Instead
-#   `scripts/ci-qemu-runner.sh serve` boots the Debian guest the QEMU
-#   preparation workflow publishes -- scripts/vm-setup.sh's tools, in a disk
-#   image keyed by every input that made it -- emulated (TCG), in the
-#   published runner environment, and runs a chore task beside it. Cargo
-#   builds in that environment, and its target runner
-#   (scripts/ci-guest-run.sh) runs every test executable in the guest with
-#   FLTH_GUEST=1, as the harness VM would. The tiers, budgets and floors are
-#   the same tasks'.
+#   so the harness VM (KVM only) cannot boot there. The production test jobs
+#   boot QEMU directly on that runner. build-test-* run only the toolchain in
+#   a container, restore an exact cache entry or compile, and upload sealed
+#   executables. The test jobs download that workflow artifact, including
+#   on a failed-job rerun, and run the same chore tiers, budgets and floors.
 #
-#   test         x86_64: `chore lint` and `chore test` — the whole gate,
+#   test         x86_64: `chore test` — the whole gate,
 #                with EVERY e2fsprogs call, every kernel mount and every
 #                lwext4 call happening inside the guest. Nothing installs
-#                e2fsprogs on the runner, and the runner's and the runner
-#                environment's own copies are replaced with stubs that
-#                fail. The guest's lwext4 (a third ext4 implementation, at
+#                e2fsprogs on the runner; its copies are replaced with
+#                stubs that fail. The guest's lwext4 (a third ext4 implementation, at
 #                the commit scripts/vm-setup.sh pins) is what
 #                `chore test:lwext4` cross-validates against.
 #   test-arm64   aarch64 matters on its own (c_char is unsigned there, and
-#                Apple Silicon hosts run on it): clippy for the ARM64
-#                target, then the unit and fixture-reading tiers compiled
+#                Apple Silicon hosts run on it): the unit and fixture-reading tiers compiled
 #                for aarch64 and run in an emulated ARM64 guest. The tool,
 #                kernel and lwext4 oracles are architecture-independent
 #                (they read the same images) and are covered by `test`;
@@ -122,8 +116,7 @@ concurrency:
 
 permissions:
   contents: read
-  # The VM jobs pull the published runner environment and guest images
-  # (ghcr.io/<repository>/qemu-pilot); nothing in this workflow publishes.
+  # Only test-builder-image may publish; all other jobs read packages.
   packages: read
 
 env:
@@ -139,7 +132,7 @@ env:
   # or cancellation still fails ci-ok.
   # The gate jobs that carry the same `if:` as their job, and ci-ok-gate (it only
   # picks ci-ok's runner and carries `if: always()` like ci-ok), are named too.
-  CI_GATE_NON_GATING: fixtures wasm cli fixtures-gate wasm-gate cli-gate ci-ok-gate
+  CI_GATE_NON_GATING: fixtures wasm cli fixtures-gate wasm-gate cli-gate ci-ok-gate test-builder-image
 
 jobs:
   # Is this change documentation-only? rust-fs-core's
@@ -310,6 +303,8 @@ jobs:
         # test tier, and some of its guards need fixtures. This one needs neither,
         # and every tier starts its tests through the wrapper it holds.
         run: bash tests/scripts/test-term-stops-run.sh
+      - name: The test artifact handoff refuses missing, wrong or corrupt input
+        run: bash tests/test-ci-test-bundle.sh
       - name: A signal to scripts/guest-scratch.sh alone stops its command
         # Here because the shell tier runs only in the full profile, after every
         # test tier. This guard needs no fixture and no VM, and the script it
@@ -392,6 +387,77 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  test-builder-image:
+    needs: changes
+    if: needs.changes.outputs.profile == 'full' && needs.changes.outputs.code == 'true'
+    runs-on: antimatter-vps-linux-x64
+    permissions:
+      contents: read
+      packages: write
+    timeout-minutes: 30
+    outputs:
+      image: ${{ steps.builder.outputs.image }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Install chore and fetch pinned toolchain inputs
+        run: |
+          bash scripts/ci-install-chore.sh
+          "$HOME/.local/bin/chore" siblings
+      - name: Resolve or publish the exact toolchain image
+        id: builder
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PUBLISH_BUILDER: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        run: |
+          image="$(bash scripts/ci-test-builder-image.sh)"
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+
+  build-test-x86_64:
+    needs: test-builder-image
+    runs-on: antimatter-vps-linux-x64
+    timeout-minutes: 90
+    container:
+      image: ${{ needs.test-builder-image.outputs.image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ github.token }}
+    outputs:
+      bundle: ${{ steps.compile.outputs.artifact }}
+      key: ${{ steps.compile.outputs.key }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - id: compile
+        uses: ./.github/actions/ci-test-compile
+        with:
+          arch: x86_64
+          image: ${{ needs.test-builder-image.outputs.image }}
+
+  build-test-aarch64:
+    needs: test-builder-image
+    runs-on: antimatter-vps-linux-x64
+    timeout-minutes: 90
+    container:
+      image: ${{ needs.test-builder-image.outputs.image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ github.token }}
+    outputs:
+      bundle: ${{ steps.compile.outputs.artifact }}
+      key: ${{ steps.compile.outputs.key }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - id: compile
+        uses: ./.github/actions/ci-test-compile
+        with:
+          arch: aarch64
+          image: ${{ needs.test-builder-image.outputs.image }}
+
   test-gate:
     needs: fixtures
     runs-on: antimatter-vps-gate
@@ -404,54 +470,35 @@ jobs:
 
   test:
     name: test (x86_64, oracles in the emulated guest)
-    needs: [fixtures, test-gate]
+    needs: [fixtures, test-gate, test-builder-image, build-test-x86_64]
     runs-on: antimatter-vps-linux-x64
-    # Every test executable runs in the emulated (TCG) guest: the runner has
-    # no KVM, and that is several times slower than the KVM guest was.
-    # One build job and one test thread (FLTH_RESOURCE_PROFILE low, applied by
-    # scripts/ci-qemu-runner.sh serve) keep the 4-CPU runner's load down, and
-    # take longer: the limit is long so a slow, healthy run finishes.
     timeout-minutes: 600
     steps:
       - uses: actions/checkout@v4
-      - name: C toolchain for the gated runner
-        # Only a self-hosted Linux runner lacks it; the hosted image has it.
-        run: |
-          if [ "$RUNNER_OS" = Linux ] && [ "$RUNNER_ENVIRONMENT" = self-hosted ]; then
-            sudo apt-get update && sudo apt-get install -y build-essential
-          fi
+        with:
+          persist-credentials: false
       - name: Install chore
         run: scripts/ci-install-chore.sh
       - name: chore siblings
         run: chore siblings
-      - name: Install Rust
+      - name: Install Rust for the shell tooling self-tests
         uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-      - name: Cache cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-x86_64-guest-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-x86_64-guest-cargo-
-      # No `chore tools`: it sets up the harness VM's host (Vagrant, QEMU,
-      # KVM), which this runner cannot be. The guest is `serve`'s, and
-      # `chore test` still checks the host's own tools (scripts/tools.sh
-      # --check) before any tier.
       - uses: actions/download-artifact@v4
         with:
           name: fixtures
           path: test-disks
+      - uses: ./.github/actions/ci-test-restore
+        with:
+          arch: x86_64
+          artifact: ${{ needs.build-test-x86_64.outputs.bundle }}
+          key: ${{ needs.build-test-x86_64.outputs.key }}
+          image: ${{ needs.test-builder-image.outputs.image }}
       # THE EVIDENCE, NOT THE CLAIM. e2fsprogs cannot be removed from an
       # Ubuntu runner — it is essential — so instead every one of its
       # programs is replaced with a stub that fails loudly. Nothing this
       # job runs may use them: the tools belong to the guest, and a test
       # that reached for one here would turn the run red with a message
-      # saying so, rather than quietly passing on the wrong version. The
-      # runner environment `serve` starts does the same to its own copies.
+      # saying so, rather than quietly passing on the wrong version.
       - name: Make the runner's own e2fsprogs unusable
         run: |
           set -eu
@@ -464,30 +511,25 @@ jobs:
             sudo chmod +x "$path"
             echo "poisoned $path"
           done
-      - name: chore lint
-        run: chore lint
-      # `chore test` builds here and runs every test executable in the guest
-      # (scripts/ci-guest-run.sh, cargo's target runner), where the oracle
-      # tools, the kernel mounts and lwext4 are: the same tiers, budgets and
-      # floors as on a KVM host, with every e2fsprogs call in the guest.
-      - name: chore test, every test executable in the emulated guest
+      - name: chore test, use prebuilt executables in native QEMU
         id: tier
+        working-directory: /opt/ext4-ci/rust-fs-ext4
         env:
           GH_TOKEN: ${{ github.token }}
           BENCH_CACHE_REGISTRY: ghcr.io/${{ github.repository }}/qemu-pilot
-        run: bash scripts/ci-qemu-runner.sh serve x86_64 tcg full -- chore test
+        run: bash scripts/ci-test-serve.sh serve x86_64 tcg full -- chore test
       - name: Keep the guest's evidence
         # The boot, console and timing records of the emulated guest, kept
         # whatever the outcome: a stalled or failed guest is read from these.
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: guest-evidence-x86_64
+          name: guest-evidence-x86_64-${{ github.run_attempt }}
           path: |
-            tmp/qemu-benchmark/**/*.json
-            tmp/qemu-benchmark/**/*.txt
-            tmp/qemu-benchmark/**/*.tsv
-            tmp/qemu-benchmark/**/*.log
+            /opt/ext4-ci/rust-fs-ext4/tmp/qemu-benchmark/**/*.json
+            /opt/ext4-ci/rust-fs-ext4/tmp/qemu-benchmark/**/*.txt
+            /opt/ext4-ci/rust-fs-ext4/tmp/qemu-benchmark/**/*.tsv
+            /opt/ext4-ci/rust-fs-ext4/tmp/qemu-benchmark/**/*.log
           if-no-files-found: warn
           retention-days: 7
       - name: Keep the tier logs
@@ -500,8 +542,8 @@ jobs:
         if: always() && steps.tier.outcome != 'skipped'
         uses: actions/upload-artifact@v4
         with:
-          name: tier-logs-x86_64
-          path: tmp/logs/*.log
+          name: tier-logs-x86_64-${{ github.run_attempt }}
+          path: /opt/ext4-ci/rust-fs-ext4/tmp/logs/*.log
           if-no-files-found: error
 
   test-arm64-gate:
@@ -516,91 +558,55 @@ jobs:
 
   test-arm64:
     name: test (aarch64, in the emulated ARM64 guest)
-    needs: [fixtures, test-arm64-gate]
+    needs: [fixtures, test-arm64-gate, test-builder-image, build-test-aarch64]
     runs-on: antimatter-vps-linux-x64
-    # The runner is x86_64 without KVM: every test executable runs in an
-    # emulated (TCG) ARM64 guest.
-    # One build job and one test thread (FLTH_RESOURCE_PROFILE low, applied by
-    # scripts/ci-qemu-runner.sh serve) keep the 4-CPU runner's load down, and
-    # take longer: the limit is long so a slow, healthy run finishes.
     timeout-minutes: 480
     steps:
       - uses: actions/checkout@v4
-      - name: C toolchain for the gated runner
-        # Only a self-hosted Linux runner lacks it; the hosted image has it.
-        run: |
-          if [ "$RUNNER_OS" = Linux ] && [ "$RUNNER_ENVIRONMENT" = self-hosted ]; then
-            sudo apt-get update && sudo apt-get install -y build-essential
-          fi
+        with:
+          persist-credentials: false
       - name: Install chore
         run: scripts/ci-install-chore.sh
       - name: chore siblings
         run: chore siblings
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-      # rust-toolchain.toml pins the channel, and in the checkout the pin,
-      # not the action's stable, is the toolchain that runs: a `targets:`
-      # input reaches stable only, and the ARM64 lint then stopped with
-      # E0463, no `core` for the target (run 45176432202). Run here, rustup
-      # adds the target to the pinned toolchain, installing that first.
-      # tests/scripts/test-cross-target-for-pinned-toolchain.sh holds this.
-      - name: The ARM64 target, for the pinned toolchain
-        run: |
-          rustup target add aarch64-unknown-linux-gnu
-          rustup target list --installed | grep -qx aarch64-unknown-linux-gnu
-          rustc --version
-      - name: Cache cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-aarch64-guest-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-aarch64-guest-cargo-
       - uses: actions/download-artifact@v4
         with:
           name: fixtures
           path: test-disks
-      # aarch64 matters on its own: c_char is unsigned there, and Apple
-      # Silicon hosts run on it. Clippy checks the ARM64 target's code here;
-      # the tiers below compile for it and run in the ARM64 guest.
-      - name: chore lint, for the ARM64 target
-        env:
-          CARGO_BUILD_TARGET: aarch64-unknown-linux-gnu
-        run: chore lint
-      # `serve aarch64` builds for aarch64-unknown-linux-gnu with the
-      # runner environment's cross linker, and cargo's target runner
-      # (scripts/ci-guest-run.sh) runs every test executable in the ARM64
-      # guest: the tiers that need no oracle VM, as on an ARM64 host.
+      - uses: ./.github/actions/ci-test-restore
+        with:
+          arch: aarch64
+          artifact: ${{ needs.build-test-aarch64.outputs.bundle }}
+          key: ${{ needs.build-test-aarch64.outputs.key }}
+          image: ${{ needs.test-builder-image.outputs.image }}
       - name: chore test:unit, in the emulated ARM64 guest
         id: tier
+        working-directory: /opt/ext4-ci/rust-fs-ext4
         env:
           GH_TOKEN: ${{ github.token }}
           BENCH_CACHE_REGISTRY: ghcr.io/${{ github.repository }}/qemu-pilot
-        run: bash scripts/ci-qemu-runner.sh serve aarch64 tcg full -- chore test:unit
+        run: bash scripts/ci-test-serve.sh serve aarch64 tcg full -- chore test:unit
       # Everything that reads a fixture but needs no VM. The oracle and
       # kernel tiers are not architecture-specific -- they read the same
       # bytes the x86_64 job's guest reads -- and run in jobs.test.
       - name: chore test:images, in the emulated ARM64 guest
+        working-directory: /opt/ext4-ci/rust-fs-ext4
         env:
           GH_TOKEN: ${{ github.token }}
           BENCH_CACHE_REGISTRY: ghcr.io/${{ github.repository }}/qemu-pilot
-        run: bash scripts/ci-qemu-runner.sh serve aarch64 tcg full -- chore test:images
+        run: bash scripts/ci-test-serve.sh serve aarch64 tcg full -- chore test:images
       - name: Keep the guest's evidence
         # The boot, console and timing records of the emulated guest, kept
         # whatever the outcome: a stalled or failed guest is read from these.
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: guest-evidence-aarch64
+          name: guest-evidence-aarch64-${{ github.run_attempt }}
           path: |
-            tmp/qemu-benchmark/**/*.json
-            tmp/qemu-benchmark/**/*.txt
-            tmp/qemu-benchmark/**/*.tsv
-            tmp/qemu-benchmark/**/*.log
+            /opt/ext4-ci/rust-fs-ext4/tmp/qemu-benchmark/**/*.json
+            /opt/ext4-ci/rust-fs-ext4/tmp/qemu-benchmark/**/*.txt
+            /opt/ext4-ci/rust-fs-ext4/tmp/qemu-benchmark/**/*.tsv
+            /opt/ext4-ci/rust-fs-ext4/tmp/qemu-benchmark/**/*.log
           if-no-files-found: warn
           retention-days: 7
       - name: Keep the tier logs
@@ -613,8 +619,8 @@ jobs:
         if: always() && steps.tier.outcome != 'skipped'
         uses: actions/upload-artifact@v4
         with:
-          name: tier-logs-aarch64
-          path: tmp/logs/*.log
+          name: tier-logs-aarch64-${{ github.run_attempt }}
+          path: /opt/ext4-ci/rust-fs-ext4/tmp/logs/*.log
           if-no-files-found: error
 
   suite-in-vm-gate:
@@ -946,7 +952,7 @@ jobs:
 
   ci-ok-gate:
     if: always()
-    needs: [changes-gate, changes, unit-gate, unit, fixtures-gate, fixtures, test-gate, test, test-arm64-gate, test-arm64, suite-in-vm-gate, suite-in-vm, wasm-gate, wasm, semver-gate, semver, msrv-gate, msrv, cli-gate, cli, provenance-gate, provenance]
+    needs: [changes-gate, changes, unit-gate, unit, fixtures-gate, fixtures, test-builder-image, build-test-x86_64, build-test-aarch64, test-gate, test, test-arm64-gate, test-arm64, suite-in-vm-gate, suite-in-vm, wasm-gate, wasm, semver-gate, semver, msrv-gate, msrv, cli-gate, cli, provenance-gate, provenance]
     runs-on: antimatter-vps-gate
     timeout-minutes: 1
     outputs:
@@ -958,7 +964,7 @@ jobs:
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [changes-gate, changes, unit-gate, unit, fixtures-gate, fixtures, test-gate, test, test-arm64-gate, test-arm64, suite-in-vm-gate, suite-in-vm, wasm-gate, wasm, semver-gate, semver, msrv-gate, msrv, cli-gate, cli, provenance-gate, provenance, ci-ok-gate]
+    needs: [changes-gate, changes, unit-gate, unit, fixtures-gate, fixtures, test-builder-image, build-test-x86_64, build-test-aarch64, test-gate, test, test-arm64-gate, test-arm64, suite-in-vm-gate, suite-in-vm, wasm-gate, wasm, semver-gate, semver, msrv-gate, msrv, cli-gate, cli, provenance-gate, provenance, ci-ok-gate]
     runs-on: antimatter-vps-linux-x64
     steps:
       - uses: actions/checkout@v4

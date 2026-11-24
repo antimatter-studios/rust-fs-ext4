@@ -8,9 +8,9 @@
 # profile, or for a VM job when the change is documentation alone.
 set -uo pipefail
 
-all="changes unit fixtures test test-arm64 suite-in-vm wasm semver msrv cli provenance"
-full_only=" fixtures test test-arm64 suite-in-vm wasm cli "
-vm_only=" fixtures test test-arm64 suite-in-vm "
+all="changes unit fixtures test-builder-image build-test-x86_64 build-test-aarch64 test test-arm64 suite-in-vm wasm semver msrv cli provenance"
+full_only=" fixtures test-builder-image build-test-x86_64 build-test-aarch64 test test-arm64 suite-in-vm wasm cli "
+vm_only=" fixtures test-builder-image build-test-x86_64 build-test-aarch64 test test-arm64 suite-in-vm "
 
 profile="${PROFILE:-}"
 code="${CODE:-}"

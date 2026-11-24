@@ -1,0 +1,72 @@
+name: Compile cached guest test artifacts
+description: Build or restore an exact prebuilt bundle in the selected toolchain container
+inputs:
+  arch:
+    description: Guest architecture
+    required: true
+  image:
+    description: Immutable toolchain image
+    required: true
+outputs:
+  key:
+    description: Exact artifact input hash
+    value: ${{ steps.identity.outputs.key }}
+  artifact:
+    description: Bundle published for this workflow attempt
+    value: ${{ steps.identity.outputs.artifact }}
+runs:
+  using: composite
+  steps:
+    - run: |
+        set -euo pipefail
+        git config --global --add safe.directory "$GITHUB_WORKSPACE"
+        bash scripts/ci-install-chore.sh
+        "$HOME/.local/bin/chore" siblings
+      shell: bash
+    - id: identity
+      env:
+        ARCH: ${{ inputs.arch }}
+        IMAGE: ${{ inputs.image }}
+      run: |
+        key="$(python3 scripts/ci-test-bundle.py key "$ARCH" "$IMAGE")"
+        echo "key=$key" >> "$GITHUB_OUTPUT"
+        echo "artifact=ext4-test-binaries-$ARCH-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+      shell: bash
+    - id: cache
+      uses: actions/cache/restore@v4
+      with:
+        path: tmp/ci-test-bundle/bundle.tar
+        key: ext4-prebuilt-${{ steps.identity.outputs.key }}
+    - if: steps.cache.outputs.cache-hit != 'true'
+      env:
+        ARCH: ${{ inputs.arch }}
+        KEY: ${{ steps.identity.outputs.key }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        mkdir /opt/ext4-ci
+        bash scripts/ci-test-workspace.sh
+        cd /opt/ext4-ci/rust-fs-ext4
+        export CARGO_BUILD_TARGET="$ARCH-unknown-linux-gnu" CARGO_BUILD_JOBS=1
+        if [ "$ARCH" = aarch64 ]; then
+          export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
+          export CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc
+          export AR_aarch64_unknown_linux_gnu=aarch64-linux-gnu-ar
+        fi
+        "$HOME/.local/bin/chore" lint
+        python3 scripts/ci-test-bundle.py build "$ARCH" "$KEY" "$GITHUB_WORKSPACE/tmp/ci-test-bundle/bundle.tar"
+    - env:
+        ARCH: ${{ inputs.arch }}
+        KEY: ${{ steps.identity.outputs.key }}
+      run: python3 scripts/ci-test-bundle.py verify "$ARCH" "$KEY" tmp/ci-test-bundle/bundle.tar
+      shell: bash
+    - if: steps.cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: tmp/ci-test-bundle/bundle.tar
+        key: ext4-prebuilt-${{ steps.identity.outputs.key }}
+    - uses: actions/upload-artifact@v4
+      with:
+        name: ${{ steps.identity.outputs.artifact }}
+        path: tmp/ci-test-bundle/bundle.tar
+        if-no-files-found: error

@@ -684,6 +684,23 @@ including hard-link publication, nanosecond timestamps and FIFO refusal,
 without depending on the host share's semantics. Native host-oracle tiers
 still use the shared directory so the guest can read their images.
 
+### Retrying the CI guest tests
+
+The AMD64 and ARM64 guest jobs in `ci.yml` compile in separate toolchain
+containers, which never launch QEMU. The builder image is reused by a hash of
+its Dockerfile and pinned toolchain inputs. Each build job restores an exact
+test bundle keyed by the source tree, sibling revisions, target architecture
+and builder image digest. On a cache miss it compiles and saves that bundle.
+
+The test jobs download the bundle from their successful build job and verify
+its identity, executable architecture and checksums before booting QEMU
+directly on the runner. Missing or mismatched artifacts fail the job rather
+than triggering a build. Use **Re-run failed jobs** to retry a failed test
+without rerunning a successful build; the uploaded artifact must still be
+available. The AMD64 shell tooling checks still build their own sandbox
+fixtures, not the tests' executables. The separate `suite-in-vm` job still
+checks the macOS path that compiles inside the guest.
+
 ### Git hooks
 
 One-time setup per clone, so every commit runs the same `cargo fmt` and

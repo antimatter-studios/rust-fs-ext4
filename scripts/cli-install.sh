@@ -26,9 +26,13 @@ if [ "${1:-}" = "--print-bin-dir" ]; then
 fi
 
 cd "$REPO"
-cargo build --locked --release --features cli --bin rust-fs-ext4 --quiet
-built="${CARGO_TARGET_DIR:-$REPO/target}/release/rust-fs-ext4"
-[ -x "$built" ] || { echo "cli-install: cargo built no $built" >&2; exit 1; }
+if [[ "${FS_EXT4_PREBUILT_REPO:-}" == "$REPO" ]]; then
+    built="$(python3 "$REPO/scripts/ci-test-bundle.py" cli)"
+else
+    cargo build --locked --release --features cli --bin rust-fs-ext4 --quiet
+    built="${CARGO_TARGET_DIR:-$REPO/target}/release/rust-fs-ext4"
+fi
+[ -x "$built" ] || { echo "cli-install: missing built CLI $built" >&2; exit 1; }
 
 # The prefix may not be ours alone (CLI_INSTALL_DIR=$HOME/.local), so bin/
 # and share/ are never cleared: only rust-fs-ext4, its own links and the
