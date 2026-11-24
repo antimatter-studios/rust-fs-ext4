@@ -512,7 +512,12 @@ result=0
 workload_budget=7200
 if [ "$workload" = single ]; then
     workload_budget=600
-    if "$preparation"; then workload_budget=1800; fi
+    if "$preparation"; then
+        workload_budget=1800
+        # ARM guests run under TCG on the x86_64 VPS and need more time for
+        # their cold package setup than the x86_64 preparation guest.
+        if [ "$arch" = aarch64 ]; then workload_budget=5400; fi
+    fi
 fi
 printf 'operation=%s\nworkload_budget_seconds=%s\n' "$action" "$workload_budget" >"$state/workload-policy.txt"
 guest_operation=run

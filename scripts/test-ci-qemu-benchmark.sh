@@ -201,6 +201,15 @@ for name in ("vps-x64", "vps-arm64"):
         assert f"{identity} == 'christhomas'" in job, f"{name} must check {identity}"
 PY
 
+python3 - "$pilot" <<'PY'
+import pathlib
+import sys
+
+host = pathlib.Path(sys.argv[1]).read_text()
+assert 'if [ "$arch" = aarch64 ]; then workload_budget=5400; fi' in host
+assert 'if "$preparation"; then\n        workload_budget=1800' in host
+PY
+
 python3 - "$repo" <<'PY'
 import os
 import pathlib
