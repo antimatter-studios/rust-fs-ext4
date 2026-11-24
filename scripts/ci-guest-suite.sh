@@ -44,6 +44,6 @@ for sibling in rust-fs-core; do
         ssh_guest "mkdir -p /share/siblings/$sibling && tar -xf - -C /share/siblings/$sibling"
 done
 
-command="cd /repo && FLTH_GUEST=1$limits exec bash scripts/guest-suite.sh"
+command="cd /repo && FLTH_GUEST=1$limits CARGO_PROFILE_TEST_OPT_OPT_LEVEL=1 exec bash scripts/guest-suite.sh"
 for word in "$@"; do command+=" $(printf %q "$word")"; done
 exec ssh -n -F "$config" guest "$command"
