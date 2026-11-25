@@ -228,5 +228,55 @@ $cold_setup" 2>&1) || status=$?
     fi
 done
 
+# The ARM64 cold setup timed out after its first package install in run
+# 45529118022, job 139103549912. The next vm-setup commands were quiet:
+# their start/completion markers must identify the unfinished phase while
+# preserving each command's status and stopping before later phases.
+mkdir -p "$scratch/setup-bin"
+cat >"$scratch/setup-bin/apt-get" <<'EOF'
+#!/usr/bin/env bash
+echo "apt-get $*" >>"$CASE/commands"
+case "$1:$FAIL_STAGE" in
+    update:package-index) exit 17 ;;
+    install:oracle-packages) exit 23 ;;
+esac
+EOF
+cat >"$scratch/setup-bin/modprobe" <<'EOF'
+#!/usr/bin/env bash
+echo "modprobe $*" >>"$CASE/commands"
+[ "$FAIL_STAGE" != loop-module ] || exit 31
+EOF
+cat >"$scratch/setup-bin/mkfs.ext4" <<'EOF'
+#!/usr/bin/env bash
+echo "mkfs.ext4 $*" >>"$CASE/commands"
+# Stop before the real setup can access /repo or install lwext4.
+exit 37
+EOF
+chmod +x "$scratch/setup-bin/"*
+for scenario in package-index oracle-packages loop-module complete; do
+    case_dir="$scratch/setup-$scenario"
+    mkdir -p "$case_dir"
+    status=0
+    output=$(env PATH="$scratch/setup-bin:$PATH" CASE="$case_dir" FAIL_STAGE="$scenario" \
+        bash "$REPO/scripts/vm-setup.sh" 2>&1) || status=$?
+    case "$scenario" in
+        package-index) expected_status=17; expected_calls=1 ;;
+        oracle-packages) expected_status=23; expected_calls=2 ;;
+        loop-module) expected_status=31; expected_calls=3 ;;
+        complete) expected_status=37; expected_calls=4 ;;
+    esac
+    [ "$status" = "$expected_status" ] || note "setup $scenario: status $status, expected $expected_status"
+    [ "$(wc -l <"$case_dir/commands" | tr -d ' ')" = "$expected_calls" ] ||
+        note "setup $scenario: a later command ran after failure"
+    for phase in package-index oracle-packages loop-module; do
+        [[ "$output" == *"vm-setup: $phase started at "* ]] || note "setup $scenario: missing $phase start"
+        phase_status=0
+        [ "$phase" != "$scenario" ] || phase_status="$expected_status"
+        [[ "$output" == *"vm-setup: $phase finished status=$phase_status at "* ]] ||
+            note "setup $scenario: missing $phase completion/status"
+        [ "$phase" != "$scenario" ] || break
+    done
+done
+
 if [ "$fails" -ne 0 ]; then exit 1; fi
 echo 'PASS  a detached guest setup outlives SSH stalls and fails only for a stated reason'

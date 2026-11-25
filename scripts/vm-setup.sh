@@ -70,10 +70,23 @@ LWEXT4_PATCH_SHA256=7bfe03b34cb24cbd4b1f8ed5892664d01fcf6dc226ec95e80778642d9c59
 LWEXT4_SRC=/var/lib/fs-ext4-lwext4
 LWEXT4_PREFIX=/usr/local
 
-apt-get update -qq
-apt-get install -y -qq e2fsprogs attr acl fdisk util-linux curl gcc libc6-dev pkg-config \
+# These commands are deliberately quiet, but a cold ARM64 guest can spend
+# its entire setup deadline here. Keep phase boundaries in the detached
+# log so an unfinished command can be identified without changing its
+# output, arguments, deadline, or exit status.
+setup_step() {
+    local phase="$1" status=0
+    shift
+    printf 'vm-setup: %s started at %s\n' "$phase" "$(date -u +%FT%TZ)" >&2
+    "$@" || status=$?
+    printf 'vm-setup: %s finished status=%s at %s\n' "$phase" "$status" "$(date -u +%FT%TZ)" >&2
+    return "$status"
+}
+
+setup_step package-index apt-get update -qq
+setup_step oracle-packages apt-get install -y -qq e2fsprogs attr acl fdisk util-linux curl gcc libc6-dev pkg-config \
     git cmake make >/dev/null
-modprobe loop
+setup_step loop-module modprobe loop
 
 # sed, not head: head exits after one line, mke2fs gets SIGPIPE writing
 # its second, and pipefail turns that into a failed setup (seen on CI).
