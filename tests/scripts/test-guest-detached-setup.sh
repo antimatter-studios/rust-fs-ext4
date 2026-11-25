@@ -193,5 +193,40 @@ for scenario in healthy transient fallback unavailable; do
     [[ "$output" == *'Acquire::Retries "5";'*'Acquire::Retries::Delay::Maximum "15";'*'APT::Update::Error-Mode "any";'* ]] || note "DNS $scenario: missing apt retry or strict update policy"
 done
 
+# A fixture-only cold guest keeps the loop and e2fsprogs requirements
+# without building the Rust and lwext4 test toolchains.
+cat >"$scratch/dns-bin/modprobe" <<'EOF'
+#!/usr/bin/env bash
+echo "modprobe $*"
+test "$*" = loop
+EOF
+cat >"$scratch/dns-bin/dpkg-query" <<'EOF'
+#!/usr/bin/env bash
+echo "$E2FSPROGS_VERSION"
+EOF
+cat >"$scratch/dns-bin/dpkg" <<'EOF'
+#!/usr/bin/env bash
+[[ "$1" == --compare-versions && "$2" == 1.47.0-2+b2 && "$3" == ge && "$4" == 1.47.0 ]]
+EOF
+chmod +x "$scratch/dns-bin/"{modprobe,dpkg-query,dpkg}
+for version in 1.47.0-2+b2 1.46.6; do
+    status=0
+    output=$(env PATH="$scratch/dns-bin:$PATH" CASE="$scratch/dns/healthy" DNS_CASE=healthy \
+        E2FSPROGS_VERSION="$version" TMPDIR="$scratch/dns/healthy" \
+        bash -c 'cd() { builtin cd "$(dirname "$CASE")/repo"; }; source /dev/stdin' \
+        <<<"guest_setup=fixtures
+$cold_setup" 2>&1) || status=$?
+    [[ "$output" == *'apt-get install -y e2fsprogs attr acl fdisk util-linux mount kmod'*'modprobe loop'* ]] ||
+        note "fixtures $version: missing fixture packages or loop setup"
+    [[ "$output" != *vm-setup* && "$output" != *toolchain-setup* ]] ||
+        note "fixtures $version: full preparation ran"
+    if [ "$version" = 1.46.6 ]; then
+        [ "$status" = 1 ] && [[ "$output" == *'requires e2fsprogs >= 1.47.0'* ]] ||
+            note "fixtures $version: old e2fsprogs was accepted"
+    else
+        [ "$status" = 0 ] || note "fixtures $version: status $status, expected 0"
+    fi
+done
+
 if [ "$fails" -ne 0 ]; then exit 1; fi
 echo 'PASS  a detached guest setup outlives SSH stalls and fails only for a stated reason'

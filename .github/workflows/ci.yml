@@ -365,6 +365,7 @@ jobs:
       # and published nowhere.
       - name: chore fixtures, in the emulated guest
         env:
+          EXT4_CI_FIXTURE_SETUP: '1'
           GH_TOKEN: ${{ github.token }}
           BENCH_CACHE_REGISTRY: ghcr.io/${{ github.repository }}/qemu-pilot
         run: bash scripts/ci-qemu-runner.sh serve x86_64 tcg full -- chore fixtures
