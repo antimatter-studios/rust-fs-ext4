@@ -316,6 +316,13 @@ qemu_pid=$!
             # uploaded evidence. The pilot's runs are unchanged.
             if [ "$action" = serve ]; then
                 bash "$repo/scripts/ci-host-pressure.sh" | tee -a "$state/host-pressure.txt" || true
+                if [[ "$arch" == x86_64 && "${GITHUB_JOB:-}" == test ]]; then
+                    # Keep disk samples while the job runs, including when a
+                    # disconnect prevents the oracle tier's final sample.
+                    FS_EXT4_GUEST_SSH="$state/ssh_config" FS_EXT4_GUEST_ARCH="$arch" \
+                        FS_EXT4_CI_VM_BASE="$base" FS_EXT4_CI_VM_OVERLAY="$disk" \
+                        bash "$repo/scripts/ci-oracle-disk-evidence.sh" --heartbeat || true
+                fi
             fi
         fi
         sample=$((sample + 1))
@@ -499,7 +506,8 @@ EOF
     progress "guest ready; running beside it: ${serve_command[*]}"
     result=0
     workload_started="$(date +%s)"
-    FS_EXT4_GUEST_SSH="$state/ssh_config" FS_EXT4_GUEST_ARCH="$arch" "${serve_command[@]}" || result=$?
+    FS_EXT4_GUEST_SSH="$state/ssh_config" FS_EXT4_GUEST_ARCH="$arch" \
+        FS_EXT4_CI_VM_BASE="$base" FS_EXT4_CI_VM_OVERLAY="$disk" "${serve_command[@]}" || result=$?
     printf '%s\n' "$(( $(date +%s) - workload_started ))" >"$state/workload-seconds.txt"
     ssh -F "$state/ssh_config" -O exit guest 2>/dev/null || true
     progress "served command finished; status=$result"

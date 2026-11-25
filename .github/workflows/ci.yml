@@ -315,6 +315,8 @@ jobs:
         # test tier. This guard needs no fixture and no VM, and the script it
         # holds is what runs the suite in the guest.
         run: bash tests/scripts/test-guest-scratch-term.sh
+      - name: Served scratch cleanup and x86 oracle disk evidence
+        run: bash scripts/test-ci-served-guest-scratch.sh
       - name: chore staticlib copies the archive from where cargo built it
         # Here for the same reason: it needs no fixture and no sibling, and it
         # builds a stand-in crate in seconds.

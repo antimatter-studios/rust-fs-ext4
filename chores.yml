@@ -582,7 +582,7 @@ tasks:
     # boot that did not finish.
     cmds:
       - scripts/tools.sh --check
-      - '../rust-fs-core/scripts/tier.sh test:oracle oracle 3800 295000 -- scripts/test.sh --locked --profile test-opt $(scripts/test-targets.sh oracle) -- --show-output'
+      - 'bash scripts/ci-oracle-disk-evidence.sh ../rust-fs-core/scripts/tier.sh test:oracle oracle 3800 295000 -- scripts/test.sh --locked --profile test-opt $(scripts/test-targets.sh oracle) -- --show-output'
       - 'bash ../rust-fs-core/scripts/test-floor.sh oracle 140'
 
   test:kernel:
