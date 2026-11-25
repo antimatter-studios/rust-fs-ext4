@@ -620,7 +620,7 @@ chore test:oracle   # the driver writes, e2fsprogs reads back — in the VM
 chore test:kernel   # the driver writes, the real kernel reads back — in the VM
 chore test:lwext4   # a third implementation reads ours, and we read its — in the VM
 chore test:wasm     # the browser build (wasm32-unknown-unknown), run under Node
-chore test:vm       # the whole suite, compiled and run INSIDE the VM
+chore test:vm       # the whole suite, compiled in Docker on the host, run INSIDE the VM
 chore test          # everything, as CI runs it
 ```
 
@@ -683,6 +683,18 @@ Both host platforms therefore exercise the same Linux file operations,
 including hard-link publication, nanosecond timestamps and FIFO refusal,
 without depending on the host share's semantics. Native host-oracle tiers
 still use the shared directory so the guest can read their images.
+
+### `chore test:vm` is the same chain
+
+On a Mac, `chore test:vm` runs the suite the way the CI jobs do: one step
+compiles, the next tests what it compiled. The harness's `[build]` step
+(`fs-linux-test-harness.toml`) builds CI's test builder image from the same
+recipe (`scripts/test-builder-context.sh`) for the guest's architecture, and
+compiles the whole suite in it under Docker (`scripts/test-bundle-build.sh
+local`). It needs Docker on the host. The build directory and the crate
+registry are kept in a Docker volume, so a second run is incremental. The guest
+then installs that bundle and runs it (`scripts/guest-suite.sh`). It has no Rust
+toolchain and compiles nothing.
 
 ### Retrying the CI guest tests
 

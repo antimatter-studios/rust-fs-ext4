@@ -2,6 +2,7 @@
 import hashlib
 import json
 import os
+import platform
 from pathlib import Path, PurePosixPath
 import re
 import shutil
@@ -15,6 +16,9 @@ REPO = Path(__file__).resolve().parent.parent
 CI_REPO = Path('/opt/ext4-ci/rust-fs-ext4')
 MACHINES = {'x86_64': 62, 'aarch64': 183}
 VERSION = 1
+# ci: the tiers the CI jobs split between them. local: the whole suite in one
+# invocation, which is what `chore test:vm` runs in the harness guest.
+SCOPES = ('ci', 'local')
 
 
 def command(*args):
@@ -42,8 +46,11 @@ def split_args(args):
     return tuple(args[:boundary]), args[boundary + 1:]
 
 
-def selections(arch):
+def selections(arch, scope='ci'):
     options = ['--locked', '--profile', 'test-opt']
+    if scope == 'local':
+        yield tuple(options)
+        return
     yield ('--locked', *split_args(command('bash', 'scripts/test-targets.sh', 'unit').splitlines())[0])
     tiers = ('images',) if arch == 'aarch64' else ('oracle', 'kernel', 'lwext4')
     for tier in tiers:
@@ -89,17 +96,17 @@ def compile_targets(args):
     return executables, tests
 
 
-def build(arch, key, archive):
+def build(arch, key, archive, scope='ci'):
     if REPO != CI_REPO:
         raise ValueError(f'build tests from {CI_REPO}, the path their binaries use in the guest')
     executables, invocations = set(), []
-    for flags in selections(arch):
+    for flags in selections(arch, scope):
         files, tests = compile_targets(['test', '--no-run', *flags])
         if not tests:
             raise ValueError(f'Cargo produced no test executables for {flags}')
         executables.update(files)
         invocations.append({'flags': flags, 'tests': tests})
-    if arch == 'x86_64':
+    if arch == 'x86_64' or scope == 'local':
         docs = command('cargo', 'test', '--locked', '--features', 'cli', '--doc', '--', '--list')
         if re.search(r'\(line \d+\): test$|^[1-9]\d* tests?,', docs, re.MULTILINE):
             raise ValueError('there are executable doctests; add a guest handoff for them first')
@@ -108,7 +115,7 @@ def build(arch, key, archive):
     if cli not in files:
         raise ValueError('Cargo did not build the staged CLI')
     executables.update(files)
-    manifest = {'version': VERSION, 'arch': arch, 'key': key,
+    manifest = {'version': VERSION, 'arch': arch, 'key': key, 'scope': scope,
                 'invocations': invocations, 'cli': cli, 'files': {}}
     archive.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=archive.parent) as temporary:
@@ -126,7 +133,7 @@ def build(arch, key, archive):
         (temporary / 'bundle.tar').replace(archive)
 
 
-def verify(arch, key, archive, install=False):
+def verify(arch, key, archive, install=False, scope='ci'):
     with tarfile.open(archive, 'r:') as bundle:
         members = bundle.getmembers()
         names = {member.name for member in members}
@@ -134,13 +141,14 @@ def verify(arch, key, archive, install=False):
             raise ValueError('bundle must contain distinct regular files only')
         with bundle.extractfile('manifest.json') as stream:
             manifest = json.load(stream)
-        if (manifest['version'], manifest['arch'], manifest['key']) != (VERSION, arch, key):
-            raise ValueError('bundle version, architecture or input key mismatch')
+        if ((manifest['version'], manifest['arch'], manifest['key'], manifest.get('scope', 'ci'))
+                != (VERSION, arch, key, scope)):
+            raise ValueError('bundle version, scope, architecture or input key mismatch')
         files = manifest['files']
         if names != {'manifest.json', *files}:
             raise ValueError('bundle contents do not match its manifest')
         invocations = {tuple(entry['flags']): entry['tests'] for entry in manifest['invocations']}
-        if (set(invocations) != set(selections(arch))
+        if (set(invocations) != set(selections(arch, scope))
                 or any(not tests or not set(tests) <= files.keys() for tests in invocations.values())
                 or manifest['cli'] != f'target/{arch}-unknown-linux-gnu/release/rust-fs-ext4'
                 or manifest['cli'] not in files):
@@ -166,15 +174,26 @@ def verify(arch, key, archive, install=False):
     print(f'{arch}: verified {len(files)} prebuilt executables ({key})')
 
 
+def in_guest(manifest):
+    # Already in the guest the bundle is for (the harness's guest-test): the
+    # executables run here, as cargo would run them, from the package root.
+    return os.environ.get('FLTH_GUEST') == '1' and platform.machine() == manifest['arch']
+
+
 def run(args, manifest):
     flags, test_args = split_args(args)
-    if os.environ.get('FS_EXT4_GUEST_ARCH') != manifest['arch'] or not os.environ.get('FS_EXT4_GUEST_SSH'):
+    local = in_guest(manifest)
+    if not local and (os.environ.get('FS_EXT4_GUEST_ARCH') != manifest['arch']
+                      or not os.environ.get('FS_EXT4_GUEST_SSH')):
         raise ValueError('prebuilt tests require the matching QEMU guest')
     for invocation in manifest['invocations']:
         if tuple(invocation['flags']) == flags:
             for test in invocation['tests']:
                 print(f'     Running {test}', flush=True)
-                result = subprocess.run(['bash', REPO / 'scripts/ci-guest-run.sh', REPO / test, *test_args])
+                if local:
+                    result = subprocess.run([REPO / test, *test_args], cwd=REPO)
+                else:
+                    result = subprocess.run(['bash', REPO / 'scripts/ci-guest-run.sh', REPO / test, *test_args])
                 if result.returncode:
                     return result.returncode if result.returncode > 0 else 128 - result.returncode
             return 0
@@ -185,13 +204,15 @@ def main(mode, *args):
     if mode == 'key':
         print(identity(*args))
     elif mode in {'build', 'verify', 'install'}:
-        arch, key, filename = args
-        if arch not in MACHINES or not re.fullmatch(r'[a-f0-9]{64}', key):
-            raise ValueError('invalid bundle architecture or key')
+        arch, key, filename, *rest = args
+        scope = rest[0] if rest else 'ci'
+        if (arch not in MACHINES or not re.fullmatch(r'[a-f0-9]{64}', key)
+                or scope not in SCOPES or len(rest) > 1):
+            raise ValueError('invalid bundle architecture, key or scope')
         if mode == 'build':
-            build(arch, key, Path(filename).resolve())
+            build(arch, key, Path(filename).resolve(), scope)
         else:
-            verify(arch, key, Path(filename), install=mode == 'install')
+            verify(arch, key, Path(filename), install=mode == 'install', scope=scope)
     elif mode in {'run', 'cli'}:
         manifest = json.loads((REPO / 'target/ci-test-manifest.json').read_text())
         if mode == 'cli' and manifest['cli']:

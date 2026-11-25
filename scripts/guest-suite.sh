@@ -1,47 +1,48 @@
 #!/usr/bin/env bash
 #
-# guest-suite.sh [cargo test args...] — THE WHOLE SUITE, INSIDE THE VM.
+# guest-suite.sh [cargo test args...] — THE WHOLE SUITE, RUN INSIDE THE VM,
+# FROM WHAT THE HOST BUILT.
 #
-# The fs-linux-test-harness [test] guest_command: `chore test:vm` (and
-# `chore test` on a host that is not Linux) boots the VM and runs this
-# from /repo, where the harness mounts this repository.
+# The fs-linux-test-harness [test] guest_command. `chore test:vm` (and `chore
+# test` on a host that is not Linux) is a chain, as the pipeline is: the
+# harness's [build] step compiles the test executables in the test builder
+# container on the host (scripts/test-bundle-build.sh local, in the image CI
+# compiles in), then boots the guest and runs this from /repo. This installs
+# that bundle and runs it. Nothing is compiled here, and the guest has no
+# Rust toolchain.
 #
 # WHY IT EXISTS. We run the Linux tests on Linux. On a Linux host that is
 # the host itself and this is not used. On a Mac there is no ext4, no
-# e2fsprogs worth trusting and no loop mount — so the suite runs in here,
-# against the same sources, with the same pinned toolchain.
+# e2fsprogs worth trusting and no loop mount, so the suite runs in here.
 #
-# The toolchain and the build directory live on the VM's own disk
-# (/var/lib, /var/cache), which outlives `vm:down` and is thrown away by
-# `vm:destroy`: the first run pays a full build, later runs are
-# incremental. The repository is shared, but guest-scratch.sh binds a fresh
-# guest-disk directory over tmp/ for the tests: share-backed hard links and
-# FIFOs do not have the same semantics on every host (#613).
+# THE EXECUTABLES RUN FROM /opt/ext4-ci, the path they were built at
+# (scripts/ci-test-bundle.py): Cargo compiles the checkout's path into every
+# test. Each run gets a private one, bound over that path in the run's own
+# mount namespace, so two runs on the shared guest never share it. The
+# repository is copied there from /repo as it is checked out, and the
+# siblings from the share, where `chore test:vm` staged their pinned HEADs.
+# guest-scratch.sh binds a fresh guest-disk directory over tmp/ for the
+# tests: share-backed hard links and FIFOs do not have the same semantics on
+# every host (#613).
 set -euo pipefail
 
 [ "${FLTH_GUEST:-}" = 1 ] ||
     { echo "guest-suite.sh runs INSIDE the harness VM ('chore test:vm')." >&2; exit 1; }
 
-# The sibling checkouts the guest needs, by directory name.
-SIBLINGS="rust-fs-core"
+build="${FLTH_BUILD_DIR:-}"
+[ -n "$build" ] && [ -f "$build/bundle.tar" ] && [ -f "$build/key" ] || {
+    echo "guest-suite.sh: no build at ${build:-FLTH_BUILD_DIR (unset)}." >&2
+    echo "    'chore test:vm' builds the suite in a container before it boots the guest;" >&2
+    echo "    the guest never compiles it." >&2
+    exit 1
+}
+key="$(cat "$build/key")"
+arch="$(uname -m)"
 
-RUST_ROOT=/var/lib/fs-ext4-rust
-export RUSTUP_HOME="$RUST_ROOT/rustup"
-export CARGO_HOME="$RUST_ROOT/cargo"
-export CARGO_TARGET_DIR=/var/cache/fs-ext4-target
-export PATH="$CARGO_HOME/bin:$PATH"
-
-# THE SIBLING CHECKOUTS. The suite runs core's scripts from
-# ../rust-fs-core, which on the host is a sibling checkout -- and the
-# guest is given this repository, not the directory that holds it. The
-# harness mounts us at /repo, whose parent IS the guest's root, so
-# `../rust-fs-core` resolves to /rust-fs-core: the task stages the
-# sibling on the share (from its pinned, clean checkout) and this links
-# it into place. `chore siblings` is what keeps it at the right ref.
-# Cargo takes the crate from the registry; a local `[patch]` naming
-# `../rust-fs-core` lands on this same link
-# (docs/developing-against-core.md).
-# shellcheck disable=SC2043  # one sibling today; the list is the point
+# The sibling checkouts, by directory name. The harness mounts us at /repo,
+# whose parent is the guest's root, so ../<sibling> is /<sibling>: the task
+# stages each on the share and this links it into place.
+SIBLINGS="rust-fs-core fs-linux-test-harness"
 for sibling in $SIBLINGS; do
     staged="/share/siblings/$sibling"
     [ -d "$staged" ] || {
@@ -51,19 +52,27 @@ for sibling in $SIBLINGS; do
     [ -L "/$sibling" ] || ln -sfn "$staged" "/$sibling"
 done
 
-cd /repo
-# THE PINNED TOOLCHAIN, installed -- or repaired, when an earlier install
-# was interrupted and left its wreckage on the VM's own disk. It is
-# rust-fs-core's family script, the one copy every driver runs, reached
-# through the sibling linked just above: this is the first point at which
-# core is in the guest, which is why vm-setup.sh cannot do it. It reads
-# rust-toolchain.toml and installs into RUSTUP_HOME and CARGO_HOME, and
-# over a whole toolchain it costs one manifest check (rust-fs-core#190).
-bash ../rust-fs-core/scripts/guest-rust-toolchain.sh
-command -v cargo >/dev/null ||
-    { echo "guest-suite.sh: no cargo in the guest after the toolchain install." >&2; exit 1; }
+base=/opt/ext4-ci
+mkdir -p "$base"
+private="$(mktemp -d /var/tmp/ext4-ci.XXXXXX)"
+mount --bind "$private" "$base"
+copy_tree() {
+    mkdir -p "$base/$2"
+    tar -C "$1/" -cf - --exclude=./.git --exclude=./target --exclude=./tmp \
+        --exclude=./.vm-share --exclude=./.vagrant . | tar -xf - -C "$base/$2"
+}
+copy_tree /repo rust-fs-ext4
+for sibling in $SIBLINGS; do
+    copy_tree "/$sibling" "$sibling"
+done
 
-echo "== in-guest suite: $(uname -srm), $(cargo --version)"
+cd "$base/rust-fs-ext4"
+python3 scripts/ci-test-bundle.py install "$arch" "$key" "$build/bundle.tar" local
+export FS_EXT4_PREBUILT_REPO="$PWD"
+# What tests/ci_profile.rs would ask Cargo, recorded by the build.
+export FS_EXT4_CARGO_METADATA="$build/cargo-metadata.json"
+
+echo "== in-guest suite: $(uname -srm), the $arch bundle built on the host"
 started=$(date +%s)
 bash scripts/guest-scratch.sh scripts/test.sh --locked --profile test-opt "$@"
 echo "== in-guest suite: $(( $(date +%s) - started ))s"

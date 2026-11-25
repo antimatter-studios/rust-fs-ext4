@@ -5,9 +5,9 @@
 # `scripts/ci-qemu-runner.sh serve` booted beside this command.
 #
 # The harness gives its guest this repository at /repo and the pinned
-# siblings on its share; this does the same over ssh, then runs the same
-# scripts/guest-suite.sh the harness runs as its [test] guest_command, as
-# root with FLTH_GUEST=1. The siblings come from their pinned checkouts'
+# siblings on its share; this does the same over ssh, then runs
+# scripts/ci-guest-compile-suite.sh, which compiles in the guest, as root
+# with FLTH_GUEST=1. The siblings come from their pinned checkouts'
 # HEAD, as `chore test:vm` stages them, so the guest runs nothing
 # uncommitted of theirs; this repository goes as it is checked out, with
 # its fixtures and without .git, target/ and tmp/.
@@ -44,6 +44,6 @@ for sibling in rust-fs-core; do
         ssh_guest "mkdir -p /share/siblings/$sibling && tar -xf - -C /share/siblings/$sibling"
 done
 
-command="cd /repo && FLTH_GUEST=1$limits CARGO_PROFILE_TEST_OPT_OPT_LEVEL=1 exec bash scripts/guest-suite.sh"
+command="cd /repo && FLTH_GUEST=1$limits CARGO_PROFILE_TEST_OPT_OPT_LEVEL=1 exec bash scripts/ci-guest-compile-suite.sh"
 for word in "$@"; do command+=" $(printf %q "$word")"; done
 exec ssh -n -F "$config" guest "$command"

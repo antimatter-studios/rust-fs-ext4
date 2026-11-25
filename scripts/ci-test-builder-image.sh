@@ -5,8 +5,7 @@ registry="ghcr.io/${GITHUB_REPOSITORY,,}/test-builder"
 scratch="$(mktemp -d)"
 trap 'rm -rf "$scratch"' EXIT
 mkdir "$scratch/recipe"
-cp scripts/ci-test-builder/Dockerfile rust-toolchain.toml "$scratch/recipe/"
-cp ../rust-fs-core/scripts/guest-rust-toolchain.sh "$scratch/recipe/core-toolchain.sh"
+bash scripts/test-builder-context.sh "$scratch/recipe"
 recipe="$(cd "$scratch/recipe" && sha256sum Dockerfile rust-toolchain.toml core-toolchain.sh | sha256sum | cut -d' ' -f1)"
 tag="$registry:amd64-$recipe"
 

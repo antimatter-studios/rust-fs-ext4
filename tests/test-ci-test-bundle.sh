@@ -59,6 +59,8 @@ class BundleTest(unittest.TestCase):
                     bundle.verify(other, key, archive)
                 with self.assertRaisesRegex(ValueError, 'architecture or input key mismatch'):
                     bundle.verify(arch, '2' * 64, archive)
+                with self.assertRaisesRegex(ValueError, 'scope'):
+                    bundle.verify(arch, key, archive, scope='local')
                 with self.assertRaises(FileNotFoundError):
                     bundle.verify(arch, key, root / 'not-cached.tar')
                 destination = root / 'test'
@@ -117,6 +119,29 @@ class BundleTest(unittest.TestCase):
             with patch.dict(os.environ, FS_EXT4_GUEST_ARCH='aarch64'):
                 with self.assertRaisesRegex(ValueError, 'matching QEMU guest'):
                     bundle.run(['--locked'], manifest)
+
+    def test_local_scope_is_the_whole_suite_in_one_invocation(self):
+        for arch in bundle.MACHINES:
+            with self.subTest(arch=arch):
+                self.assertEqual(list(bundle.selections(arch, 'local')),
+                                 [('--locked', '--profile', 'test-opt')])
+        with self.assertRaisesRegex(ValueError, 'invalid bundle architecture, key or scope'):
+            bundle.main('verify', 'aarch64', '1' * 64, 'bundle.tar', 'nightly')
+
+    def test_in_the_guest_the_bundle_runs_its_executables_directly(self):
+        manifest = {'arch': 'aarch64', 'invocations': [{'flags': ['--locked'], 'tests': ['target/probe']}]}
+        with (patch.dict(os.environ, FLTH_GUEST='1'),
+              patch.object(bundle.platform, 'machine', return_value='aarch64'),
+              patch.object(bundle.subprocess, 'run') as runner):
+            os.environ.pop('FS_EXT4_GUEST_SSH', None)
+            runner.return_value.returncode = 0
+            self.assertEqual(bundle.run(['--locked', '--', 'filter'], manifest), 0)
+            runner.assert_called_once_with([bundle.REPO / 'target/probe', 'filter'], cwd=bundle.REPO)
+        with (patch.dict(os.environ, FLTH_GUEST='1'),
+              patch.object(bundle.platform, 'machine', return_value='x86_64')):
+            os.environ.pop('FS_EXT4_GUEST_SSH', None)
+            with self.assertRaisesRegex(ValueError, 'matching QEMU guest'):
+                bundle.run(['--locked'], manifest)
 
 
 unittest.main()

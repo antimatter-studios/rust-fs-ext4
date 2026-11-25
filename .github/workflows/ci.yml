@@ -34,11 +34,13 @@ name: CI
 #                (they read the same images) and are covered by `test`;
 #                so are the script tests, which check the tree rather than
 #                the machine.
-#   suite-in-vm  `chore test:vm`: the whole suite COMPILED AND RUN INSIDE
-#                the guest. That is how a macOS host runs a Linux suite,
-#                and this job is what keeps that path working: the same
-#                scripts/guest-suite.sh, with the siblings staged as the
-#                harness stages them (scripts/ci-guest-suite.sh).
+#   suite-in-vm  `chore test:vm` beside a served guest: the whole suite
+#                COMPILED AND RUN INSIDE the guest
+#                (scripts/ci-guest-compile-suite.sh, with the siblings
+#                staged as the harness stages them, scripts/ci-guest-suite.sh).
+#                A workstation's `chore test:vm` no longer compiles in the
+#                guest: the harness's [build] step compiles in the builder
+#                container, and the guest runs scripts/guest-suite.sh.
 #   wasm         `chore test:wasm`: the browser build (wasm32-unknown-
 #                unknown) RUN under wasm-bindgen-test in Node, because std
 #                there compiles clock and process-ID calls that panic at
@@ -634,7 +636,7 @@ jobs:
       # guest installs from rust-toolchain.toml. That is the point of the
       # job — on a Mac there is no usable host toolchain for these tests
       # either. scripts/ci-guest-suite.sh stages the siblings as the
-      # harness does and runs the same scripts/guest-suite.sh in the guest.
+      # harness does and runs scripts/ci-guest-compile-suite.sh in the guest.
       - name: chore test:vm, compiled and run in the emulated guest
         id: tier
         env:

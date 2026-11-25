@@ -30,19 +30,6 @@ docker run --rm --pull=never --platform linux/amd64 \
     --mount "type=bind,src=$output,dst=/bundle" \
     --workdir /source/rust-fs-ext4 "$image" bash -c '
         set -euo pipefail
-        arch="$1"
-        key="$2"
         install -m 0755 tmp/ci-bin/chore /usr/local/bin/chore
-        mkdir /opt/ext4-ci
-        bash scripts/ci-test-workspace.sh
-        cd /opt/ext4-ci/rust-fs-ext4
-        git config --global --add safe.directory "$PWD"
-        export CARGO_BUILD_TARGET="$arch-unknown-linux-gnu" CARGO_BUILD_JOBS=1
-        if [ "$arch" = aarch64 ]; then
-            export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
-            export CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc
-            export AR_aarch64_unknown_linux_gnu=aarch64-linux-gnu-ar
-        fi
-        chore lint
-        python3 scripts/ci-test-bundle.py build "$arch" "$key" /bundle/bundle.tar
+        bash scripts/test-bundle-build.sh ci "$1" "$2" /bundle/bundle.tar --lint
     ' -- "$arch" "$key"

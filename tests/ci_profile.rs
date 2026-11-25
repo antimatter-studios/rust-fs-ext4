@@ -1483,11 +1483,20 @@ fn the_pr_gate_builds_fixtures_once_in_a_guest_and_tests_both_architectures_thro
     let compile = read_or_panic(&manifest_dir().join("scripts/ci-test-compile.sh"));
     assert!(
         compile.contains("docker run --rm --pull=never")
-            && compile.contains("CARGO_BUILD_TARGET=\"$arch-unknown-linux-gnu\"")
-            && compile.contains("chore lint")
+            && compile.contains(
+                "bash scripts/test-bundle-build.sh ci \"$1\" \"$2\" /bundle/bundle.tar --lint"
+            )
+    );
+    // The container's build is one script, shared with `chore test:vm`'s
+    // [build] step, so CI and a workstation compile the same way.
+    let bundle = read_or_panic(&manifest_dir().join("scripts/test-bundle-build.sh"));
+    assert!(
+        bundle.contains("export CARGO_BUILD_TARGET=\"$arch-unknown-linux-gnu\"")
+            && bundle.contains("[ \"$lint\" = 0 ] || chore lint")
     );
     let builder = read_or_panic(&manifest_dir().join("scripts/ci-test-builder/Dockerfile"));
     assert!(builder.contains("rustup target add aarch64-unknown-linux-gnu"));
+    assert!(builder.contains("amd64) cross=\"gcc-aarch64-linux-gnu libc6-dev-arm64-cross\""));
 
     // jobs.suite-in-vm — the whole suite built and run INSIDE the guest,
     // which is how a host that is not Linux runs it.
@@ -2125,24 +2134,37 @@ fn local_crates_and_members() -> (Vec<PathBuf>, Vec<PathBuf>) {
             local.push(root.join(dir));
         }
     }
-    let output = std::process::Command::new("cargo")
-        .args([
-            "metadata",
-            "--no-deps",
-            "--offline",
-            "--format-version",
-            "1",
-        ])
-        .arg("--manifest-path")
-        .arg(root.join("Cargo.toml"))
-        .output()
-        .unwrap_or_else(|e| panic!("cannot run `cargo metadata`: {e}"));
-    assert!(
-        output.status.success(),
-        "`cargo metadata` failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let text = String::from_utf8(output.stdout).expect("cargo metadata prints UTF-8");
+    // In the harness guest there is no Cargo: the suite there runs what the
+    // host's builder container compiled, and that build recorded this same
+    // `cargo metadata` for it (scripts/test-bundle-build.sh).
+    let text = match std::env::var_os("FS_EXT4_CARGO_METADATA") {
+        Some(recorded) => std::fs::read_to_string(&recorded).unwrap_or_else(|e| {
+            panic!(
+                "cannot read the recorded `cargo metadata` {}: {e}",
+                Path::new(&recorded).display()
+            )
+        }),
+        None => {
+            let output = std::process::Command::new("cargo")
+                .args([
+                    "metadata",
+                    "--no-deps",
+                    "--offline",
+                    "--format-version",
+                    "1",
+                ])
+                .arg("--manifest-path")
+                .arg(root.join("Cargo.toml"))
+                .output()
+                .unwrap_or_else(|e| panic!("cannot run `cargo metadata`: {e}"));
+            assert!(
+                output.status.success(),
+                "`cargo metadata` failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout).expect("cargo metadata prints UTF-8")
+        }
+    };
     // JSON is YAML 1.2, so the parser this file already uses reads it.
     let documents = Yaml::load_from_str(&text).expect("cargo metadata prints JSON");
     let metadata = documents.first().expect("cargo metadata prints a document");

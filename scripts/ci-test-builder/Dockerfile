@@ -5,9 +5,18 @@ LABEL org.opencontainers.image.source=${SOURCE_REPOSITORY}
 LABEL io.antimatter.ext4.builder-key=${RECIPE_KEY}
 ENV DEBIAN_FRONTEND=noninteractive CARGO_HOME=/opt/cargo RUSTUP_HOME=/opt/rustup
 ENV PATH=/opt/cargo/bin:${PATH}
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential ca-certificates curl gcc-aarch64-linux-gnu git libc6-dev-arm64-cross \
-    pkg-config python3 python3-yaml ripgrep rsync util-linux \
+# An amd64 builder (CI) also cross-compiles for an aarch64 guest. An arm64
+# builder (a Mac's Docker, for its aarch64 guest) compiles natively, and
+# Debian ships no aarch64 cross compiler for arm64.
+ARG TARGETARCH
+RUN case "$TARGETARCH" in \
+        amd64) cross="gcc-aarch64-linux-gnu libc6-dev-arm64-cross" ;; \
+        arm64) cross="" ;; \
+        *) echo "unsupported builder architecture: $TARGETARCH" >&2; exit 1 ;; \
+    esac \
+    && apt-get update && apt-get install -y --no-install-recommends \
+    build-essential ca-certificates curl git \
+    pkg-config python3 python3-yaml ripgrep rsync util-linux $cross \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /opt/ext4-toolchain
 COPY rust-toolchain.toml core-toolchain.sh ./
