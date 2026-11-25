@@ -33,6 +33,9 @@ log="$work/cargo.log"
 run() {
     local dir="$1"
     shift
+    if [ -n "$dir" ] && [ "${FS_EXT4_PREBUILT_REPO:-}" = "$REPO" ]; then
+        set -- FS_EXT4_SYNC_TEST_SCRATCH=1 "$@"
+    fi
     if ! env -u RFE_KEEP_IMAGES -u FS_EXT4_TEST_TMPDIR "$@" ${dir:+FS_EXT4_TEST_TMPDIR="$dir"} \
         "$REPO/scripts/test.sh" --locked --profile test-opt --test "$TEST" > "$log" 2>&1; then
         note "cargo test --test $TEST failed; the tail of its log:"

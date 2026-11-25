@@ -1,0 +1,30 @@
+name: Restore verified test artifacts
+description: Download the prebuilt bundle and verify its build input key on the runner
+inputs:
+  arch:
+    description: Guest architecture
+    required: true
+  key:
+    description: Exact artifact input hash
+    required: true
+  image:
+    description: Immutable image used for compilation
+    required: true
+  artifact:
+    description: Workflow artifact name emitted by the build job
+    required: true
+runs:
+  using: composite
+  steps:
+    - uses: actions/download-artifact@v4
+      with:
+        name: ${{ inputs.artifact }}
+        path: tmp/ci-test-bundle
+    - env:
+        ARCH: ${{ inputs.arch }}
+        KEY: ${{ inputs.key }}
+        IMAGE: ${{ inputs.image }}
+      run: |
+        set -euo pipefail
+        test "$(python3 scripts/ci-test-bundle.py key "$ARCH" "$IMAGE")" = "$KEY"
+      shell: bash

@@ -29,6 +29,7 @@ done
 # platform sets what the runner may use (GitHub for hosted runners, the cluster
 # for antimatter-vps pods). The guest VM is what this script limits.
 if [ "$operation" = serve ]; then
+    if [ -n "${EXT4_CI_FIXTURE_SETUP:-}" ]; then environment+=(-e EXT4_CI_FIXTURE_SETUP); fi
     # CI's VM jobs: `serve x86_64|aarch64 tcg full -- <command...>` runs the
     # command in the runner environment beside a guest (ci-qemu-benchmark.sh
     # serve). The repository and its siblings are mounted at the paths the

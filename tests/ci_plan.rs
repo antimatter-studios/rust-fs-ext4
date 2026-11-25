@@ -15,10 +15,13 @@
 
 use std::path::PathBuf;
 
-const ALL: [&str; 11] = [
+const ALL: [&str; 14] = [
     "changes",
     "unit",
     "fixtures",
+    "test-builder-image",
+    "build-test-x86_64",
+    "build-test-aarch64",
     "test",
     "test-arm64",
     "suite-in-vm",
@@ -28,15 +31,26 @@ const ALL: [&str; 11] = [
     "cli",
     "provenance",
 ];
-const FULL_ONLY: [&str; 6] = [
+const FULL_ONLY: [&str; 9] = [
     "fixtures",
+    "test-builder-image",
+    "build-test-x86_64",
+    "build-test-aarch64",
     "test",
     "test-arm64",
     "suite-in-vm",
     "wasm",
     "cli",
 ];
-const VM_ONLY: [&str; 4] = ["fixtures", "test", "test-arm64", "suite-in-vm"];
+const VM_ONLY: [&str; 7] = [
+    "fixtures",
+    "test-builder-image",
+    "build-test-x86_64",
+    "build-test-aarch64",
+    "test",
+    "test-arm64",
+    "suite-in-vm",
+];
 
 fn read(relative: &str) -> String {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(relative);
@@ -113,8 +127,14 @@ fn pull_request_titles_never_change_the_profile() {
 #[test]
 fn every_planned_outcome_is_green() {
     let text = guard();
-    assert_eq!(list(&text, "\nALL=(", ')'), names(&ALL));
-    assert_eq!(list(&text, "\nFULL_ONLY=(", ')'), names(&FULL_ONLY));
+    assert_eq!(
+        list(&text, "\nALL=(", ')'),
+        names(&["\"${QUICK[@]}\"", "\"${FULL_ONLY[@]}\""])
+    );
+    assert_eq!(
+        list(&text, "\nFULL_ONLY=(", ')'),
+        names(&["\"${VM_ONLY[@]}\"", "wasm", "cli"])
+    );
     assert_eq!(list(&text, "\nVM_ONLY=(", ')'), names(&VM_ONLY));
     let ok = read("scripts/ci-ok.sh");
     assert_eq!(list(&ok, "\nall=\"", '"'), names(&ALL));

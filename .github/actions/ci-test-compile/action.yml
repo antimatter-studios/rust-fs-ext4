@@ -1,0 +1,64 @@
+name: Compile cached guest test artifacts
+description: Build or restore an exact prebuilt bundle in the selected toolchain container
+inputs:
+  arch:
+    description: Guest architecture
+    required: true
+  image:
+    description: Immutable toolchain image
+    required: true
+  registry-token:
+    description: Read-only token for the toolchain image
+    required: true
+outputs:
+  key:
+    description: Exact artifact input hash
+    value: ${{ steps.identity.outputs.key }}
+  artifact:
+    description: Bundle published for this workflow attempt
+    value: ${{ steps.identity.outputs.artifact }}
+runs:
+  using: composite
+  steps:
+    - run: |
+        set -euo pipefail
+        bash scripts/ci-install-chore.sh
+        "$HOME/.local/bin/chore" siblings
+      shell: bash
+    - id: identity
+      env:
+        ARCH: ${{ inputs.arch }}
+        IMAGE: ${{ inputs.image }}
+      run: |
+        key="$(python3 scripts/ci-test-bundle.py key "$ARCH" "$IMAGE")"
+        echo "key=$key" >> "$GITHUB_OUTPUT"
+        echo "artifact=ext4-test-binaries-$ARCH-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+      shell: bash
+    - id: cache
+      uses: actions/cache/restore@v4
+      with:
+        path: tmp/ci-test-bundle/bundle.tar
+        key: ext4-prebuilt-${{ steps.identity.outputs.key }}
+    - if: steps.cache.outputs.cache-hit != 'true'
+      env:
+        ARCH: ${{ inputs.arch }}
+        IMAGE: ${{ inputs.image }}
+        KEY: ${{ steps.identity.outputs.key }}
+        GH_TOKEN: ${{ inputs.registry-token }}
+      shell: bash
+      run: bash scripts/ci-test-compile.sh "$ARCH" "$IMAGE" "$KEY"
+    - env:
+        ARCH: ${{ inputs.arch }}
+        KEY: ${{ steps.identity.outputs.key }}
+      run: python3 scripts/ci-test-bundle.py verify "$ARCH" "$KEY" tmp/ci-test-bundle/bundle.tar
+      shell: bash
+    - if: steps.cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: tmp/ci-test-bundle/bundle.tar
+        key: ext4-prebuilt-${{ steps.identity.outputs.key }}
+    - uses: actions/upload-artifact@v4
+      with:
+        name: ${{ steps.identity.outputs.artifact }}
+        path: tmp/ci-test-bundle/bundle.tar
+        if-no-files-found: error

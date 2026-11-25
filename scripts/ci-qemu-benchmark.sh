@@ -36,6 +36,15 @@ if [ "$action" = serve ]; then
     [ "$#" -gt 0 ] || { echo 'serve needs -- <command...>' >&2; exit 2; }
     serve_command=("$@")
 fi
+guest_setup=full
+if [ -n "${EXT4_CI_FIXTURE_SETUP:-}" ]; then
+    if [[ "$EXT4_CI_FIXTURE_SETUP" != 1 || "$action/$arch/$accel" != serve/x86_64/tcg ||
+          "$#" -ne 2 || "${serve_command[0]:-}" != chore || "${serve_command[1]:-}" != fixtures ]]; then
+        echo 'EXT4_CI_FIXTURE_SETUP requires serve x86_64 tcg full -- chore fixtures' >&2
+        exit 2
+    fi
+    guest_setup=fixtures
+fi
 
 disk=guest.qcow2
 seed=seed.iso
@@ -410,15 +419,17 @@ progress "sending the rust-fs-core payload ($(( $(wc -c <"$state/core-payload.ta
 ssh "${ssh_args[@]}" 'tar -xzf - -C /rust-fs-core' <"$state/core-payload.tar.gz"
 if [ "$action" = serve ]; then
     if ! "$prepared_hit"; then
-        # The same setup a full preparation runs (scripts/ci-qemu-guest.sh),
-        # in this live guest only: nothing here is published. It runs
-        # detached in the guest and is polled (scripts/ci-guest-detached.sh),
-        # because a host stall longer than SSH's keepalive ended it as one
-        # foreground SSH command (run 45282138545: status 255 in rustup).
-        progress 'cold guest: installing the full preparation tools in this live guest'
+        # Set up this live guest without publishing it. A host stall can
+        # exceed SSH's keepalive, so use the detached setup helper.
+        if [ "$guest_setup" = fixtures ]; then
+            progress 'cold guest: installing fixture generation tools'
+        else
+            progress 'cold guest: installing the full preparation tools in this live guest'
+        fi
         cold_status=0
-        bash "$repo/scripts/ci-guest-detached.sh" ext4-cold-setup 5400 "$state/cold-setup.log" "$qemu_pid" \
-            -- "${ssh_args[@]}" <<'GUEST' || cold_status=$?
+        {
+            printf 'guest_setup=%s\n' "$guest_setup"
+            cat <<'GUEST'
 set -euo pipefail
 cd /repo
 export HOME=/root FLTH_GUEST=1 DEBIAN_FRONTEND=noninteractive
@@ -467,10 +478,22 @@ if ! mirror_resolves; then
     fi
 fi
 apt-get update
-apt-get install -y time python3 binutils ripgrep ca-certificates
-bash scripts/vm-setup.sh
-bash ../rust-fs-core/scripts/guest-rust-toolchain.sh
+if [ "${guest_setup:-full}" = fixtures ]; then
+    apt-get install -y e2fsprogs attr acl fdisk util-linux mount kmod
+    modprobe loop
+    version="$(dpkg-query -W -f='${Version}' e2fsprogs)"
+    if ! dpkg --compare-versions "$version" ge 1.47.0; then
+        echo "Fixture guest requires e2fsprogs >= 1.47.0 (found $version)" >&2
+        exit 1
+    fi
+else
+    apt-get install -y time python3 binutils ripgrep ca-certificates
+    bash scripts/vm-setup.sh
+    bash ../rust-fs-core/scripts/guest-rust-toolchain.sh
+fi
 GUEST
+        } | bash "$repo/scripts/ci-guest-detached.sh" ext4-cold-setup 5400 "$state/cold-setup.log" "$qemu_pid" \
+            -- "${ssh_args[@]}" || cold_status=$?
         if [ "$cold_status" -ne 0 ]; then
             {
                 echo 'Resolver in the environment running QEMU:'

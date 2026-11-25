@@ -94,6 +94,10 @@ for word in "${remote_env[@]}" "$executable" "$@"; do
 done
 status=0
 ssh -n -F "$config" guest "$command" || status=$?
+if [ "$status" -eq 0 ] && [ "${FS_EXT4_SYNC_TEST_SCRATCH:-}" = 1 ]; then
+    ssh_guest "tar --sparse -cf - -C $(printf %q "$scratch") ." |
+        tar -xf - -C "$scratch"
+fi
 if [ "$status" = 255 ]; then
     echo "ci-guest-run.sh: ssh to the guest failed (255) running $executable" >&2
 fi
