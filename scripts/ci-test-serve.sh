@@ -1,16 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-[ "${1:-}" = serve ] || { echo 'Expected a native serve command' >&2; exit 2; }
-repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-cd "$repo"
-test -r target/ci-test-manifest.json
-profile="$(../fs-linux-test-harness/scripts/vm.sh config)"
-RUST_TEST_THREADS="$(sed -n 's/^vm\.test_jobs=//p' <<< "$profile")"
-CARGO_BUILD_JOBS="$(sed -n 's/^vm\.build_jobs=//p' <<< "$profile")"
-[[ "$RUST_TEST_THREADS" =~ ^[1-9][0-9]*$ && "$CARGO_BUILD_JOBS" =~ ^[1-9][0-9]*$ ]] || {
-    echo 'Harness resource profile did not specify build and test job limits' >&2
-    exit 1
+[[ "${1:-}" == serve && "${3:-}" == tcg && "${4:-}" == full && "${5:-}" == -- && "$#" -gt 5 ]] || {
+    echo 'Expected serve <arch> tcg full -- <command>' >&2
+    exit 2
 }
-export RUST_TEST_THREADS CARGO_BUILD_JOBS FS_EXT4_PREBUILT_REPO="$repo"
-exec bash scripts/ci-qemu-benchmark.sh "$@"
+arch="$2"
+shift 5
+repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+exec bash "$repo/scripts/ci-qemu-runner.sh" serve "$arch" tcg full -- \
+    bash "$repo/scripts/ci-test-run-prebuilt.sh" "$arch" "${EXT4_CI_BUNDLE_KEY:?bundle key required}" "$@"

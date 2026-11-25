@@ -487,30 +487,12 @@ jobs:
           artifact: ${{ needs.build-test-x86_64.outputs.bundle }}
           key: ${{ needs.build-test-x86_64.outputs.key }}
           image: ${{ needs.test-builder-image.outputs.image }}
-      # THE EVIDENCE, NOT THE CLAIM. e2fsprogs cannot be removed from an
-      # Ubuntu runner — it is essential — so instead every one of its
-      # programs is replaced with a stub that fails loudly. Nothing this
-      # job runs may use them: the tools belong to the guest, and a test
-      # that reached for one here would turn the run red with a message
-      # saying so, rather than quietly passing on the wrong version.
-      - name: Make the runner's own e2fsprogs unusable
-        run: |
-          set -eu
-          for tool in debugfs dumpe2fs e2fsck fsck.ext4 mke2fs mkfs.ext4 tune2fs resize2fs; do
-            path="$(command -v "$tool" 2>/dev/null || true)"
-            [ -n "$path" ] || continue
-            sudo mv "$path" "$path.host-copy"
-            printf '#!/bin/sh\necho "::error::%s ran on the runner; the oracle tools belong in the VM" >&2\nexit 97\n' \
-              "$tool" | sudo tee "$path" >/dev/null
-            sudo chmod +x "$path"
-            echo "poisoned $path"
-          done
-      - name: chore test, use prebuilt executables in native QEMU
+      - name: chore test, use prebuilt executables in the emulated guest
         id: tier
-        working-directory: /opt/ext4-ci/rust-fs-ext4
         env:
           GH_TOKEN: ${{ github.token }}
           BENCH_CACHE_REGISTRY: ghcr.io/${{ github.repository }}/qemu-pilot
+          EXT4_CI_BUNDLE_KEY: ${{ needs.build-test-x86_64.outputs.key }}
         run: bash scripts/ci-test-serve.sh serve x86_64 tcg full -- chore test
       - name: Keep the guest's evidence
         # The boot, console and timing records of the emulated guest, kept
@@ -520,10 +502,10 @@ jobs:
         with:
           name: guest-evidence-x86_64-${{ github.run_attempt }}
           path: |
-            /opt/ext4-ci/rust-fs-ext4/tmp/qemu-benchmark/**/*.json
-            /opt/ext4-ci/rust-fs-ext4/tmp/qemu-benchmark/**/*.txt
-            /opt/ext4-ci/rust-fs-ext4/tmp/qemu-benchmark/**/*.tsv
-            /opt/ext4-ci/rust-fs-ext4/tmp/qemu-benchmark/**/*.log
+            tmp/qemu-benchmark/**/*.json
+            tmp/qemu-benchmark/**/*.txt
+            tmp/qemu-benchmark/**/*.tsv
+            tmp/qemu-benchmark/**/*.log
           if-no-files-found: warn
           retention-days: 7
       - name: Keep the tier logs
@@ -537,7 +519,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: tier-logs-x86_64-${{ github.run_attempt }}
-          path: /opt/ext4-ci/rust-fs-ext4/tmp/logs/*.log
+          path: tmp/logs/*.log
           if-no-files-found: error
 
   test-arm64-gate:
@@ -575,19 +557,19 @@ jobs:
           image: ${{ needs.test-builder-image.outputs.image }}
       - name: chore test:unit, in the emulated ARM64 guest
         id: tier
-        working-directory: /opt/ext4-ci/rust-fs-ext4
         env:
           GH_TOKEN: ${{ github.token }}
           BENCH_CACHE_REGISTRY: ghcr.io/${{ github.repository }}/qemu-pilot
+          EXT4_CI_BUNDLE_KEY: ${{ needs.build-test-aarch64.outputs.key }}
         run: bash scripts/ci-test-serve.sh serve aarch64 tcg full -- chore test:unit
       # Everything that reads a fixture but needs no VM. The oracle and
       # kernel tiers are not architecture-specific -- they read the same
       # bytes the x86_64 job's guest reads -- and run in jobs.test.
       - name: chore test:images, in the emulated ARM64 guest
-        working-directory: /opt/ext4-ci/rust-fs-ext4
         env:
           GH_TOKEN: ${{ github.token }}
           BENCH_CACHE_REGISTRY: ghcr.io/${{ github.repository }}/qemu-pilot
+          EXT4_CI_BUNDLE_KEY: ${{ needs.build-test-aarch64.outputs.key }}
         run: bash scripts/ci-test-serve.sh serve aarch64 tcg full -- chore test:images
       - name: Keep the guest's evidence
         # The boot, console and timing records of the emulated guest, kept
@@ -597,10 +579,10 @@ jobs:
         with:
           name: guest-evidence-aarch64-${{ github.run_attempt }}
           path: |
-            /opt/ext4-ci/rust-fs-ext4/tmp/qemu-benchmark/**/*.json
-            /opt/ext4-ci/rust-fs-ext4/tmp/qemu-benchmark/**/*.txt
-            /opt/ext4-ci/rust-fs-ext4/tmp/qemu-benchmark/**/*.tsv
-            /opt/ext4-ci/rust-fs-ext4/tmp/qemu-benchmark/**/*.log
+            tmp/qemu-benchmark/**/*.json
+            tmp/qemu-benchmark/**/*.txt
+            tmp/qemu-benchmark/**/*.tsv
+            tmp/qemu-benchmark/**/*.log
           if-no-files-found: warn
           retention-days: 7
       - name: Keep the tier logs
@@ -614,7 +596,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: tier-logs-aarch64-${{ github.run_attempt }}
-          path: /opt/ext4-ci/rust-fs-ext4/tmp/logs/*.log
+          path: tmp/logs/*.log
           if-no-files-found: error
 
   suite-in-vm-gate:

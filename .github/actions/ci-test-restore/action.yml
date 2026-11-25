@@ -1,5 +1,5 @@
 name: Restore verified test artifacts
-description: Install the exact prebuilt bundle and native guest tools on the test runner
+description: Download the prebuilt bundle and verify its build input key on the runner
 inputs:
   arch:
     description: Guest architecture
@@ -27,10 +27,4 @@ runs:
       run: |
         set -euo pipefail
         test "$(python3 scripts/ci-test-bundle.py key "$ARCH" "$IMAGE")" = "$KEY"
-        bash scripts/ci-test-native-tools.sh "$ARCH"
-        sudo mkdir /opt/ext4-ci
-        sudo chown "$(id -u):$(id -g)" /opt/ext4-ci
-        bash scripts/ci-test-workspace.sh
-        cd /opt/ext4-ci/rust-fs-ext4
-        python3 scripts/ci-test-bundle.py install "$ARCH" "$KEY" "$GITHUB_WORKSPACE/tmp/ci-test-bundle/bundle.tar"
       shell: bash

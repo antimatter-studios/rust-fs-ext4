@@ -1327,12 +1327,24 @@ fn assert_prebuilt_test(document: &Yaml, path: &Path, name: &str, arch: &str) {
     assert!(needs_of(test).contains(&producer));
     assert!(
         field(test, "container").is_none(),
-        "{name} must boot QEMU on the runner"
+        "{name} must run Actions steps directly on the runner"
     );
-    assert!(steps_of(test, name)
+    let serve_command = format!("scripts/ci-test-serve.sh serve {arch} tcg full");
+    let expected_key = format!("${{{{ needs.{producer}.outputs.key }}}}");
+    let serve_steps: Vec<_> = steps_of(test, name)
         .iter()
-        .any(|step| run_of(step)
-            .contains(&format!("scripts/ci-test-serve.sh serve {arch} tcg full"))));
+        .filter(|step| run_of(step).contains(&serve_command))
+        .collect();
+    assert!(!serve_steps.is_empty());
+    for step in serve_steps {
+        assert_eq!(
+            field(step, "env")
+                .and_then(|env| field(env, "EXT4_CI_BUNDLE_KEY"))
+                .and_then(Yaml::as_str),
+            Some(expected_key.as_str())
+        );
+        assert!(field(step, "working-directory").is_none());
+    }
     assert!(steps_of(test, name)
         .iter()
         .all(|step| !run_of(step).contains("scripts/ci-qemu-runner.sh")));
@@ -1413,7 +1425,7 @@ fn the_pr_gate_builds_fixtures_once_in_a_guest_and_tests_both_architectures_thro
         runner.contains(&["debug", "fs"].concat())
             && runner.contains("::error::%s ran in the runner environment"),
         "scripts/ci-qemu-runner.sh serve must make the runner environment's own oracle \
-         tools UNUSABLE, as jobs.test does the runner's"
+         tools UNUSABLE"
     );
     assert!(
         steps
@@ -1427,15 +1439,12 @@ fn the_pr_gate_builds_fixtures_once_in_a_guest_and_tests_both_architectures_thro
         steps.iter().all(|step| !run_of(step).contains("e2fsprogs")),
         "jobs.test must not install e2fsprogs on the runner: the tools live in the VM"
     );
-    let debugger = ["debug", "fs"].concat();
-    assert!(
-        steps
-            .iter()
-            .any(|step| run_of(step).contains(&debugger) && run_of(step).contains("::error::")),
-        "jobs.test must make the runner's own oracle tools UNUSABLE before the tests \
-         run — they cannot be uninstalled, they are essential — so that a green run is \
-         evidence every call went to the guest rather than a claim that it did"
-    );
+    let serve = read_or_panic(&manifest_dir().join("scripts/ci-test-serve.sh"));
+    assert!(serve.contains("scripts/ci-qemu-runner.sh\" serve"));
+    assert!(serve.contains("scripts/ci-test-run-prebuilt.sh"));
+    let restore = read_or_panic(&manifest_dir().join("scripts/ci-test-run-prebuilt.sh"));
+    assert!(restore.contains("scripts/ci-test-bundle.py install"));
+    assert!(restore.contains("export FS_EXT4_PREBUILT_REPO"));
 
     // jobs.test-arm64 — the architecture the driver ships on: the tiers
     // that need no oracle, compiled for aarch64 and run in an emulated ARM64
