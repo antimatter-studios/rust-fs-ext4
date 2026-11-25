@@ -1336,11 +1336,9 @@ fn assert_prebuilt_test(document: &Yaml, path: &Path, name: &str, arch: &str) {
     assert!(steps_of(test, name)
         .iter()
         .all(|step| !run_of(step).contains("scripts/ci-qemu-runner.sh")));
-    assert_eq!(
-        field(build, "container")
-            .and_then(|container| field(container, "image"))
-            .and_then(Yaml::as_str),
-        Some("${{ needs.test-builder-image.outputs.image }}"),
+    assert!(
+        field(build, "container").is_none(),
+        "{producer} must run Actions steps directly on the runner"
     );
     let compile = steps_of(build, &producer)
         .iter()
@@ -1353,6 +1351,12 @@ fn assert_prebuilt_test(document: &Yaml, path: &Path, name: &str, arch: &str) {
             .and_then(|inputs| field(inputs, "arch"))
             .and_then(Yaml::as_str),
         Some(arch)
+    );
+    assert_eq!(
+        field(compile, "with")
+            .and_then(|inputs| field(inputs, "image"))
+            .and_then(Yaml::as_str),
+        Some("${{ needs.test-builder-image.outputs.image }}"),
     );
     let restore = steps_of(test, name)
         .iter()
@@ -1466,9 +1470,12 @@ fn the_pr_gate_builds_fixtures_once_in_a_guest_and_tests_both_architectures_thro
         );
     }
     let compile = read_or_panic(&manifest_dir().join(".github/actions/ci-test-compile/action.yml"));
+    assert!(compile.contains("bash scripts/ci-test-compile.sh"));
+    let compile = read_or_panic(&manifest_dir().join("scripts/ci-test-compile.sh"));
     assert!(
-        compile.contains("CARGO_BUILD_TARGET=\"$ARCH-unknown-linux-gnu\"")
-            && compile.contains("chore\" lint")
+        compile.contains("docker run --rm --pull=never")
+            && compile.contains("CARGO_BUILD_TARGET=\"$arch-unknown-linux-gnu\"")
+            && compile.contains("chore lint")
     );
     let builder = read_or_panic(&manifest_dir().join("scripts/ci-test-builder/Dockerfile"));
     assert!(builder.contains("rustup target add aarch64-unknown-linux-gnu"));

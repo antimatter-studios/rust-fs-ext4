@@ -420,11 +420,6 @@ jobs:
     needs: test-builder-image
     runs-on: antimatter-vps-linux-x64
     timeout-minutes: 90
-    container:
-      image: ${{ needs.test-builder-image.outputs.image }}
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ github.token }}
     outputs:
       bundle: ${{ steps.compile.outputs.artifact }}
       key: ${{ steps.compile.outputs.key }}
@@ -437,16 +432,12 @@ jobs:
         with:
           arch: x86_64
           image: ${{ needs.test-builder-image.outputs.image }}
+          registry-token: ${{ github.token }}
 
   build-test-aarch64:
     needs: test-builder-image
     runs-on: antimatter-vps-linux-x64
     timeout-minutes: 90
-    container:
-      image: ${{ needs.test-builder-image.outputs.image }}
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ github.token }}
     outputs:
       bundle: ${{ steps.compile.outputs.artifact }}
       key: ${{ steps.compile.outputs.key }}
@@ -459,6 +450,7 @@ jobs:
         with:
           arch: aarch64
           image: ${{ needs.test-builder-image.outputs.image }}
+          registry-token: ${{ github.token }}
 
   test-gate:
     needs: fixtures
