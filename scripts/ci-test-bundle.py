@@ -99,16 +99,15 @@ def build(arch, key, archive):
             raise ValueError(f'Cargo produced no test executables for {flags}')
         executables.update(files)
         invocations.append({'flags': flags, 'tests': tests})
-    cli = None
     if arch == 'x86_64':
         docs = command('cargo', 'test', '--locked', '--features', 'cli', '--doc', '--', '--list')
         if re.search(r'\(line \d+\): test$|^[1-9]\d* tests?,', docs, re.MULTILINE):
             raise ValueError('there are executable doctests; add a guest handoff for them first')
-        files, _ = compile_targets(['build', '--locked', '--release', '--bin', 'rust-fs-ext4'])
-        cli = f'target/{arch}-unknown-linux-gnu/release/rust-fs-ext4'
-        if cli not in files:
-            raise ValueError('Cargo did not build the staged CLI')
-        executables.update(files)
+    files, _ = compile_targets(['build', '--locked', '--release', '--bin', 'rust-fs-ext4'])
+    cli = f'target/{arch}-unknown-linux-gnu/release/rust-fs-ext4'
+    if cli not in files:
+        raise ValueError('Cargo did not build the staged CLI')
+    executables.update(files)
     manifest = {'version': VERSION, 'arch': arch, 'key': key,
                 'invocations': invocations, 'cli': cli, 'files': {}}
     archive.parent.mkdir(parents=True, exist_ok=True)
@@ -143,7 +142,8 @@ def verify(arch, key, archive, install=False):
         invocations = {tuple(entry['flags']): entry['tests'] for entry in manifest['invocations']}
         if (set(invocations) != set(selections(arch))
                 or any(not tests or not set(tests) <= files.keys() for tests in invocations.values())
-                or (arch == 'x86_64' and manifest['cli'] not in files)):
+                or manifest['cli'] != f'target/{arch}-unknown-linux-gnu/release/rust-fs-ext4'
+                or manifest['cli'] not in files):
             raise ValueError('bundle does not cover the required test selections')
         if install and (REPO != CI_REPO or (REPO / 'target').exists()):
             raise ValueError(f'install needs a fresh checkout at {CI_REPO} with no target directory')
