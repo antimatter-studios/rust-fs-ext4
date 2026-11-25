@@ -83,7 +83,7 @@ for img in "$out"/*.img; do
         echo "build-fixtures: $base has no ext4 superblock magic (got '$magic')" >&2
         exit 1
     fi
-    cp --sparse=always "$img" "test-disks/$base.partial"
+    bash scripts/copy-sparse.sh "$img" "test-disks/$base.partial"
     mv -f "test-disks/$base.partial" "test-disks/$base"
     rm -f "$img"
     built=$((built + 1))
