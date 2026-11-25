@@ -11,10 +11,6 @@ def timestamp(value):
     return int(datetime.datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp())
 
 
-def read_text(root, name):
-    return (root / name).read_text().strip()
-
-
 def executed_tests(root, workload, floor):
     log = root / "tests.log"
     if not log.exists():
@@ -49,8 +45,9 @@ def executed_tests(root, workload, floor):
 
 
 def report(root, jobs, run, workload, source_commit):
-    expected = {"hosted-x64": ("x86_64", "kvm"), "vps-x64": ("x86_64", "tcg"),
-                "hosted-arm64": ("aarch64", "tcg"), "vps-arm64": ("aarch64", "tcg")}
+    # VPS placements only. No hosted trial runs, so this report measures no
+    # hosted comparison and must never print one.
+    expected = {"vps-x64": ("x86_64", "tcg"), "vps-arm64": ("aarch64", "tcg")}
     by_name = {job["name"]: job for job in jobs["jobs"]}
     created = timestamp(run["created_at"])
     measurements = {}
@@ -63,7 +60,8 @@ def report(root, jobs, run, workload, source_commit):
     print("## QEMU pilot: time to a verified result")
     print(f"Requested source: `{source_commit}`; workload: `{workload}`.")
     print("Queue wait is measured from workflow submission to the first job step.")
-    print("Total time includes the job queue, setup, and workload; no hosted bootstrap gates the trials.")
+    print("Total time includes the job queue, setup, and workload; no bootstrap job gates the trials.")
+    print("Every trial ran on the Antimatter VPS runner; no hosted placement was measured or compared.")
     print()
     print("| Trial | Actual placement | Guest / accelerator | Queue (s) | Trial (s) | Total (s) | Result | Passed | Failed | Ignored |")
     print("|---|---|---|---:|---:|---:|---|---:|---:|---:|")
@@ -109,48 +107,34 @@ def report(root, jobs, run, workload, source_commit):
               f"{queue} | {result['elapsed_seconds']} | {total} | {verdict} | {passed} | {failed} | {ignored} |")
         if result["status"] != 0:
             problems.append(f"{name}: workload failed; inspect guest, console and time logs")
-        if name.startswith("hosted-") and (
-            placement != "ubuntu-24.04" or result.get("runner_environment") != "github-hosted"
-        ):
-            problems.append(f"{name}: not the requested hosted runner; this is NOT a hosted measurement")
-        if name.startswith("vps-") and (
-            placement != "antimatter-vps-linux-x64" or result["runner_environment"] != "self-hosted"
-        ):
+        if placement != "antimatter-vps-linux-x64" or result.get("runner_environment") != "self-hosted":
             problems.append(f"{name}: fell back to hosted; this is NOT a VPS measurement")
         if by_name.get(name, {}).get("conclusion") != "success":
             problems.append(f"{name}: job did not complete successfully")
     for missing in sorted(expected.keys() - measurements.keys()):
         job = by_name.get(missing, {})
         problems.append(f"{missing}: no measurements (job {job.get('conclusion') or job.get('status', 'missing')})")
-    for suffix in ("x64", "arm64"):
-        names = [f"hosted-{suffix}", f"vps-{suffix}"]
-        if not all(name in measurements for name in names):
-            continue
-        left, right = [measurements[name] for name in names]
+    for name, (result, directory, host) in sorted(measurements.items()):
         for field in ("guest_arch", "workload", "guest_memory_mib", "guest_cpus", "build_mode"):
-            if field not in left[0] or field not in right[0]:
-                problems.append(f"{suffix}: missing {field}; cannot compare")
-            elif left[0][field] != right[0][field]:
-                problems.append(f"{suffix}: mismatched {field}; cannot compare")
+            if field not in result:
+                problems.append(f"{name}: missing {field}; the trial is not described")
         for field in ("source_commit", "core_commit"):
-            if left[2][field] != right[2][field]:
-                problems.append(f"{suffix}: mismatched {field}; cannot compare")
+            if not host.get(field):
+                problems.append(f"{name}: missing {field}; the trial is not described")
         for filename in ("passing-tests.txt", "rustc.txt", "builder-image.txt", "build-packages.txt",
                          "test-cache-key.txt", "guest-packages.txt"):
-            if not all((trial[1] / filename).exists() for trial in (left, right)):
-                problems.append(f"{suffix}: missing {filename}")
-            elif read_text(left[1], filename) != read_text(right[1], filename):
-                problems.append(f"{suffix}: {filename} differs; workloads are not equivalent")
+            if not (directory / filename).exists():
+                problems.append(f"{name}: missing {filename}")
     print()
     print("Native compile provenance: `compile.time`; actual build/restore time: `host-build-seconds.txt`.")
     print("Guest test max RSS and wall time: `tests.time`; QEMU RSS: `result.json`; reuse: `cache-events.tsv`.")
     print("One smoke result is not evidence that the full pipeline is safe to migrate.")
     if problems:
-        print("\n### Incomplete or invalid comparison")
+        print("\n### Incomplete or invalid measurement")
         for problem in problems:
             print(f"- {problem}")
         return 1
-    print("\nBoth placements completed matching tests. Compare total time, not runtime alone; repeat before rollout.")
+    print("\nEvery VPS trial completed its tests. This is not a hosted comparison; repeat before relying on it.")
     return 0
 
 

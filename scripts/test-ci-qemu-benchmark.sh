@@ -91,7 +91,7 @@ progress() { printf '%s\\n' "$*"; }
         'a progressing TCG boot must survive 900 seconds and permit a slow SSH handshake',
         accelerator, never_ready, result.returncode, result.stdout, result.stderr)
     if expected:
-        limit = 1800 if accelerator == 'tcg' else 900
+        limit = 3600 if accelerator == 'tcg' else 900
         assert f'guest boot exceeded {limit} seconds' in result.stderr, result.stderr
     else:
         assert int((state / 'boot-seconds.txt').read_text()) == 1200
@@ -186,14 +186,28 @@ import re
 import sys
 
 workflow = pathlib.Path(sys.argv[1]).read_text()
-for name in ("hosted-x64", "vps-x64", "hosted-arm64", "vps-arm64"):
+# Every trial is a VPS trial. A hosted-named job that ran on the VPS would
+# report a hosted comparison that was never measured, so none may exist.
+jobs = re.findall(r"^  ([A-Za-z0-9_-]+):\n", workflow.split("\njobs:\n", 1)[1], re.M)
+assert jobs == ["vps-x64", "vps-arm64", "report"], jobs
+for name in jobs:
     job = re.search(rf"^  {name}:\n(.*?)(?=^  \S|\Z)", workflow, re.M | re.S).group(1)
-    assert not re.search(r"^    needs:", job, re.M), f"{name} must not wait for a hosted bootstrap"
-    label = "antimatter-vps-linux-x64" if name.startswith("vps-") else "ubuntu-24.04"
-    assert f"    runs-on: {label}\n" in job, f"{name} must measure its intended placement"
+    assert "    runs-on: antimatter-vps-linux-x64\n" in job, f"{name} must measure its intended placement"
+for name in ("vps-x64", "vps-arm64"):
+    job = re.search(rf"^  {name}:\n(.*?)(?=^  \S|\Z)", workflow, re.M | re.S).group(1)
+    assert not re.search(r"^    needs:", job, re.M), f"{name} must not wait for a bootstrap job"
     for identity in ("github.actor", "github.triggering_actor", "github.event.sender.login",
                      "github.event.pull_request.user.login"):
         assert f"{identity} == 'christhomas'" in job, f"{name} must check {identity}"
+PY
+
+python3 - "$pilot" <<'PY'
+import pathlib
+import sys
+
+host = pathlib.Path(sys.argv[1]).read_text()
+assert 'if [ "$arch" = aarch64 ]; then workload_budget=5400; fi' in host
+assert 'if "$preparation"; then\n        workload_budget=1800' in host
 PY
 
 python3 - "$repo" <<'PY'
@@ -243,18 +257,16 @@ jobs = []
 passing_names = "first\nsecond\n" + "".join(f"case_{index}\n" for index in range(438))
 test_log = "".join(f"test {name} ... ok\n" for name in passing_names.splitlines())
 test_log += "test result: ok. 440 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.00s\n"
-for name, arch in (("hosted-x64", "x86_64"), ("vps-x64", "x86_64"),
-                   ("hosted-arm64", "aarch64"), ("vps-arm64", "aarch64")):
+for name, arch in (("vps-x64", "x86_64"), ("vps-arm64", "aarch64")):
     trial = root / name
     trial.mkdir()
-    vps = name.startswith("vps")
     (trial / "result.json").write_text(json.dumps({
-        "guest_arch": arch, "accelerator": "tcg" if vps or arch == "aarch64" else "kvm",
+        "guest_arch": arch, "accelerator": "tcg",
         "workload": "smoke", "guest_memory_mib": 2048, "guest_cpus": 2, "build_mode": "host-prebuilt",
         "status": 0, "elapsed_seconds": 1800, "finished_unix": 3500,
         "job_ready_unix": 1100, "job_arrival_unix": 1705,
-        "runner_environment": "self-hosted" if vps else "github-hosted",
-        "selected_runner": "antimatter-vps-linux-x64" if vps else "ubuntu-24.04",
+        "runner_environment": "self-hosted",
+        "selected_runner": "antimatter-vps-linux-x64",
     }))
     (trial / "host.json").write_text(json.dumps({
         "job": name, "source_commit": "same", "core_commit": "same", "source_dirty": False,
@@ -288,33 +300,33 @@ for trial in root.iterdir():
     identity = json.loads(identity_path.read_text())
     identity["source_commit"] = "same"
     identity_path.write_text(json.dumps(identity))
-for trial_name in ("hosted-arm64", "vps-arm64"):
+for trial_name in ("vps-arm64",):
     result_path = root / trial_name / "result.json"
     result = json.loads(result_path.read_text())
     result["workload"] = "full"
     result_path.write_text(json.dumps(result))
 check(False, "does not match requested workload smoke")
-for trial_name in ("hosted-arm64", "vps-arm64"):
+for trial_name in ("vps-arm64",):
     result_path = root / trial_name / "result.json"
     result = json.loads(result_path.read_text())
     result["workload"] = "smoke"
     result["guest_arch"] = "x86_64"
     result_path.write_text(json.dumps(result))
 check(False, "expected aarch64 / tcg")
-for trial_name in ("hosted-arm64", "vps-arm64"):
+for trial_name in ("vps-arm64",):
     result_path = root / trial_name / "result.json"
     result = json.loads(result_path.read_text())
     result["guest_arch"] = "aarch64"
     result_path.write_text(json.dumps(result))
-accelerator_path = root / "hosted-x64" / "result.json"
+accelerator_path = root / "vps-x64" / "result.json"
 accelerator_original = accelerator_path.read_text()
 accelerator_result = json.loads(accelerator_original)
-accelerator_result["accelerator"] = "tcg"
+accelerator_result["accelerator"] = "kvm"
 accelerator_path.write_text(json.dumps(accelerator_result))
-check(False, "expected x86_64 / kvm")
+check(False, "expected x86_64 / tcg")
 accelerator_path.write_text(accelerator_original)
 check(False, "missing workflow source commit", source_commit="")
-identity_path = root / "hosted-x64" / "host.json"
+identity_path = root / "vps-x64" / "host.json"
 identity_original = identity_path.read_text()
 identity = json.loads(identity_original)
 identity["job"] = "unexpected-x64"
@@ -333,15 +345,84 @@ del value["build_mode"]
 target.write_text(json.dumps(value))
 check(False, "missing build_mode")
 target.write_text(original)
-(root / "vps-arm64" / "passing-tests.txt").write_text("different\n")
-check(False, "passing-tests.txt differs")
-(root / "vps-arm64" / "passing-tests.txt").write_text(passing_names)
+(root / "vps-arm64" / "rustc.txt").rename(root / "vps-arm64" / "rustc.missing")
+check(False, "vps-arm64: missing rustc.txt")
+(root / "vps-arm64" / "rustc.missing").rename(root / "vps-arm64" / "rustc.txt")
 value = json.loads(original)
 value["status"] = 137
 target.write_text(json.dumps(value))
 check(False, "workload failed")
 target.rename(target.with_suffix(".missing"))
 check(False, "no measurements")
+PY
+
+# Runner scheduling telemetry: cgroup v2, cgroup v1, and a runner that exposes
+# none of it. A counter that is absent is printed as `missing`, never a number.
+python3 - "$repo" "$scratch" <<'PY'
+import os
+import pathlib
+import re
+import subprocess
+import sys
+
+root, scratch = map(pathlib.Path, sys.argv[1:])
+script = root / 'scripts/ci-host-pressure.sh'
+
+def tree(name, files):
+    base = scratch / 'pressure' / name
+    for relative, text in files.items():
+        path = base / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+    (base / 'proc').mkdir(parents=True, exist_ok=True)
+    (base / 'cgroup').mkdir(parents=True, exist_ok=True)
+    return base
+
+def sample(base):
+    environment = dict(os.environ, HOST_PRESSURE_PROC=str(base / 'proc'),
+                       HOST_PRESSURE_CGROUP=str(base / 'cgroup'))
+    result = subprocess.run(['bash', str(script)], env=environment, text=True, capture_output=True)
+    assert result.returncode == 0, result
+    lines = result.stdout.splitlines()
+    assert len(lines) == 1, result.stdout
+    assert re.match(r'^host-pressure \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ ', lines[0]), lines[0]
+    return lines[0]
+
+psi = 'some avg10=12.50 avg60=8.00 avg300=3.00 total=123\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n'
+v2 = sample(tree('v2', {
+    'proc/loadavg': '3.10 2.50 1.75 4/321 999\n',
+    'proc/pressure/cpu': psi,
+    'cgroup/cgroup.controllers': 'cpu memory\n',
+    'cgroup/cpu.pressure': psi,
+    'cgroup/cpu.stat': 'usage_usec 9\nnr_periods 40\nnr_throttled 7\nthrottled_usec 5500\n',
+    'cgroup/cpu.max': '200000 100000\n',
+}))
+for field in ('loadavg=3.10/2.50/1.75', 'tasks=4/321', 'psi.cpu.some.avg10=12.50',
+              'psi.cpu.full.total=0', 'cgroup.cpu.some.avg60=8.00', 'cgroup.nr_periods=40',
+              'cgroup.nr_throttled=7', 'cgroup.throttled_usec=5500', 'cgroup.cpu.max=200000/100000'):
+    assert ' ' + field in v2, (field, v2)
+assert 'missing' not in v2, v2
+
+v1 = sample(tree('v1', {
+    'proc/loadavg': '0.50 0.40 0.30 1/100 5\n',
+    'cgroup/cpu/cpu.stat': 'nr_periods 10\nnr_throttled 2\n',
+}))
+for field in ('psi.cpu=missing', 'cgroup.cpu.pressure=missing', 'cgroup.nr_periods=10',
+              'cgroup.nr_throttled=2', 'cgroup.throttled_time=missing'):
+    assert ' ' + field in v1, (field, v1)
+
+bare = sample(tree('none', {}))
+for field in ('loadavg=missing', 'psi.cpu=missing', 'cgroup.cpu.pressure=missing',
+              'cgroup.cpu.stat=missing'):
+    assert ' ' + field in bare, (field, bare)
+assert not re.search(r'(throttled|periods|avg10)\S*=\d', bare), bare
+
+# Only the CI VM jobs sample it, from the heartbeat, into uploaded evidence.
+host = (root / 'scripts/ci-qemu-benchmark.sh').read_text()
+sampler = host[host.index('qemu_pid=$!'):host.index('sampler_pid=$!')]
+assert 'if [ "$action" = serve ]; then' in sampler, sampler
+assert 'scripts/ci-host-pressure.sh" | tee -a "$state/host-pressure.txt" || true' in sampler, sampler
+assert sampler.index('ci-host-pressure.sh') > sampler.index('sample % 30'), sampler
 PY
 
 python3 "$repo/scripts/test-ci-qemu-artifacts.py"

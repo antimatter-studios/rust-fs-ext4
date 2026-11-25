@@ -18,7 +18,16 @@ class EnvironmentCommands(unittest.TestCase):
     def test_full_preparation_has_a_workload_specific_job_deadline(self):
         workflow = (ROOT / ".github/workflows/qemu-prepare.yml").read_text()
         preparation = workflow.split("  prepare:\n", 1)[1]
-        self.assertIn("timeout-minutes: ${{ inputs.workload == 'full' && 180 || 45 }}", preparation)
+        self.assertIn("timeout-minutes: ${{ inputs.workload == 'full' && 180 || matrix.prepare_minutes }}",
+                      preparation)
+
+    def test_preparation_default_deadline_accounts_for_guest_architecture(self):
+        workflow = (ROOT / ".github/workflows/qemu-prepare.yml").read_text()
+        preparation = workflow.split("  prepare:\n", 1)[1]
+        deadlines = re.findall(
+            r"(?m)^          - arch: (\S+)\n            accelerator: tcg\n"
+            r"            prepare_minutes: (\d+)$", preparation)
+        self.assertEqual(deadlines, [("x86_64", "45"), ("aarch64", "120")])
 
     def test_warm_restore_recovers_ownership_before_its_separate_upload(self):
         workflow = (ROOT / ".github/workflows/qemu-prepare.yml").read_text()
@@ -135,7 +144,9 @@ for current, directories, files in os.walk(directory):
         programs = [textwrap.dedent(match[2]) for match in re.finditer(
             r"(?m)^([ ]+)run: \|\n((?:\1  [^\n]*\n|[ \t]*\n)+)", workflow)
             if "bash scripts/ci-install-chore.sh" in match[2]]
-        self.assertEqual(len(programs), 2)
+        # One bootstrap: the x86_64 runner environment. The VPS runner is
+        # x86_64, so the ARM64 guest is prepared in that same environment.
+        self.assertEqual(len(programs), 1)
         for index, program in enumerate(programs):
             with self.subTest(bootstrap=index):
                 home = self.root / f"home-{index}"

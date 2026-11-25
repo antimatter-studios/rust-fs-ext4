@@ -762,6 +762,11 @@ fn carries_any(keys: &[String], forbidden: &[&str]) -> bool {
 ///
 /// `! chore x` is NOT an invocation of `x` for this purpose: the `!`
 /// inverts it, so the step is green exactly when the task fails.
+///
+/// `bash scripts/ci-qemu-runner.sh serve <arch> <accel> <workload> -- chore x`
+/// IS one: the VM jobs on a runner without KVM run their task beside an
+/// emulated guest, and the wrapper execs the command after its `--`, with
+/// the wrapper's status.
 fn chore_invocations(script: &str) -> Vec<String> {
     let mut found = Vec::new();
     for raw in script.lines() {
@@ -774,7 +779,23 @@ fn chore_invocations(script: &str) -> Vec<String> {
             let mut words = words
                 .iter()
                 .map(String::as_str)
-                .skip_while(|w| w.contains('=') && !w.starts_with('-'));
+                .skip_while(|w| w.contains('=') && !w.starts_with('-'))
+                .peekable();
+            if words.peek() == Some(&"bash") {
+                words.next();
+            }
+            if words
+                .peek()
+                .is_some_and(|w| w.ends_with("scripts/ci-qemu-runner.sh"))
+            {
+                words.next();
+                if words.next() != Some("serve") {
+                    continue;
+                }
+                if !words.by_ref().any(|w| w == "--") {
+                    continue;
+                }
+            }
             let Some(program) = words.next() else {
                 continue;
             };
@@ -1000,7 +1021,9 @@ fn assert_unconditional_or_skipped_for_documentation(job: &Yaml, name: &str, wor
             matches!(
                 condition.as_str(),
                 Some("needs.changes.outputs.code == 'true'")
-                    | Some("needs.changes.outputs.profile == 'full' && needs.changes.outputs.code == 'true'")
+                    | Some(
+                        "needs.changes.outputs.profile == 'full' && needs.changes.outputs.code == 'true'"
+                    )
             ),
             "{workflow} jobs.{name} may be skipped only for a change to documentation alone, \
              or for the documentation-only fixture/VM skip"
@@ -1096,7 +1119,7 @@ fn chore_writes_a_tier_log(
 /// UPLOADS THAT REFUSE AN EMPTY PATH MUST WAIT FOR THE STEP THAT FILLS
 /// IT (#306).
 ///
-/// Every conditional `actions/upload-artifact` step in `workflow` with
+/// Every conditional tier-log `actions/upload-artifact` step in `workflow` with
 /// `if-no-files-found: error`, whose `if:` does not require an EARLIER
 /// step of the same job -- one that writes a tier log, directly or
 /// through a `chore` task in `chores` -- to have run:
@@ -1128,10 +1151,14 @@ fn unguarded_log_uploads(workflow: &str, chores: &str) -> Vec<String> {
                 .and_then(|with| field(with, "if-no-files-found"))
                 .and_then(Yaml::as_str)
                 == Some("error");
+            let uploads_tier_log = field(step, "with")
+                .and_then(|with| field(with, "path"))
+                .and_then(Yaml::as_str)
+                .is_some_and(|path| path.contains("tmp/logs/"));
             let Some(condition) = field(step, "if").and_then(Yaml::as_str) else {
                 continue;
             };
-            if !is_upload || !refuses_empty {
+            if !is_upload || !refuses_empty || !uploads_tier_log {
                 continue;
             }
             let condition: String = condition.split_whitespace().collect();
@@ -1223,7 +1250,7 @@ fn ci_runs_on_a_pull_request_against_any_base() {
 }
 
 #[test]
-fn every_ci_job_takes_its_runner_from_its_own_gate_job() {
+fn ci_gates_keep_their_checks_without_selecting_workload_runners() {
     let path = workflow_path("ci.yml");
     let text = read_or_panic(&path);
     let document = load_document(&text, &path);
@@ -1268,27 +1295,33 @@ fn every_ci_job_takes_its_runner_from_its_own_gate_job() {
             field(gated, "if").and_then(Yaml::as_str),
             "jobs.{gate_name} must carry the same condition as jobs.{name}"
         );
-        let expected = if name == "ci-ok" {
-            "${{ needs.ci-ok-gate.outputs.runner || 'ubuntu-latest' }}".to_string()
-        } else {
-            format!("${{{{ needs.{gate_name}.outputs.runner }}}}")
-        };
         assert_eq!(
             field(gated, "runs-on").and_then(Yaml::as_str),
-            Some(expected.as_str()),
-            "jobs.{name} must take its runner from {gate_name}"
+            Some("antimatter-vps-linux-x64"),
+            "jobs.{name} must hardcode the VPS runner"
         );
     }
 }
 
+/// Whether a step runs chore `task` beside an emulated guest of `arch`:
+/// `bash scripts/ci-qemu-runner.sh serve <arch> tcg full -- chore <task>`.
+/// The runner has no KVM, so this is how a job reaches the oracle tools,
+/// the kernel and lwext4 at all.
+fn serves_chore(step: &Yaml, arch: &str, task: &str) -> bool {
+    let run = run_of(step);
+    run.contains(&format!(
+        "scripts/ci-qemu-runner.sh serve {arch} tcg full -- chore "
+    )) && chore_invocations(run).iter().any(|t| t == task)
+}
+
 #[test]
-fn the_pr_gate_builds_fixtures_once_in_the_harness_vm_and_tests_both_architectures_through_chore() {
+fn the_pr_gate_builds_fixtures_once_in_a_guest_and_tests_both_architectures_through_chore() {
     let path = workflow_path("ci.yml");
     let text = read_or_panic(&path);
     let document = load_document(&text, &path);
 
-    // jobs.test — x86_64, where GitHub gives us KVM, so the oracles and
-    // the kernel tests can run at all.
+    // jobs.test — x86_64: the oracles and the kernel tests run in the
+    // emulated x86_64 guest beside the runner environment.
     let test = job(&document, "test", &path);
     assert_unconditional(test, "test", "ci.yml");
     assert_eq!(
@@ -1306,7 +1339,7 @@ fn the_pr_gate_builds_fixtures_once_in_the_harness_vm_and_tests_both_architectur
         "jobs.test must need jobs.fixtures, whose artifact it tests against"
     );
     let steps = steps_of(test, "test");
-    for task in ["tools", "lint", "test"] {
+    for task in ["lint", "test"] {
         assert!(
             runs_chore(steps, task),
             "jobs.test does not run `chore {task}`"
@@ -1315,9 +1348,17 @@ fn the_pr_gate_builds_fixtures_once_in_the_harness_vm_and_tests_both_architectur
     assert!(
         steps
             .iter()
-            .any(|step| run_of(step).contains("ci-setup-linux.sh")),
-        "jobs.test must set the VM host up with the harness's ci-setup-linux.sh: every \
-         oracle tool call and every kernel mount happens in that VM"
+            .any(|step| serves_chore(step, "x86_64", "test")),
+        "jobs.test must run `chore test` beside the emulated x86_64 guest \
+         (scripts/ci-qemu-runner.sh serve): every oracle tool call and every kernel \
+         mount happens in that guest"
+    );
+    let runner = read_or_panic(&manifest_dir().join("scripts/ci-qemu-runner.sh"));
+    assert!(
+        runner.contains(&["debug", "fs"].concat())
+            && runner.contains("::error::%s ran in the runner environment"),
+        "scripts/ci-qemu-runner.sh serve must make the runner environment's own oracle \
+         tools UNUSABLE, as jobs.test does the runner's"
     );
     assert!(
         steps
@@ -1341,8 +1382,9 @@ fn the_pr_gate_builds_fixtures_once_in_the_harness_vm_and_tests_both_architectur
          evidence every call went to the guest rather than a claim that it did"
     );
 
-    // jobs.test-arm64 — the architecture the driver ships on, on a runner
-    // with no KVM: the tiers that need no VM.
+    // jobs.test-arm64 — the architecture the driver ships on: the tiers
+    // that need no oracle, compiled for aarch64 and run in an emulated ARM64
+    // guest.
     let arm = job(&document, "test-arm64", &path);
     assert_unconditional(arm, "test-arm64", "ci.yml");
     assert_eq!(
@@ -1361,14 +1403,27 @@ fn the_pr_gate_builds_fixtures_once_in_the_harness_vm_and_tests_both_architectur
             "jobs.test-arm64 does not run `chore {task}`"
         );
     }
-    for step in arm_steps {
-        let run = run_of(step);
+    for task in ["test:unit", "test:images"] {
         assert!(
-            !run.contains("qemu-system-") && !run.contains("ci-setup-linux.sh"),
-            "GitHub's arm64 runners have no KVM, so jobs.test-arm64 must not start a VM: \
-             {run:?}"
+            arm_steps
+                .iter()
+                .any(|step| serves_chore(step, "aarch64", task)),
+            "jobs.test-arm64 must run `chore {task}` in the emulated ARM64 guest \
+             (scripts/ci-qemu-runner.sh serve aarch64): an x86_64 run of it is not an \
+             ARM64 test"
         );
     }
+    let arm_lint = arm_steps
+        .iter()
+        .find(|step| chore_invocations(run_of(step)).iter().any(|t| t == "lint"))
+        .expect("jobs.test-arm64 runs `chore lint`");
+    assert_eq!(
+        field(arm_lint, "env")
+            .and_then(|env| field(env, "CARGO_BUILD_TARGET"))
+            .and_then(Yaml::as_str),
+        Some("aarch64-unknown-linux-gnu"),
+        "jobs.test-arm64 must lint the ARM64 target's code, where c_char is unsigned"
+    );
 
     // jobs.suite-in-vm — the whole suite built and run INSIDE the guest,
     // which is how a host that is not Linux runs it.
@@ -1382,8 +1437,9 @@ fn the_pr_gate_builds_fixtures_once_in_the_harness_vm_and_tests_both_architectur
     assert!(
         in_vm_steps
             .iter()
-            .any(|step| run_of(step).contains("ci-setup-linux.sh")),
-        "jobs.suite-in-vm must set the VM host up with the harness's ci-setup-linux.sh"
+            .any(|step| serves_chore(step, "x86_64", "test:vm")),
+        "jobs.suite-in-vm must run `chore test:vm` beside the emulated guest it compiles \
+         and runs the suite in"
     );
 
     // jobs.fixtures
@@ -1399,23 +1455,12 @@ fn the_pr_gate_builds_fixtures_once_in_the_harness_vm_and_tests_both_architectur
         "jobs.fixtures must ask the gate for an x86_64 KVM runner"
     );
     let steps = steps_of(fixtures, "fixtures");
-    let setup = steps
-        .iter()
-        .position(|step| run_of(step).contains("ci-setup-linux.sh"))
-        .unwrap_or_else(|| {
-            panic!("jobs.fixtures must set the VM host up with the harness's ci-setup-linux.sh")
-        });
-    let build = steps
-        .iter()
-        .position(|step| {
-            chore_invocations(run_of(step))
-                .iter()
-                .any(|t| t == "fixtures")
-        })
-        .unwrap_or_else(|| panic!("jobs.fixtures must run `chore fixtures`"));
     assert!(
-        setup < build,
-        "jobs.fixtures must set up the VM host before `chore fixtures` needs it"
+        steps
+            .iter()
+            .any(|step| serves_chore(step, "x86_64", "fixtures")),
+        "jobs.fixtures must run `chore fixtures` beside the emulated guest whose kernel \
+         makes the images"
     );
     assert!(
         steps
@@ -1550,9 +1595,9 @@ fn the_pr_gate_builds_fixtures_once_in_the_harness_vm_and_tests_both_architectur
 }
 
 /// THE SHIPPING GATE runs the same chore tasks as the pull-request gate,
-/// in one job: `ubuntu-latest` is x86_64 with KVM, so it builds the
-/// fixtures itself through the harness VM -- `ci-setup-linux.sh`, then
-/// `chore fixtures` -- and then runs `chore test`, unconditionally.
+/// in one job: it builds the fixtures itself beside the emulated guest --
+/// `scripts/ci-qemu-runner.sh serve`, then `chore fixtures` -- and then
+/// runs `chore test` there too, unconditionally.
 ///
 /// None of the scripts the harness replaced may come back: the native
 /// sudo generator, the in-repo VM builder and e2fsck runner, and the
@@ -1560,7 +1605,7 @@ fn the_pr_gate_builds_fixtures_once_in_the_harness_vm_and_tests_both_architectur
 /// after the version is committed to. And nothing ships -- neither the
 /// packaged binary nor the crates.io upload -- unless `test` passed.
 #[test]
-fn the_release_gate_builds_fixtures_in_the_harness_vm_and_runs_chore_test() {
+fn the_release_gate_builds_fixtures_in_a_guest_and_runs_chore_test() {
     let path = workflow_path("release.yml");
     let text = read_or_panic(&path);
     let document = load_document(&text, &path);
@@ -1568,27 +1613,21 @@ fn the_release_gate_builds_fixtures_in_the_harness_vm_and_runs_chore_test() {
     assert_unconditional(test, "test", "release.yml");
     let steps = steps_of(test, "test");
 
-    let setup = steps
-        .iter()
-        .position(|step| run_of(step).contains("ci-setup-linux.sh"))
-        .unwrap_or_else(|| {
-            panic!("release jobs.test must set the VM host up with the harness's ci-setup-linux.sh")
-        });
     let build = steps
         .iter()
-        .position(|step| {
-            chore_invocations(run_of(step))
-                .iter()
-                .any(|t| t == "fixtures")
-        })
-        .unwrap_or_else(|| panic!("release jobs.test must run `chore fixtures`"));
+        .position(|step| serves_chore(step, "x86_64", "fixtures"))
+        .unwrap_or_else(|| {
+            panic!("release jobs.test must run `chore fixtures` beside the emulated guest")
+        });
+    let tested = steps
+        .iter()
+        .position(|step| serves_chore(step, "x86_64", "test"))
+        .unwrap_or_else(|| {
+            panic!("release jobs.test must run `chore test` beside the emulated guest")
+        });
     assert!(
-        setup < build,
-        "release jobs.test must set up the VM host before `chore fixtures` needs it"
-    );
-    assert!(
-        runs_chore(steps, "test"),
-        "release jobs.test must run `chore test`"
+        build < tested,
+        "release jobs.test must build the fixtures before `chore test` reads them"
     );
 
     let jobs = field(&document, "jobs")
@@ -1626,127 +1665,71 @@ fn the_release_gate_builds_fixtures_in_the_harness_vm_and_runs_chore_test() {
     }
 }
 
-/// The reusable workflow that packages, attests and attaches the release
-/// tarball for every repository in the family.
-const CORE_RELEASE_CLI: &str = "antimatter-studios/rust-fs-core/.github/workflows/release-cli.yml";
-
-/// THE RELEASE TARBALL IS PACKAGED BY RUST-FS-CORE, NOT BY A COPY HERE
-/// (#481). Every repository once carried its own `package-cli` matrix,
-/// attest-and-attach job and `scripts/package-cli.sh`, and the copies
-/// drifted. `release.yml` now calls core's `release-cli.yml` from one job,
-/// `cli`, and keeps none of them.
-///
-/// The call is pinned to a commit SHA, not a tag: the called workflow runs
-/// with this repository's `contents: write`, and a tag is a pointer its
-/// owner can move. Its `core-ref` is the tag `chores.yml` pins the sibling
-/// to, and its `toolchain` the one `rust-toolchain.toml` pins, so the
-/// tarball is built from the same sources the gate tested. And it ships
-/// only after `test` passed and the crate is on crates.io.
 #[test]
-fn the_release_tarball_is_packaged_by_core_release_cli_workflow_at_a_pinned_sha() {
-    let root = manifest_dir();
-    let path = workflow_path("release.yml");
-    let text = read_or_panic(&path);
-    let document = load_document(&text, &path);
-
-    let cli = job(&document, "cli", &path);
-    let uses = field(cli, "uses")
-        .and_then(Yaml::as_str)
-        .unwrap_or_else(|| panic!("release jobs.cli must call {CORE_RELEASE_CLI} with `uses:`"));
-    let (workflow, sha) = uses
-        .split_once('@')
-        .unwrap_or_else(|| panic!("release jobs.cli calls {uses:?}, with no `@<sha>`"));
-    assert_eq!(
-        workflow, CORE_RELEASE_CLI,
-        "release jobs.cli must call rust-fs-core's release-cli workflow"
-    );
-    assert!(
-        sha.len() == 40
-            && sha
-                .bytes()
-                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
-        "release jobs.cli calls {CORE_RELEASE_CLI} at {sha:?}, which is not a 40-hex commit SHA: \
-         a tag can be moved under a job that holds a write token"
-    );
-
-    let with =
-        field(cli, "with").unwrap_or_else(|| panic!("release jobs.cli passes no `with:` inputs"));
-    let input = |name: &str| {
-        field(with, name)
-            .and_then(Yaml::as_str)
-            .unwrap_or_else(|| panic!("release jobs.cli passes no `{name}` input"))
-            .to_string()
-    };
-    let core_pin = am_fs_core_versions_declared(&read_or_panic(&root.join("chores.yml")))
-        .into_iter()
-        .next()
-        .map(|(_, v)| v)
-        .expect("chores.yml declares the rust-fs-core pin");
-    assert_eq!(
-        input("core-ref"),
-        format!("v{core_pin}"),
-        "release jobs.cli must build against the rust-fs-core tag chores.yml pins"
-    );
-    let toolchain = read_or_panic(&root.join("rust-toolchain.toml"))
-        .lines()
-        .find_map(|line| quoted_value_after(line.trim(), "channel"))
-        .expect("rust-toolchain.toml names its channel");
-    assert_eq!(
-        input("toolchain"),
-        toolchain,
-        "release jobs.cli must build with the toolchain rust-toolchain.toml pins"
-    );
-
-    let permissions =
-        field(cli, "permissions").unwrap_or_else(|| panic!("release jobs.cli grants nothing"));
-    for grant in ["contents", "id-token", "attestations"] {
-        assert_eq!(
-            field(permissions, grant).and_then(Yaml::as_str),
-            Some("write"),
-            "release jobs.cli must grant `{grant}: write`, which the attach job needs"
-        );
-    }
-    let needs = needs_of(cli);
-    for needed in ["test", "publish"] {
-        assert!(
-            needs.iter().any(|n| n == needed),
-            "release jobs.cli must need jobs.{needed}: nothing ships untested or unpublished"
-        );
-    }
-
-    // No copy of what core now does is left behind.
-    for copy in [
-        "scripts/package-cli.sh",
-        "tests/scripts/test-package-cli.sh",
-    ] {
-        assert!(
-            !root.join(copy).exists(),
-            "{copy} is a local copy of rust-fs-core's packaging; delete it"
-        );
-    }
-    let jobs = field(&document, "jobs")
-        .and_then(Yaml::as_mapping)
-        .unwrap_or_else(|| panic!("{} has no jobs", path.display()));
-    for (name, body) in jobs.iter() {
-        let name = name.as_str().unwrap_or("?");
-        assert!(
-            !["package-cli", "release"].contains(&name),
-            "release.yml still has its own jobs.{name}; rust-fs-core's release-cli.yml packages \
-             and attaches the tarball"
-        );
-        for step in field(body, "steps")
-            .and_then(Yaml::as_sequence)
-            .into_iter()
-            .flatten()
-        {
-            let uses = field(step, "uses").and_then(Yaml::as_str).unwrap_or("");
-            assert!(
-                !run_of(step).contains("package-cli") && !uses.contains("attest-build-provenance"),
-                "release.yml jobs.{name} packages or attests the tarball itself; \
-                 rust-fs-core's release-cli.yml does that"
+fn every_workflow_hardcodes_its_vps_runner() {
+    let directory = workflow_path("ci.yml").parent().unwrap().to_path_buf();
+    for entry in std::fs::read_dir(directory).expect("read workflow directory") {
+        let path = entry.expect("read workflow entry").path();
+        if !matches!(
+            path.extension().and_then(|ext| ext.to_str()),
+            Some("yml" | "yaml")
+        ) {
+            continue;
+        }
+        let text = read_or_panic(&path);
+        let doc = load_document(&text, &path);
+        let jobs = field(&doc, "jobs")
+            .and_then(Yaml::as_mapping)
+            .expect("workflow jobs");
+        for (key, job) in jobs {
+            let name = key.as_str().expect("workflow job ID");
+            let expected = if name.ends_with("-gate") {
+                "antimatter-vps-gate"
+            } else {
+                "antimatter-vps-linux-x64"
+            };
+            assert_eq!(
+                field(job, "runs-on").and_then(Yaml::as_str),
+                Some(expected),
+                "{} jobs.{name} must hardcode its runner",
+                path.display()
             );
         }
     }
+}
+
+#[test]
+fn release_packages_read_only_and_attaches_only_after_tests_and_publish() {
+    let path = workflow_path("release.yml");
+    let text = read_or_panic(&path);
+    let document = load_document(&text, &path);
+    let cli = job(&document, "cli", &path);
+    let attach = job(&document, "attach", &path);
+    for dependency in ["test", "publish"] {
+        assert!(needs_of(cli).iter().any(|need| need == dependency));
+    }
+    assert!(needs_of(attach).iter().any(|need| need == "cli"));
+    assert_eq!(
+        field(
+            field(cli, "permissions").expect("CLI permissions"),
+            "contents"
+        )
+        .and_then(Yaml::as_str),
+        Some("read")
+    );
+    let permissions = field(attach, "permissions").expect("attach permissions");
+    for grant in ["contents", "id-token", "attestations"] {
+        assert_eq!(
+            field(permissions, grant).and_then(Yaml::as_str),
+            Some("write")
+        );
+    }
+    assert!(steps_of(attach, "attach").iter().all(|step| {
+        !field(step, "uses")
+            .and_then(Yaml::as_str)
+            .unwrap_or("")
+            .contains("actions/checkout")
+    }));
 }
 
 /// THE DISTINCTION THIS REPOSITORY NEEDS THAT A PORTED COPY WOULD MISS.
@@ -2818,7 +2801,9 @@ tasks:
     /// A cycle is chore's error to report; the guard must just not hang.
     #[test]
     fn a_task_cycle_terminates() {
-        let chores = format!("{CHORES}  a:\n    cmds:\n      - task: b\n      - task: test:unit\n  b:\n    cmds:\n      - task: a\n");
+        let chores = format!(
+            "{CHORES}  a:\n    cmds:\n      - task: b\n      - task: test:unit\n  b:\n    cmds:\n      - task: a\n"
+        );
         let workflow = WORKFLOW.replace("run: chore test:unit", "run: chore a");
         assert_eq!(gating(&workflow, &chores).len(), 1);
     }
@@ -2911,7 +2896,14 @@ tasks:
         let chores = real(&["chores.yml"]);
         assert!(!gating(&workflow, &chores).is_empty(), "control");
 
-        let no_unit_step = workflow.replace("run: chore test:unit\n", "run: 'true'\n");
+        // The unit job's step, and the ARM64 job's, which runs the same task
+        // beside its emulated guest.
+        let no_unit_step = workflow
+            .replace("run: chore test:unit\n", "run: 'true'\n")
+            .replace(
+                "run: bash scripts/ci-qemu-runner.sh serve aarch64 tcg full -- chore test:unit\n",
+                "run: 'true'\n",
+            );
         assert_ne!(no_unit_step, workflow, "the mutation must actually apply");
         assert!(
             gating(&no_unit_step, &chores)
@@ -2919,7 +2911,10 @@ tasks:
                 .all(|run| run.starts_with("chore test -> test:unit: ")),
             "without the unit job's step, only `chore test` reaches the run"
         );
-        let neither = no_unit_step.replace("run: chore test\n", "run: 'true'\n");
+        let neither = no_unit_step.replace(
+            "run: bash scripts/ci-qemu-runner.sh serve x86_64 tcg full -- chore test\n",
+            "run: 'true'\n",
+        );
         assert_ne!(neither, no_unit_step, "the mutation must actually apply");
         assert!(
             gating(&neither, &chores).is_empty(),
@@ -3059,8 +3054,7 @@ jobs:
     /// a genuine debug run.
     #[test]
     fn a_trailing_comment_naming_release_does_not_disqualify_a_debug_run() {
-        let yaml =
-            "      - run: EXPECT_OVERFLOW_CHECKS=1 cargo test --locked --lib  # deliberately not --release\n";
+        let yaml = "      - run: EXPECT_OVERFLOW_CHECKS=1 cargo test --locked --lib  # deliberately not --release\n";
         assert_eq!(
             checking_debug_runs(yaml),
             vec!["- run: EXPECT_OVERFLOW_CHECKS=1 cargo test --locked --lib".to_string()],
@@ -3109,8 +3103,7 @@ jobs:
     /// A profile named another way still disqualifies the run.
     #[test]
     fn a_profile_flag_disqualifies_a_run_even_with_the_handshake() {
-        let yaml =
-            "      - run: EXPECT_OVERFLOW_CHECKS=1 cargo test --locked --profile release-with-debug --lib\n";
+        let yaml = "      - run: EXPECT_OVERFLOW_CHECKS=1 cargo test --locked --profile release-with-debug --lib\n";
         assert_eq!(checking_debug_runs(yaml), Vec::<String>::new());
     }
 }
@@ -3812,7 +3805,9 @@ fn ci_cancels_only_a_pull_requests_superseded_run() {
     }
     assert_eq!(
         cancel.as_deref(),
-        Some("${{ github.event_name == 'pull_request' && !startsWith(github.event.pull_request.title, 'red:') }}"),
+        Some(
+            "${{ github.event_name == 'pull_request' && !startsWith(github.event.pull_request.title, 'red:') }}"
+        ),
         "ci.yml cancels a run that is not a pull request's"
     );
     let group = group.expect("ci.yml declares a concurrency group");

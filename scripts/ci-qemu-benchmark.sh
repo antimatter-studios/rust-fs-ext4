@@ -12,7 +12,8 @@ action="${1:-}"
 arch="${2:-}"
 accel="${3:-}"
 workload="${4:-smoke}"
-case "$action" in plan|run|prepare|prepare-local) ;; *) echo 'usage: ci-qemu-benchmark.sh plan|run|prepare|prepare-local x86_64|aarch64 kvm|tcg|hvf [single|smoke|full]' >&2; exit 2 ;; esac
+case "$action" in plan|run|prepare|prepare-local|serve) ;; *) echo 'usage: ci-qemu-benchmark.sh plan|run|prepare|prepare-local x86_64|aarch64 kvm|tcg|hvf [single|smoke|full]
+       ci-qemu-benchmark.sh serve x86_64|aarch64 kvm|tcg full -- <command...>' >&2; exit 2 ;; esac
 case "$arch" in amd64) arch=x86_64 ;; arm64) arch=aarch64 ;; esac
 case "$arch/$accel" in x86_64/kvm|x86_64/tcg|aarch64/tcg|aarch64/hvf) ;; *) echo "unsupported guest/accelerator: $arch/$accel" >&2; exit 2 ;; esac
 if [ "$action" = prepare-local ] && [ "${GITHUB_ACTIONS:-}" = true ]; then
@@ -22,6 +23,19 @@ fi
 preparation=false
 case "$action" in prepare|prepare-local) preparation=true ;; esac
 case "$workload" in single|smoke|full) ;; *) echo "unsupported workload: $workload" >&2; exit 2 ;; esac
+# SERVE: boot the guest the `full` preparation describes, then run a command
+# HERE, beside it, with FS_EXT4_GUEST_SSH naming an ssh config whose host
+# `guest` is that guest. CI's VM jobs run their chore tasks this way on a
+# runner without KVM: they build on this host and run in the guest. A guest
+# cache miss sets the same tools up in this live guest and publishes nothing.
+serve_command=()
+if [ "$action" = serve ]; then
+    [ "$workload" = full ] || { echo 'serve uses the full guest preparation' >&2; exit 2; }
+    shift 4 || { echo 'serve needs -- <command...>' >&2; exit 2; }
+    [ "${1:-}" = -- ] && shift
+    [ "$#" -gt 0 ] || { echo 'serve needs -- <command...>' >&2; exit 2; }
+    serve_command=("$@")
+fi
 
 disk=guest.qcow2
 seed=seed.iso
@@ -36,6 +50,8 @@ qemu_args() {
     if [ "$accel" = tcg ]; then cpu="${QEMU_TCG_CPU:-max}"; accelerator="${QEMU_TCG_ACCEL:-tcg,thread=multi}"; fi
     if [ "$accel" = hvf ]; then accelerator=hvf; fi
     [ "$arch" != aarch64 ] || machine=virt
+    # What the timing line and result.json report as this guest's setup.
+    qemu_summary="machine=$machine cpu=$cpu accel=$accelerator memory_mib=2048 smp=2"
     command_args=("qemu-system-$arch" -machine "$machine" -accel "$accelerator"
         -cpu "$cpu" -m 2048 -smp 2 -display none -monitor none -no-reboot
         -serial "file:$console" -drive "file=$disk,if=virtio,format=qcow2,discard=unmap"
@@ -78,6 +94,14 @@ fi
 
 mkdir -p tmp/qemu-benchmark tmp/qemu-images
 state="$(mktemp -d "$repo/tmp/qemu-benchmark/$arch-$accel.XXXXXX")"
+# CI's VM jobs serve as root in a container over the host runner's workspace
+# (ci-qemu-runner.sh serve). The runner owns the evidence directory from the
+# start, still mode 0700, so it can upload the evidence even when the
+# container dies before its EXIT trap hands the files back. Files kept
+# private (the guest's SSH key) stay root's and unreadable to the runner.
+if [ "$action" = serve ] && [ -n "${EVIDENCE_OWNER:-}" ]; then
+    chown "$EVIDENCE_OWNER" "$state"
+fi
 disk="$state/guest.qcow2"
 seed="$state/seed.iso"
 console="$state/console.log"
@@ -91,6 +115,8 @@ progress() {
 cleanup() {
     status=$?
     trap - EXIT
+    failed_phase="$(cat "$state/phase" 2>/dev/null || true)"
+    printf '[%s] stopping; status=%s; phase=%s\n' "$(date -u +%FT%TZ)" "$status" "$failed_phase"
     if [ -n "$sampler_pid" ]; then
         kill "$sampler_pid" 2>/dev/null || true
         wait "$sampler_pid" 2>/dev/null || true
@@ -104,15 +130,27 @@ cleanup() {
         if kill -0 "$qemu_pid" 2>/dev/null; then kill -KILL "$qemu_pid" 2>/dev/null || true; fi
         wait "$qemu_pid" 2>/dev/null || true
     fi
-    python3 - "$state/result.json" "$arch" "$accel" "$workload" "$started" "$status" "$action" <<'PY'
+    # One line per guest step, whatever the outcome: where it ran, how the
+    # guest was emulated, how long it took to boot and how long the work
+    # beside it or in it took. Unknown is said, not guessed.
+    boot_seconds="$(cat "$state/boot-seconds.txt" 2>/dev/null || echo unknown)"
+    workload_seconds="$(cat "$state/workload-seconds.txt" 2>/dev/null || echo unknown)"
+    printf '[%s] timing runner=%s arch=%s accelerator=%s qemu=[%s] host_cpus=%s build_jobs=%s test_jobs=%s boot_seconds=%s workload_seconds=%s elapsed_seconds=%s status=%s\n' \
+        "$(date -u +%FT%TZ)" "${RUNNER_NAME:-${BENCH_RUNNER_NAME:-local}}" "$arch" "$accel" "${qemu_summary:-unknown}" \
+        "$(nproc 2>/dev/null || echo unknown)" "${CARGO_BUILD_JOBS:-unset}" "${RUST_TEST_THREADS:-unset}" \
+        "$boot_seconds" "$workload_seconds" "$(( $(date +%s) - started ))" "$status" | tee "$state/timing.txt"
+    python3 - "$state/result.json" "$arch" "$accel" "$workload" "$started" "$status" "$action" "$failed_phase" \
+        "$boot_seconds" "$workload_seconds" "${qemu_summary:-unknown}" <<'PY'
 import json, os, pathlib, sys, time
-path, arch, accel, workload, started, status, purpose = sys.argv[1:]
+path, arch, accel, workload, started, status, purpose, phase, boot, work, qemu = sys.argv[1:]
 finished = int(time.time())
+def seconds(value):
+    return int(value) if value.isdigit() else None
 samples = pathlib.Path(path).with_name("qemu-rss-kib.txt")
 rss = [int(line.strip()) for line in samples.read_text().splitlines() if line.strip()] if samples.exists() else []
 pathlib.Path(path).write_text(json.dumps({
     "guest_arch": arch, "accelerator": accel, "workload": workload,
-    "status": int(status), "elapsed_seconds": finished - int(started),
+    "status": int(status), "phase": phase, "elapsed_seconds": finished - int(started),
     "started_unix": int(started), "finished_unix": finished,
     "job_ready_unix": int(os.getenv("BENCH_READY_AT", started)),
     "job_arrival_unix": int(os.getenv("BENCH_JOB_STARTED_AT", started)),
@@ -126,6 +164,9 @@ pathlib.Path(path).write_text(json.dumps({
     "requested_runner": os.getenv("BENCH_REQUESTED_RUNNER", "local"),
     "selected_runner": os.getenv("BENCH_SELECTED_RUNNER", "local"),
     "run_id": os.getenv("GITHUB_RUN_ID"), "commit": os.getenv("GITHUB_SHA"),
+    "runner_name": os.getenv("RUNNER_NAME") or os.getenv("BENCH_RUNNER_NAME") or "local",
+    "qemu": qemu, "boot_seconds": seconds(boot), "workload_seconds": seconds(work),
+    "build_jobs": os.getenv("CARGO_BUILD_JOBS"), "test_jobs": os.getenv("RUST_TEST_THREADS"),
 }, indent=2) + "\n")
 PY
     rm -f "$disk" "$seed" "$state/key" "$state/key.pub" "$state/payload.tar.gz"
@@ -134,7 +175,7 @@ PY
     rm -f "$state/seed/user-data" "$state/seed/meta-data"
     rm -f "$state/seed/network-config"
     rmdir "$state/seed" 2>/dev/null || true
-    echo "QEMU benchmark: status=$status; evidence=$state"
+    echo "QEMU benchmark: status=$status; phase=$failed_phase; evidence=$state"
     if [ "$status" -ne 0 ] && [ -f "$console" ]; then tail -40 "$console" >&2; fi
     exit "$status"
 }
@@ -191,6 +232,7 @@ PY
     printf 'guest\tmiss\t%s\n' "$guest_key" >>"$state/cache-events.tsv"
 fi
 printf '%s\n' "$(( $(date +%s) - guest_restore_started ))" >"$state/guest-image-seconds.txt"
+if [ "$action" != serve ]; then
 progress 'restoring source-keyed native test bundle'
 build_started="$(date +%s)"
 if bash "$repo/scripts/ci-qemu-cache.sh" pull tests "$arch" "$test_key" "$state/test-bundle"; then
@@ -211,6 +253,7 @@ printf '%s\n' "$(( $(date +%s) - build_started ))" >"$state/host-build-seconds.t
 for metadata in rustc.txt compile.time builder-image.txt build-host-arch.txt build-packages.txt test-cache-key.txt; do
     cp "$state/test-bundle/$metadata" "$state/$metadata"
 done
+fi
 if "$preparation" && "$prepared_hit"; then
     progress 'prepared guest and test bundle are already available; no VM setup needed'
     exit 0
@@ -268,6 +311,19 @@ qemu_pid=$!
                 "$(date -u +%FT%TZ)" "$arch" "$accel" "$(( $(date +%s) - started ))" \
                 "$(cat "$state/phase")" "$(ps -o %cpu=,rss= -p "$qemu_pid")"
             [ ! -s "$console" ] || tail -1 "$console"
+            # The CI VM jobs only: the runner's own load, CPU pressure and
+            # cgroup throttling beside the guest, in the job log and in the
+            # uploaded evidence. The pilot's runs are unchanged.
+            if [ "$action" = serve ]; then
+                bash "$repo/scripts/ci-host-pressure.sh" | tee -a "$state/host-pressure.txt" || true
+                if [[ "$arch" == x86_64 && "${GITHUB_JOB:-}" == test ]]; then
+                    # Keep disk samples while the job runs, including when a
+                    # disconnect prevents the oracle tier's final sample.
+                    FS_EXT4_GUEST_SSH="$state/ssh_config" FS_EXT4_GUEST_ARCH="$arch" \
+                        FS_EXT4_CI_VM_BASE="$base" FS_EXT4_CI_VM_OVERLAY="$disk" \
+                        bash "$repo/scripts/ci-oracle-disk-evidence.sh" --heartbeat || true
+                fi
+            fi
         fi
         sample=$((sample + 1))
         sleep 1
@@ -280,7 +336,7 @@ ssh_args=(-F /dev/null -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=n
     -o ServerAliveCountMax=4 -p "$port" root@127.0.0.1)
 boot_started="$(date +%s)"
 boot_deadline_seconds=900
-if [ "$accel" = tcg ]; then boot_deadline_seconds=1800; fi
+if [ "$accel" = tcg ]; then boot_deadline_seconds=3600; fi
 printf 'boot_budget_seconds=%s\nssh_connect_seconds=30\nprobe_budget_seconds=120\n' \
     "$boot_deadline_seconds" >"$state/boot-policy.txt"
 emergency_reported=false
@@ -340,13 +396,123 @@ printf '%s\n' "$(( $(date +%s) - boot_started ))" >"$state/boot-seconds.txt"
 progress "guest ready after $(cat "$state/boot-seconds.txt")s; checking architecture"
 actual_arch="$(ssh "${ssh_args[@]}" uname -m)"
 [ "$actual_arch" = "$arch" ] || { echo "wrong guest architecture: expected $arch, got $actual_arch" >&2; exit 1; }
+# One phase per SSH call after readiness, so a failed call is named by the
+# status line and result.json rather than left as "checking architecture".
+progress "guest architecture is $actual_arch; packing the repository payload"
 COPYFILE_DISABLE=1 tar --no-xattrs -czf "$state/payload.tar.gz" --exclude=.git --exclude=target --exclude=tmp \
     --exclude=.vm-share --exclude=.vagrant --exclude='test-disks/*.img' \
     -C "$repo" .
+progress "sending the repository payload ($(( $(wc -c <"$state/payload.tar.gz") )) bytes)"
 ssh "${ssh_args[@]}" 'rm -rf /repo /rust-fs-core /benchmark-target; mkdir -p /repo /rust-fs-core; tar -xzf - -C /repo' <"$state/payload.tar.gz"
 COPYFILE_DISABLE=1 tar --no-xattrs -czf "$state/core-payload.tar.gz" --exclude=.git --exclude=target --exclude=tmp \
     -C "$repo/../rust-fs-core" .
+progress "sending the rust-fs-core payload ($(( $(wc -c <"$state/core-payload.tar.gz") )) bytes)"
 ssh "${ssh_args[@]}" 'tar -xzf - -C /rust-fs-core' <"$state/core-payload.tar.gz"
+if [ "$action" = serve ]; then
+    if ! "$prepared_hit"; then
+        # The same setup a full preparation runs (scripts/ci-qemu-guest.sh),
+        # in this live guest only: nothing here is published. It runs
+        # detached in the guest and is polled (scripts/ci-guest-detached.sh),
+        # because a host stall longer than SSH's keepalive ended it as one
+        # foreground SSH command (run 45282138545: status 255 in rustup).
+        progress 'cold guest: installing the full preparation tools in this live guest'
+        cold_status=0
+        bash "$repo/scripts/ci-guest-detached.sh" ext4-cold-setup 5400 "$state/cold-setup.log" "$qemu_pid" \
+            -- "${ssh_args[@]}" <<'GUEST' || cold_status=$?
+set -euo pipefail
+cd /repo
+export HOME=/root FLTH_GUEST=1 DEBIAN_FRONTEND=noninteractive
+export RUSTUP_HOME=/var/lib/fs-ext4-rust/rustup CARGO_HOME=/var/lib/fs-ext4-rust/cargo
+apt_config="$(mktemp)"
+export APT_CONFIG="$apt_config"
+guest_dns_state() {
+    echo 'Guest DNS state:'
+    ls -l /etc/resolv.conf || true
+    cat /etc/resolv.conf || true
+    ip -4 route || true
+    timeout 10 resolvectl status || true
+}
+finish_cold_setup() {
+    local status=$?
+    if [ "$status" -ne 0 ]; then
+        guest_dns_state
+        timeout 15 getent ahostsv4 deb.debian.org || echo 'Guest Debian mirror lookup failed'
+    fi
+    rm -f "$apt_config" || true
+    exit "$status"
+}
+trap finish_cold_setup EXIT
+cat >"$apt_config" <<'APT'
+Acquire::Retries "5";
+Acquire::Retries::Delay::Maximum "15";
+APT::Update::Error-Mode "any";
+APT
+mirror_resolves() { timeout 15 getent ahostsv4 deb.debian.org >/dev/null; }
+if ! mirror_resolves; then
+    sleep 3
+    if ! mirror_resolves; then
+        echo 'QEMU guest DNS failed twice; trying direct DNS for this live guest'
+        guest_dns_state
+        interface=$(ip -4 route show default via 10.0.2.2 | awk '/ dev / {for (field=1; field<NF; field++) if ($field == "dev") {print $(field+1); exit}}')
+        if [ -n "$interface" ] && timeout 10 resolvectl dns "$interface" 1.1.1.1 8.8.8.8; then
+            timeout 10 resolvectl flush-caches || true
+            if mirror_resolves; then
+                echo 'Guest Debian mirror resolves through direct DNS'
+            else
+                echo 'Direct DNS did not resolve the Debian mirror; restoring QEMU DNS before apt retries'
+                timeout 10 resolvectl dns "$interface" 10.0.2.3 || true
+                timeout 10 resolvectl flush-caches || true
+            fi
+        fi
+    fi
+fi
+apt-get update
+apt-get install -y time python3 binutils ripgrep ca-certificates
+bash scripts/vm-setup.sh
+bash ../rust-fs-core/scripts/guest-rust-toolchain.sh
+GUEST
+        if [ "$cold_status" -ne 0 ]; then
+            {
+                echo 'Resolver in the environment running QEMU:'
+                ls -l /etc/resolv.conf || true
+                cat /etc/resolv.conf || true
+                python3 "$repo/scripts/ci-qemu-probe.py" 15 getent ahostsv4 deb.debian.org || echo 'QEMU host Debian mirror lookup failed'
+            } >"$state/host-dns.txt" 2>&1
+            exit "$cold_status"
+        fi
+    fi
+    # Short, because a socket path has a length limit: one connection is
+    # shared by every call the command makes.
+    control="/tmp/ext4-guest-$(basename "$state")"
+    cat >"$state/ssh_config" <<EOF
+Host guest
+    HostName 127.0.0.1
+    Port $port
+    User root
+    IdentityFile $state/key
+    IdentitiesOnly yes
+    IdentityAgent none
+    BatchMode yes
+    StrictHostKeyChecking yes
+    UserKnownHostsFile $state/known_hosts
+    GlobalKnownHostsFile /dev/null
+    ConnectTimeout 30
+    ServerAliveInterval 15
+    ServerAliveCountMax 8
+    ControlMaster auto
+    ControlPath $control
+    ControlPersist 900
+EOF
+    progress "guest ready; running beside it: ${serve_command[*]}"
+    result=0
+    workload_started="$(date +%s)"
+    FS_EXT4_GUEST_SSH="$state/ssh_config" FS_EXT4_GUEST_ARCH="$arch" \
+        FS_EXT4_CI_VM_BASE="$base" FS_EXT4_CI_VM_OVERLAY="$disk" "${serve_command[@]}" || result=$?
+    printf '%s\n' "$(( $(date +%s) - workload_started ))" >"$state/workload-seconds.txt"
+    ssh -F "$state/ssh_config" -O exit guest 2>/dev/null || true
+    progress "served command finished; status=$result"
+    exit "$result"
+fi
 tar -cf - -C "$state/test-bundle" test-bundle.json test-bundle.tar.gz | \
     ssh "${ssh_args[@]}" 'mkdir -p /repo/tmp/test-bundle; tar -xf - -C /repo/tmp/test-bundle'
 progress "running guest workload=$workload (live setup and prebuilt test output; no guest compilation)"
@@ -354,13 +520,20 @@ result=0
 workload_budget=7200
 if [ "$workload" = single ]; then
     workload_budget=600
-    if "$preparation"; then workload_budget=1800; fi
+    if "$preparation"; then
+        workload_budget=1800
+        # ARM guests run under TCG on the x86_64 VPS and need more time for
+        # their cold package setup than the x86_64 preparation guest.
+        if [ "$arch" = aarch64 ]; then workload_budget=5400; fi
+    fi
 fi
 printf 'operation=%s\nworkload_budget_seconds=%s\n' "$action" "$workload_budget" >"$state/workload-policy.txt"
 guest_operation=run
 if "$preparation"; then guest_operation=prepare; fi
+workload_started="$(date +%s)"
 ssh "${ssh_args[@]}" "cd /repo; export FLTH_GUEST=1 BENCH_GUEST_KEY='$guest_key' BENCH_OPERATION='$guest_operation'; timeout --signal=TERM --kill-after=30s '$workload_budget' bash scripts/ci-qemu-guest.sh '$arch' '$workload'" \
     2>&1 | tee "$state/workload.log" || result=$?
+printf '%s\n' "$(( $(date +%s) - workload_started ))" >"$state/workload-seconds.txt"
 progress "collecting guest results; workload status=$result"
 if [ "$result" = 124 ]; then
     printf 'Guest workload exceeded its %ss deadline; this is a timeout, not evidence of a guest crash.\n' "$workload_budget" >&2

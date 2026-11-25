@@ -54,12 +54,18 @@ mkfs_det() {
 # so an image that needs other extended options passes them here.
 EXT_DET="hash_seed=$HASH_SEED"
 
-# finish <image> — unmount, then copy the finished image out, keeping it
-# sparse (largedir is 192 MiB of mostly nothing).
+# finish <image> [check] — unmount, then copy the finished image out,
+# keeping it sparse (largedir is 192 MiB of mostly nothing).
+#
+# A <check> function, when given, reads the unmounted image before it is
+# copied, so an image that fails it never reaches <output-dir>.
 finish() {
-    local img="$1"
+    local img="$1" check="${2:-}"
     sync
     umount "$MNT"
+    if [ -n "$check" ]; then
+        "$check" "$WORK/$img"
+    fi
     cp --sparse=always "$WORK/$img" "$OUTPUT_DIR/$img.partial"
     mv -f "$OUTPUT_DIR/$img.partial" "$OUTPUT_DIR/$img"
     rm -f "$WORK/$img"
@@ -186,11 +192,46 @@ build_largedir() {
         -E "$EXT_DET" -L largedir-vol "$WORK/$img"
     mount -t ext4 -o loop "$WORK/$img" "$MNT"
     mkdir -p "$MNT/huge"
-    # 70000 empty files. `touch` in batches rather than one process per
-    # file: the names are identical to `seq -w`, in the same order.
-    (cd "$MNT/huge" && seq -w 1 70000 | sed 's/.*/file_&.txt/' | xargs touch)
+    # 70000 empty files, file_00001.txt .. file_70000.txt, created in
+    # order. `touch` in batches rather than one process per file, and
+    # 2000 names per batch, each batch synced and the volume unmounted and
+    # mounted again before the next. One pass over all 70000 names kept
+    # every new inode and dentry cached at once: an emulated guest with
+    # little memory ran out of it part way. The unmount drops them, so the
+    # build needs the same small amount of memory whatever the guest has
+    # (an ARM64 guest with 64 MiB and no swap built every fixture this
+    # way). The names, their order and the count are what one pass made.
+    local first last
+    for ((first = 1; first <= 70000; first += 2000)); do
+        last=$((first + 1999))
+        (cd "$MNT/huge" && seq -f '%05g' "$first" "$last" | sed 's/.*/file_&.txt/' | xargs touch)
+        sync
+        umount "$MNT"
+        mount -t ext4 -o loop "$WORK/$img" "$MNT"
+        echo "[guest] largedir: $last of 70000 written, uptime $(cut -d ' ' -f1 /proc/uptime)s"
+    done
     echo 'control' > "$MNT/small.txt"
-    finish "$img"
+    finish "$img" check_largedir
+}
+
+# check_largedir <image> — the unmounted image holds exactly the 70000
+# regular files file_00001.txt .. file_70000.txt in /huge, as debugfs
+# lists them, and e2fsck finds nothing to fix. Read-only: `debugfs`
+# without -w and `e2fsck -n` write nothing.
+check_largedir() {
+    local image="$1"
+    debugfs -R 'ls -p /huge' "$image" | awk -F/ '
+        $6 ~ /^file_[0-9][0-9][0-9][0-9][0-9]\.txt$/ {
+            number = substr($6, 6, 5) + 0
+            if (number < 1 || number > 70000 || $3 !~ /^10/) invalid = 1
+            count++
+        }
+        END {
+            if (invalid || count != 70000) { print "[guest] largedir: /huge holds " count " valid names, not 70000" > "/dev/stderr"; exit 1 }
+            print "[guest] largedir: /huge verified, " count " regular files"
+        }
+    '
+    e2fsck -fn "$image"
 }
 
 build_manyfiles() {

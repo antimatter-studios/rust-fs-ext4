@@ -19,6 +19,13 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUN_DIR=""
 
 cleanup() {
+    local guest_run_dir
+    if [[ -n "$RUN_DIR" && -n "$CHILD_PID" && -n "${FS_EXT4_GUEST_SSH:-}" ]]; then
+        printf -v guest_run_dir '%q' "$RUN_DIR"
+        ssh -n -F "$FS_EXT4_GUEST_SSH" guest \
+            "if [ -d $guest_run_dir ]; then find $guest_run_dir -xdev -depth -mindepth 1 -delete && rmdir $guest_run_dir && fstrim /; fi" ||
+            printf 'test.sh: failed to clean and trim guest scratch %s\n' "$RUN_DIR" >&2
+    fi
     if [[ -n "$RUN_DIR" && -d "$RUN_DIR" ]]; then
         find "$RUN_DIR" -depth -mindepth 1 -delete
         rmdir "$RUN_DIR"

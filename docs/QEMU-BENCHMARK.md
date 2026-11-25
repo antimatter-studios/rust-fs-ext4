@@ -83,12 +83,14 @@ or native-build policy to handle a cache miss; authentication and network errors
 remain fatal. Explicit local-directory reuse is unchanged and is not registry
 publication evidence.
 
-Runner placement and KVM/TCG are deliberately excluded: matching hosted and VPS
-trials reuse the same artifacts. A separate `QEMU guest preparation (pilot)`
-workflow supplies installed tools and kernel-made fixtures before measurement:
-x86_64 preparation uses KVM on a hosted x86_64 runner; ARM64 preparation uses
-a native ARM64 hosted runner, not an ARM64 guest on x86_64. Native ARM64 still
-uses TCG where KVM is unavailable, but never cross-architecture tool installation.
+Runner placement and KVM/TCG are deliberately excluded: every trial reuses the
+same artifacts. A separate `QEMU guest preparation (pilot)` workflow supplies
+installed tools and kernel-made fixtures before measurement. It runs on the
+x86_64 `antimatter-vps-linux-x64` runner, which has no KVM, so both guests are
+prepared under TCG: the x86_64 guest and the ARM64 guest. The prepared disk holds
+what the setup installed and built inside the guest, for the guest's
+architecture; the accelerator does not change those bytes. KVM preparation
+still requires a native x86_64 host and is never emulated.
 Full workloads also
 install Cargo for metadata assertions, not for compiling tests. Before publishing,
 the guest removes transferred sources, binaries and its ephemeral SSH key,
@@ -134,16 +136,25 @@ required predecessor queued ahead of every warm VPS run. On first use, wait for
 the preparation workflow to publish both images, then rerun the measurement
 workflow once. A missing-image failure before that is a prerequisite failure,
 not an emulator benchmark. Single-test measurements have a 10-minute guest
-workload deadline and 30-minute job limit. Single-test preparation has a
-30-minute guest setup/test deadline and a 45-minute job limit. Do not stretch
-these single-test deadlines to repeat the failed cold experiment; if preparation
-or a warm single test is still impractical, stop the pilot instead of rolling
-it out. Full preparation retains its existing 7,200-second guest workload
-deadline and uses a 180-minute job limit, matching the full benchmark jobs.
-The outer limit covers preparation, publication and the separate warm-overlay
-verification; the old 45-minute limit cancelled progressing ARM64 full tests
-in run 45091356059 before publication. This is not full-workload success or
-permission to skip a test, publish a live disk or provision during warm trials.
+workload deadline and a 30-minute job limit. Single-test preparation keeps its
+30-minute guest setup/test deadline. Its outer job limit covers cold setup,
+publication and a separate warm-overlay verification. The same outer limits
+apply to smoke preparation: 45 minutes for x86_64 and 120 for aarch64. Full
+preparation keeps its 7,200-second guest workload deadline and 180-minute job
+limit on both architectures, matching the full benchmark jobs.
+
+In run 45313336976, x86_64 finished in 31m38s, including 5m42s of warm
+verification. The aarch64 job (138188330073) took 18m25s to boot and reached
+guest setup 24 minutes into the job. GitHub cancelled it at its 45-minute
+limit, still in setup; run 45299228221 also reached setup and was cancelled
+at that limit. For aarch64, allow 24 minutes to reach setup, 30 for the
+single-test guest deadline, 6 for publication and warm startup/transfer,
+30 for warm boot (a served aarch64 guest on the same PR took nearly that
+long to boot), and 10 for the warm single test. The 120-minute job limit
+leaves 20 minutes above that 100-minute estimate. This is an estimate, not
+a measured ARM64 finish or a reason to change the guest workload deadlines.
+If preparation or warm single-test verification still cannot finish within
+their guest deadlines, stop the pilot instead of rolling it out.
 
 An always-run step restores ownership of the generated diagnostic and image
 directories before artifact upload, without requesting host privilege. It uses
@@ -178,8 +189,9 @@ package read/write access; the preparation workflow instead uses its scoped
 not cache misses and do not trigger runtime installation.
 
 The preparation workflow first publishes the x86_64 environment on a VPS runner.
-Its native ARM64 preparation job builds/publishes the ARM64 environment on its
-ARM64 host. Warm benchmark jobs only resolve/pull it and run
+Both preparation jobs run in that x86_64 environment: its QEMU emulates the ARM64
+guest, and its cross compiler builds the ARM64 tests. No ARM64 environment is
+published from CI, because no CI host is ARM64. Warm benchmark jobs only resolve/pull it and run
 `scripts/ci-qemu-runner.sh`. They do not run apt, rustup or environment setup.
 The remaining host bootstrap is checkout, the pinned chore download and sibling
 fetch, plus Docker and (when requested) usable `/dev/kvm`. First-use image pulls,
@@ -218,10 +230,12 @@ rebuild the executable bundle but reuse the provisioned runner and guest keys.
 The `QEMU runner benchmark (pilot)` workflow runs when its implementation changes
 in an owner-authored PR. Once available on the default branch, it can also be
 dispatched with `workload=single`, `workload=smoke` or `workload=full`. Each trial starts independently
-and runs the QEMU argument regression tests itself. VPS trials explicitly request
-`antimatter-vps-linux-x64`; hosted trials request `ubuntu-24.04`. There is no hosted
-bootstrap job delaying the VPS trials, and no fallback that could invalidate a
-placement comparison. A full or unavailable VPS pool leaves its trials queued
+and runs the QEMU argument regression tests itself. Every trial explicitly requests
+`antimatter-vps-linux-x64`. There is no hosted trial: a job named for a hosted
+placement that ran on the VPS would report a comparison nobody measured, so the
+report covers the VPS placements only and states that no hosted placement was
+measured or compared. There is no bootstrap job delaying the trials, and no
+fallback that could invalidate a placement. A full or unavailable VPS pool leaves its trials queued
 until a matching runner is available; it does not silently send them to hosted.
 This fixed placement is specific to the controlled benchmark, not a replacement
 for production autobalancing. The required CI workflow and its gate stay unchanged.
@@ -290,8 +304,8 @@ Single workloads must execute exactly one test. Per-trial passed, failed and
 ignored counts accompany the timing table; matching empty files are not proof.
 Source cleanliness must be explicitly recorded as JSON `false`; missing, null
 or non-boolean evidence cannot prove that a commit describes the tested checkout.
-Hosted evidence must identify both `ubuntu-24.04` and `github-hosted`; a VPS
-runner or missing placement metadata cannot count as the hosted comparison.
+VPS evidence must identify both `antimatter-vps-linux-x64` and `self-hosted`; a
+hosted runner, a hosted-named trial or missing placement metadata is refused.
 
 The primary metric is **time from workflow submission to a verified result**,
 not raw CPU speed. Job `started_at` can precede runner allocation, so queue
