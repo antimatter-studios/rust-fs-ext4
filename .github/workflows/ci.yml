@@ -348,8 +348,8 @@ jobs:
     timeout-minutes: 60
     env:
       FLTH_ACCELERATOR: tcg
-      FLTH_VM_MEM: '2048'
-      FLTH_GUEST_MEM: '1536'
+      FLTH_VM_MEM: '1024'
+      FLTH_GUEST_MEM: '768'
     steps:
       - uses: actions/checkout@v4
       - name: Install chore
@@ -487,7 +487,10 @@ jobs:
   # guest of its architecture (scripts/ci-harness-guest-test.sh): under TCG,
   # since the runner has no KVM, with QEMU's translation cache capped
   # (FLTH_VM_MEM, MiB) and the guest's RAM at most 75% of it
-  # (FLTH_GUEST_MEM). A tier that fails is rerun alone (Re-run failed jobs).
+  # (FLTH_GUEST_MEM). The harness admits a guest only when the runner pod has
+  # its RAM, the cache cap and QEMU's overhead free: a pod had 3415 MiB, and
+  # 768 + 1024 + 384 MiB leaves room for the runner. A tier that fails is
+  # rerun alone (Re-run failed jobs).
   # The x86_64 unit tier is jobs.unit; test-scripts-x86_64 checks the shell
   # tooling on the runner.
 
@@ -498,8 +501,8 @@ jobs:
     timeout-minutes: 60
     env:
       FLTH_ACCELERATOR: tcg
-      FLTH_VM_MEM: '2048'
-      FLTH_GUEST_MEM: '1536'
+      FLTH_VM_MEM: '1024'
+      FLTH_GUEST_MEM: '768'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -534,8 +537,8 @@ jobs:
     timeout-minutes: 60
     env:
       FLTH_ACCELERATOR: tcg
-      FLTH_VM_MEM: '2048'
-      FLTH_GUEST_MEM: '1536'
+      FLTH_VM_MEM: '1024'
+      FLTH_GUEST_MEM: '768'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -570,8 +573,8 @@ jobs:
     timeout-minutes: 60
     env:
       FLTH_ACCELERATOR: tcg
-      FLTH_VM_MEM: '2048'
-      FLTH_GUEST_MEM: '1536'
+      FLTH_VM_MEM: '1024'
+      FLTH_GUEST_MEM: '768'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -606,8 +609,8 @@ jobs:
     timeout-minutes: 60
     env:
       FLTH_ACCELERATOR: tcg
-      FLTH_VM_MEM: '2048'
-      FLTH_GUEST_MEM: '1536'
+      FLTH_VM_MEM: '1024'
+      FLTH_GUEST_MEM: '768'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -681,8 +684,8 @@ jobs:
     # runs `chore test:unit` there.
     env:
       FLTH_ACCELERATOR: tcg
-      FLTH_VM_MEM: '2048'
-      FLTH_GUEST_MEM: '1536'
+      FLTH_VM_MEM: '1024'
+      FLTH_GUEST_MEM: '768'
       FLTH_GUEST_ARCH: aarch64
     steps:
       - uses: actions/checkout@v4
@@ -721,8 +724,8 @@ jobs:
     # runs `chore test:images` there.
     env:
       FLTH_ACCELERATOR: tcg
-      FLTH_VM_MEM: '2048'
-      FLTH_GUEST_MEM: '1536'
+      FLTH_VM_MEM: '1024'
+      FLTH_GUEST_MEM: '768'
       FLTH_GUEST_ARCH: aarch64
     steps:
       - uses: actions/checkout@v4
