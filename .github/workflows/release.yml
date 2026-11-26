@@ -45,6 +45,7 @@ jobs:
       FLTH_ACCELERATOR: tcg
       FLTH_VM_MEM: '1024'
       FLTH_GUEST_MEM: '768'
+      FLTH_HOST_MEMORY_RESERVE_MIB: '768'
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
