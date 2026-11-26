@@ -28,15 +28,13 @@
 #               library, so it needs a machine and not a BSD: this guest
 #               already is that machine (#269)
 #
-# AND WHAT A RUST BUILD NEEDS FROM THE DISTRIBUTION (curl, gcc, libc6-dev,
-# pkg-config), for `chore test:vm`: the whole suite compiled and run in
-# here, which is how a macOS host runs a Linux test suite at all. NOT THE
-# TOOLCHAIN ITSELF: scripts/guest-suite.sh installs that through
-# `../rust-fs-core/scripts/guest-rust-toolchain.sh`, rust-fs-core's one copy of the
-# install, which every driver runs and which recovers from an install a
-# reaper or a deadline interrupted. It cannot run from here: the harness
-# ships this one file into the guest, before `test:vm` has staged the core
-# sibling on the share (rust-fs-core#190).
+# AND PYTHON, which unpacks and checks the test bundle `chore test:vm` runs
+# here (scripts/guest-suite.sh). The harness's guest never compiles the
+# suite: its [build] step does that on the host, in the test builder
+# container, and the guest has no Rust toolchain.
+#
+# No guest compiles the suite any more. gcc,
+# cmake and make stay: they build lwext4, above.
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 
@@ -85,7 +83,7 @@ setup_step() {
 
 setup_step package-index apt-get update -qq
 setup_step oracle-packages apt-get install -y -qq e2fsprogs attr acl fdisk util-linux curl gcc libc6-dev pkg-config \
-    git cmake make >/dev/null
+    git cmake make python3 >/dev/null
 setup_step loop-module modprobe loop
 
 # sed, not head: head exits after one line, mke2fs gets SIGPIPE writing

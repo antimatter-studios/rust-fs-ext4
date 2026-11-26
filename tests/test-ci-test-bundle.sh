@@ -48,7 +48,8 @@ class BundleTest(unittest.TestCase):
             archive = root / 'bundle.tar'
             with (patch.object(bundle, 'REPO', source), patch.object(bundle, 'CI_REPO', source),
                   patch.object(bundle, 'selections', return_value=[flags]),
-                  patch.object(bundle, 'compile_targets', compiler)):
+                  patch.object(bundle, 'compile_targets', compiler),
+                  patch.object(bundle, 'cargo_metadata', return_value={'packages': ['probe']})):
                 bundle.build(arch, key, archive)
                 self.assertEqual(compiler.call_args_list, [
                     unittest.mock.call(['test', '--no-run', *flags]),
@@ -59,6 +60,8 @@ class BundleTest(unittest.TestCase):
                     bundle.verify(other, key, archive)
                 with self.assertRaisesRegex(ValueError, 'architecture or input key mismatch'):
                     bundle.verify(arch, '2' * 64, archive)
+                with self.assertRaisesRegex(ValueError, 'scope'):
+                    bundle.verify(arch, key, archive, scope='local')
                 with self.assertRaises(FileNotFoundError):
                     bundle.verify(arch, key, root / 'not-cached.tar')
                 destination = root / 'test'
@@ -70,6 +73,9 @@ class BundleTest(unittest.TestCase):
                     self.assertTrue(os.access(destination / cli, os.X_OK))
                     manifest = json.loads((destination / 'target/ci-test-manifest.json').read_text())
                     self.assertEqual(manifest['cli'], cli)
+                    # The guest has no Cargo: what the build's Cargo said is installed.
+                    self.assertEqual(json.loads((destination / 'target/cargo-metadata.json').read_text()),
+                                     {'packages': ['probe']})
 
                 altered = root / 'altered.tar'
                 with tarfile.open(archive) as original, tarfile.open(altered, 'w') as corrupted:
@@ -106,17 +112,40 @@ class BundleTest(unittest.TestCase):
 
     def test_test_dispatch_never_calls_cargo(self):
         manifest = {'arch': 'x86_64', 'invocations': [{'flags': ['--locked'], 'tests': ['target/probe']}]}
-        with (patch.dict(os.environ, FS_EXT4_GUEST_ARCH='x86_64', FS_EXT4_GUEST_SSH='test-config'),
+        with (patch.dict(os.environ, FLTH_GUEST='1'),
+              patch.object(bundle.platform, 'machine', return_value='x86_64'),
               patch.object(bundle.subprocess, 'run') as runner):
             runner.return_value.returncode = 0
             self.assertEqual(bundle.run(['--locked', '--', '--skip', 'needs_host::'], manifest), 0)
-            runner.assert_called_once_with(['bash', bundle.REPO / 'scripts/ci-guest-run.sh',
-                                            bundle.REPO / 'target/probe', '--skip', 'needs_host::'])
+            runner.assert_called_once_with([bundle.REPO / 'target/probe', '--skip', 'needs_host::'],
+                                           cwd=bundle.REPO)
             with self.assertRaisesRegex(ValueError, 'refusing to compile'):
                 bundle.run(['--release'], manifest)
-            with patch.dict(os.environ, FS_EXT4_GUEST_ARCH='aarch64'):
-                with self.assertRaisesRegex(ValueError, 'matching QEMU guest'):
-                    bundle.run(['--locked'], manifest)
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop('FLTH_GUEST', None)
+            with self.assertRaisesRegex(ValueError, 'harness guest of their architecture'):
+                bundle.run(['--locked'], manifest)
+
+    def test_local_scope_is_the_whole_suite_in_one_invocation(self):
+        for arch in bundle.MACHINES:
+            with self.subTest(arch=arch):
+                self.assertEqual(list(bundle.selections(arch, 'local')),
+                                 [('--locked', '--profile', 'test-opt')])
+        with self.assertRaisesRegex(ValueError, 'invalid bundle architecture, key or scope'):
+            bundle.main('verify', 'aarch64', '1' * 64, 'bundle.tar', 'nightly')
+
+    def test_in_the_guest_the_bundle_runs_its_executables_directly(self):
+        manifest = {'arch': 'aarch64', 'invocations': [{'flags': ['--locked'], 'tests': ['target/probe']}]}
+        with (patch.dict(os.environ, FLTH_GUEST='1'),
+              patch.object(bundle.platform, 'machine', return_value='aarch64'),
+              patch.object(bundle.subprocess, 'run') as runner):
+            runner.return_value.returncode = 0
+            self.assertEqual(bundle.run(['--locked', '--', 'filter'], manifest), 0)
+            runner.assert_called_once_with([bundle.REPO / 'target/probe', 'filter'], cwd=bundle.REPO)
+        with (patch.dict(os.environ, FLTH_GUEST='1'),
+              patch.object(bundle.platform, 'machine', return_value='x86_64')):
+            with self.assertRaisesRegex(ValueError, 'harness guest of their architecture'):
+                bundle.run(['--locked'], manifest)
 
 
 unittest.main()

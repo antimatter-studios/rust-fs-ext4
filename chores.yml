@@ -38,7 +38,8 @@ chore_min_version: 0.6.0
 #                      images loop-mounted by Linux in the guest
 #   chore test:lwext4  A THIRD IMPLEMENTATION reads what we wrote, and we
 #                      read what it wrote: lwext4, built in the guest
-#   chore test:vm      the whole suite compiled and run INSIDE the guest
+#   chore test:vm      the whole suite, compiled in the test builder
+#                      container on the host and run INSIDE the guest
 #   chore test         everything, exactly as CI runs it
 #
 # WHERE THINGS RUN, and why.
@@ -56,8 +57,10 @@ chore_min_version: 0.6.0
 #
 #   THE LINUX TESTS RUN ON LINUX. On a Linux host that is this host, and
 #   `chore test` compiles and runs them here. On a Mac nothing Linux-shaped
-#   runs natively: `chore test` runs `test:vm` instead, which builds and
-#   runs the same sources inside the guest.
+#   runs natively: `chore test` runs `test:vm` instead, a chain as the
+#   pipeline is: the harness's [build] step compiles the same sources in
+#   CI's builder image, in Docker on the host, and the guest runs what it
+#   compiled. The guest never compiles.
 #
 # NOTHING SKIPS: a missing tool, fixture or VM fails the test that needed
 # it, naming the task that provides it.
@@ -340,7 +343,14 @@ vars:
   # grep check under pipefail no longer fails on its own match.
   # v0.11.0: guest test concurrency follows the resource profile, and each
   # guest run gets a private disk-backed temporary directory.
-  LINUX_HARNESS_REF: v0.11.0
+  # After v0.11.0, until the next release: the branch feat/vagrant-tcg, on
+  # main with the [build] step (#301) and the host memory budget (#300),
+  # adds FLTH_ACCELERATOR=tcg, FLTH_VM_MEM, FLTH_GUEST_MEM and
+  # FLTH_BUILD_PREBUILT and FLTH_GUEST_ARCH, which CI's test jobs use. LINUX_HARNESS_BASE
+  # names the release a branch or commit pin builds on, for
+  # tests/scripts/test-harness-pin-keeps-guest-off-shares.sh.
+  LINUX_HARNESS_REF: feat/vagrant-tcg
+  LINUX_HARNESS_BASE: v0.11.0
 
 # The harness's consumer tasks, as `chore vm:<task>`. OPTIONAL because the
 # harness is a sibling that `chore siblings` itself checks out: without
@@ -683,13 +693,17 @@ tasks:
       - 'bash ../rust-fs-core/scripts/test-floor.sh wasm 4'
 
   test:vm:
-    desc: 'The whole suite, compiled and run INSIDE the harness VM (how a Mac runs the Linux tests)'
-    # scripts/guest-suite.sh, through the harness's [test] guest_command.
-    # The toolchain and the build directory live on the VM's own disk, so
-    # the first run pays a full build and later runs are incremental.
-    # The guest stays up afterwards, for the next run. Long enough for CI's
-    # emulated (TCG) guest on a runner without KVM, which compiles the suite
-    # several times slower than a KVM guest.
+    desc: 'The whole suite, compiled in a container on the host and run INSIDE the harness VM (how a Mac runs the Linux tests)'
+    # A CHAIN, AS THE PIPELINE IS. The harness's [build] step
+    # (fs-linux-test-harness.toml) compiles the test executables in the test
+    # builder image, under Docker on this host (scripts/test-bundle-build.sh
+    # local); its build directory is a Docker volume, so later runs are
+    # incremental. Then the guest runs scripts/guest-suite.sh, the [test]
+    # guest_command, which installs that bundle and runs it: no toolchain in
+    # the guest. The guest stays up afterwards, for the next run.
+    #
+    # CI's test jobs boot the same harness guest under TCG on the build job's
+    # output (FLTH_BUILD_PREBUILT=1).
     timeout: 360m
     on_timeout:
       - cmd: '../fs-linux-test-harness/scripts/vm.sh down || ../fs-linux-test-harness/scripts/vm.sh destroy'
@@ -710,33 +724,24 @@ tasks:
           case "$arg" in --verbose|-v) continue ;; esac
           guest_args="$guest_args $arg"
         done
-        # A CI runner without KVM runs the same in-guest suite in the guest
-        # `scripts/ci-qemu-runner.sh serve` booted beside this task, which
-        # stages the same siblings (scripts/ci-guest-suite.sh).
-        if [ -n "${FS_EXT4_GUEST_SSH:-}" ]; then
-          # shellcheck disable=SC2086  # the words are the point
-          bash ../rust-fs-core/scripts/tier.sh test:vm vm 3900 193000 -- \
-            scripts/ci-guest-suite.sh $guest_args
-        else
-          [ -x ../fs-linux-test-harness/scripts/vm.sh ] || {
-            echo "test:vm needs the harness sibling -- run 'chore siblings'." >&2
+        [ -x ../fs-linux-test-harness/scripts/vm.sh ] || {
+          echo "test:vm needs the harness sibling -- run 'chore siblings'." >&2
+          exit 1
+        }
+        share="$(../fs-linux-test-harness/scripts/vm.sh share)"
+        for sibling in rust-fs-core fs-linux-test-harness; do
+          [ -e "../$sibling/.git" ] || {
+            echo "test:vm: ../$sibling is not checked out -- run 'chore siblings'." >&2
             exit 1
           }
-          share="$(../fs-linux-test-harness/scripts/vm.sh share)"
-          for sibling in rust-fs-core; do
-            [ -e "../$sibling/.git" ] || {
-              echo "test:vm: ../$sibling is not checked out -- run 'chore siblings'." >&2
-              exit 1
-            }
-            dest="$share/siblings/$sibling"
-            rm -rf "$dest"
-            mkdir -p "$dest"
-            git -C "../$sibling" archive --format=tar HEAD | tar -x -C "$dest"
-          done
-          # shellcheck disable=SC2086  # the words are the point
-          bash ../rust-fs-core/scripts/tier.sh test:vm vm 3900 193000 -- \
-            ../fs-linux-test-harness/scripts/vm.sh guest-test $guest_args
-        fi
+          dest="$share/siblings/$sibling"
+          rm -rf "$dest"
+          mkdir -p "$dest"
+          git -C "../$sibling" archive --format=tar HEAD | tar -x -C "$dest"
+        done
+        # shellcheck disable=SC2086  # the words are the point
+        bash ../rust-fs-core/scripts/tier.sh test:vm vm 3900 193000 -- \
+          ../fs-linux-test-harness/scripts/vm.sh guest-test $guest_args
         # cli_export_kernel.rs adds two cases to the whole-suite floor.
         # cli_import_kernel.rs adds three more cases.
         # #536 adds one unit case and two kernel cases.
@@ -844,7 +849,8 @@ tasks:
     # BUDGET: all script tests, including the whole-image-read guard, measured
     # 53 lines and 3021 bytes in PR #659's CI run 45090429034 and local rerun.
     # The v0.11.0 pin verdict is one byte longer than v0.9.1; every test passed.
-    # tests/scripts/test-guest-detached-setup.sh adds its "==" line and its
+    # tests/scripts/test-guest-detached-setup.sh, since deleted with the pilot
+    # QEMU, added its "==" line and its
     # PASS line, 2 lines and 130 bytes, measured locally: 55 and 3151.
     # By glob, so a test added later needs no edit here -- a guard that
     # has to be registered somewhere else is a guard that gets silently

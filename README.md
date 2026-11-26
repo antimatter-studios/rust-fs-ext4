@@ -620,7 +620,7 @@ chore test:oracle   # the driver writes, e2fsprogs reads back — in the VM
 chore test:kernel   # the driver writes, the real kernel reads back — in the VM
 chore test:lwext4   # a third implementation reads ours, and we read its — in the VM
 chore test:wasm     # the browser build (wasm32-unknown-unknown), run under Node
-chore test:vm       # the whole suite, compiled and run INSIDE the VM
+chore test:vm       # the whole suite, compiled in Docker on the host, run INSIDE the VM
 chore test          # everything, as CI runs it
 ```
 
@@ -684,22 +684,45 @@ including hard-link publication, nanosecond timestamps and FIFO refusal,
 without depending on the host share's semantics. Native host-oracle tiers
 still use the shared directory so the guest can read their images.
 
-### Retrying the CI guest tests
+### `chore test:vm` is the same chain
 
-The AMD64 and ARM64 guest jobs in `ci.yml` compile in separate toolchain
-containers, which never launch QEMU. The builder image is reused by a hash of
-its Dockerfile and pinned toolchain inputs. Each build job restores an exact
-test bundle keyed by the source tree, sibling revisions, target architecture
-and builder image digest. On a cache miss it compiles and saves that bundle.
+On a Mac, `chore test:vm` runs the suite the way the CI jobs do: one step
+compiles, the next tests what it compiled. The harness's `[build]` step
+(`fs-linux-test-harness.toml`) builds CI's test builder image from the same
+recipe (`scripts/test-builder-context.sh`) for the guest's architecture, and
+compiles the whole suite in it under Docker (`scripts/test-bundle-build.sh
+local`). It needs Docker on the host. The build directory and the crate
+registry are kept in a Docker volume, so a second run is incremental. The guest
+then installs that bundle and runs it (`scripts/guest-suite.sh`). It has no Rust
+toolchain and compiles nothing.
 
-The test jobs download the bundle from their successful build job and verify
-its identity, executable architecture and checksums before booting QEMU
-directly on the runner. Missing or mismatched artifacts fail the job rather
-than triggering a build. Use **Re-run failed jobs** to retry a failed test
-without rerunning a successful build; the uploaded artifact must still be
-available. The AMD64 shell tooling checks still build their own sandbox
-fixtures, not the tests' executables. The separate `suite-in-vm` job still
-checks the macOS path that compiles inside the guest.
+### The CI pipeline: toolchain, build, then one test job per tier
+
+1. **`test-builder-image`:** the toolchain image. Its tag is a hash of the
+   Dockerfile and the pinned toolchain inputs, it is kept in GHCR, and it is
+   built only when no image with that hash exists.
+2. **`build-test-x86_64` / `build-test-aarch64`:** compile the test executables
+   in that image. Each restores an exact bundle keyed by the source tree, the
+   sibling revisions, the target architecture and the image digest, and
+   compiles only on a cache miss. Nothing else in the pipeline compiles the
+   suite.
+3. **`test-<tier>-<arch>`:** one job per tier and architecture. Each downloads
+   its build job's bundle, verifies its identity, architecture and checksums,
+   and runs its tier inside fs-linux-test-harness's guest of that architecture
+   (`scripts/ci-harness-guest-test.sh`). The runner has no KVM, so the guest
+   runs under TCG (`FLTH_ACCELERATOR=tcg`), with QEMU's translation cache
+   capped (`FLTH_VM_MEM`) and its RAM limited (`FLTH_GUEST_MEM`); the ARM64
+   jobs emulate an ARM64 guest (`FLTH_GUEST_ARCH=aarch64`). The x86_64 unit
+   tier is the `unit` job, and `test-scripts-x86_64` checks the shell tooling,
+   which builds its own sandboxes.
+
+`fixtures` makes the kernel-made images in the harness's guest, and keeps them
+in the Actions cache under a hash of their recipe, so the guest boots only when
+the recipe changes.
+
+A missing or mismatched bundle fails the test job rather than triggering a
+build. Use **Re-run failed jobs** to retry one failed tier without rerunning a
+successful build; the uploaded artifact must still be available.
 
 ### Git hooks
 

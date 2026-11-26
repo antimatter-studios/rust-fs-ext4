@@ -5,18 +5,30 @@
 # dumpe2fs, mke2fs), because e2fsprogs on a workstation is whatever that
 # machine has and on a Mac is not the platform these images are for; the
 # kernel oracles, which loop-mount our images; and, on a host that is not
-# Linux, the suite itself (`chore test:vm`).
+# Linux, the suite itself (`chore test:vm`). What the guest runs is compiled
+# BEFORE it, in the test builder container on the host ([build]), as CI's
+# compile job does: the guest has no Rust toolchain.
 
 [project]
 name = "rust-fs-ext4"
 
 [setup]
-# Runs as root INSIDE the VM; installs e2fsprogs, attr/acl, and the
-# toolchain the in-guest suite builds with.
+# Runs as root INSIDE the VM; installs e2fsprogs, attr/acl, lwext4 and the
+# Python that unpacks the test bundle. No Rust toolchain.
 script = "scripts/vm-setup.sh"
 
+[build]
+# Runs on the HOST before the guest boots, in the image CI's compile job uses
+# (scripts/test-builder-context.sh writes the same recipe CI keys it by), built
+# here for the guest's architecture. It writes the test bundle the guest runs.
+dockerfile = "scripts/ci-test-builder/Dockerfile"
+context = "scripts/test-builder-context.sh"
+command = "scripts/test-bundle-build.sh local"
+siblings = "rust-fs-core fs-linux-test-harness"
+
 [test]
-# Runs INSIDE the guest, from /repo (this repository, mounted there).
+# Runs INSIDE the guest, from /repo (this repository, mounted there): installs
+# the bundle [build] made and runs it.
 guest_command = "scripts/guest-suite.sh"
 
 [share]

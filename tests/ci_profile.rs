@@ -763,11 +763,9 @@ fn carries_any(keys: &[String], forbidden: &[&str]) -> bool {
 /// `! chore x` is NOT an invocation of `x` for this purpose: the `!`
 /// inverts it, so the step is green exactly when the task fails.
 ///
-/// `bash scripts/ci-qemu-runner.sh serve <arch> <accel> <workload> -- chore x`
-/// (or the native `ci-test-serve.sh` equivalent)
-/// IS one: the VM jobs on a runner without KVM run their task beside an
-/// emulated guest, and the wrapper execs the command after its `--`, with
-/// the wrapper's status.
+/// `bash scripts/ci-harness-guest-test.sh <arch> <key> --chore <v> x...`
+/// runs each task x in the harness's guest of that architecture, on the
+/// build job's bundle: each is an invocation.
 fn chore_invocations(script: &str) -> Vec<String> {
     let mut found = Vec::new();
     for raw in script.lines() {
@@ -785,16 +783,20 @@ fn chore_invocations(script: &str) -> Vec<String> {
             if words.peek() == Some(&"bash") {
                 words.next();
             }
-            if words.peek().is_some_and(|w| {
-                w.ends_with("scripts/ci-qemu-runner.sh") || w.ends_with("scripts/ci-test-serve.sh")
-            }) {
+            if words
+                .peek()
+                .is_some_and(|w| w.ends_with("scripts/ci-harness-guest-test.sh"))
+            {
+                // <arch> <key> --chore <version> <task>...: the tasks run in
+                // the harness's guest.
                 words.next();
-                if words.next() != Some("serve") {
-                    continue;
+                words.next();
+                words.next();
+                if words.next() == Some("--chore") {
+                    words.next();
+                    found.extend(words.map(str::to_string));
                 }
-                if !words.by_ref().any(|w| w == "--") {
-                    continue;
-                }
+                continue;
             }
             let Some(program) = words.next() else {
                 continue;
@@ -1256,21 +1258,25 @@ fn ci_gates_keep_their_checks_without_selecting_workload_runners() {
     let document = load_document(&text, &path);
     // The runner class each job asks the gate for. KVM jobs ask for the KVM
     // class, and test-arm64 for arm64; the rest take any Linux x86_64.
-    for (name, class) in [
-        ("changes", "linux-x64"),
-        ("unit", "linux-x64"),
-        ("fixtures", "linux-x64-kvm"),
-        ("test", "linux-x64-kvm"),
-        ("test-arm64", "linux-arm64"),
-        ("suite-in-vm", "linux-x64-kvm"),
-        ("wasm", "linux-x64"),
-        ("semver", "linux-x64"),
-        ("msrv", "linux-x64"),
-        ("cli", "linux-x64"),
-        ("provenance", "linux-x64"),
-        ("ci-ok", "linux-x64"),
+    for (name, gate, class) in [
+        ("changes", "changes-gate", "linux-x64"),
+        ("unit", "unit-gate", "linux-x64"),
+        ("test-fixtures", "test-fixtures-gate", "linux-x64-kvm"),
+        ("test-images-x86_64", "test-gate", "linux-x64-kvm"),
+        ("test-oracle-x86_64", "test-gate", "linux-x64-kvm"),
+        ("test-kernel-x86_64", "test-gate", "linux-x64-kvm"),
+        ("test-lwext4-x86_64", "test-gate", "linux-x64-kvm"),
+        ("test-scripts-x86_64", "test-gate", "linux-x64-kvm"),
+        ("test-unit-aarch64", "test-arm64-gate", "linux-arm64"),
+        ("test-images-aarch64", "test-arm64-gate", "linux-arm64"),
+        ("wasm", "wasm-gate", "linux-x64"),
+        ("semver", "semver-gate", "linux-x64"),
+        ("msrv", "msrv-gate", "linux-x64"),
+        ("cli", "cli-gate", "linux-x64"),
+        ("provenance", "provenance-gate", "linux-x64"),
+        ("ci-ok", "ci-ok-gate", "linux-x64"),
     ] {
-        let gate_name = format!("{name}-gate");
+        let gate_name = gate.to_string();
         let gate = job(&document, &gate_name, &path);
         assert_eq!(
             field(gate, "runs-on").and_then(Yaml::as_str),
@@ -1303,21 +1309,39 @@ fn ci_gates_keep_their_checks_without_selecting_workload_runners() {
     }
 }
 
-/// Whether a step runs chore `task` beside an emulated guest of `arch`:
-/// `bash scripts/ci-test-serve.sh serve <arch> tcg full -- chore <task>`
-/// or the legacy runner used by fixtures, release, and the macOS-path suite.
-/// The runner has no KVM, so this is how a job reaches the oracle tools,
-/// the kernel and lwext4 at all.
-fn serves_chore(step: &Yaml, arch: &str, task: &str) -> bool {
-    let run = run_of(step);
-    ["ci-test-serve.sh", "ci-qemu-runner.sh"]
-        .iter()
-        .any(|wrapper| {
-            run.contains(&format!(
-                "scripts/{wrapper} serve {arch} tcg full -- chore "
-            ))
-        })
-        && chore_invocations(run).iter().any(|t| t == task)
+/// A job whose guest is fs-linux-test-harness's, under TCG with its memory
+/// limits, and never the served pilot guest.
+fn assert_harness_guest(job: &Yaml, name: &str) {
+    let env =
+        field(job, "env").unwrap_or_else(|| panic!("jobs.{name} sets the harness guest's limits"));
+    for (key, value) in [
+        ("FLTH_ACCELERATOR", "tcg"),
+        ("FLTH_VM_MEM", "256"),
+        ("FLTH_GUEST_MEM", "192"),
+    ] {
+        assert_eq!(
+            field(env, key).and_then(Yaml::as_str),
+            Some(value),
+            "jobs.{name} env {key}"
+        );
+    }
+    let steps = steps_of(job, name);
+    assert!(
+        steps
+            .iter()
+            .any(|step| run_of(step).contains("../fs-linux-test-harness/scripts/ci-setup-linux.sh")),
+        "jobs.{name} sets the runner up with the harness's ci-setup-linux.sh"
+    );
+    for pilot in [
+        "ci-qemu-runner.sh",
+        "ci-test-serve.sh",
+        "ci-qemu-benchmark.sh",
+    ] {
+        assert!(
+            steps.iter().all(|step| !run_of(step).contains(pilot)),
+            "jobs.{name} must not boot the pilot guest ({pilot})"
+        );
+    }
 }
 
 fn assert_prebuilt_test(document: &Yaml, path: &Path, name: &str, arch: &str) {
@@ -1329,14 +1353,17 @@ fn assert_prebuilt_test(document: &Yaml, path: &Path, name: &str, arch: &str) {
         field(test, "container").is_none(),
         "{name} must run Actions steps directly on the runner"
     );
-    let serve_command = format!("scripts/ci-test-serve.sh serve {arch} tcg full");
+    let command = format!("scripts/ci-harness-guest-test.sh {arch} \"$EXT4_CI_BUNDLE_KEY\"");
     let expected_key = format!("${{{{ needs.{producer}.outputs.key }}}}");
-    let serve_steps: Vec<_> = steps_of(test, name)
+    let guest_steps: Vec<_> = steps_of(test, name)
         .iter()
-        .filter(|step| run_of(step).contains(&serve_command))
+        .filter(|step| run_of(step).contains(&command))
         .collect();
-    assert!(!serve_steps.is_empty());
-    for step in serve_steps {
+    assert!(
+        !guest_steps.is_empty(),
+        "{name} runs its tier in the harness guest"
+    );
+    for step in guest_steps {
         assert_eq!(
             field(step, "env")
                 .and_then(|env| field(env, "EXT4_CI_BUNDLE_KEY"))
@@ -1345,9 +1372,7 @@ fn assert_prebuilt_test(document: &Yaml, path: &Path, name: &str, arch: &str) {
         );
         assert!(field(step, "working-directory").is_none());
     }
-    assert!(steps_of(test, name)
-        .iter()
-        .all(|step| !run_of(step).contains("scripts/ci-qemu-runner.sh")));
+    assert_harness_guest(test, name);
     assert!(
         field(build, "container").is_none(),
         "{producer} must run Actions steps directly on the runner"
@@ -1391,146 +1416,110 @@ fn the_pr_gate_builds_fixtures_once_in_a_guest_and_tests_both_architectures_thro
     let text = read_or_panic(&path);
     let document = load_document(&text, &path);
 
-    // jobs.test — x86_64: the oracles and the kernel tests run in the
-    // emulated x86_64 guest beside the runner environment.
-    let test = job(&document, "test", &path);
-    assert_unconditional(test, "test", "ci.yml");
-    assert_prebuilt_test(&document, &path, "test", "x86_64");
-    assert_eq!(
-        field(
-            &steps_of(job(&document, "test-gate", &path), "test-gate")[0],
-            "run"
-        )
-        .and_then(Yaml::as_str),
-        Some("runner-gate pick linux-x64-kvm"),
-        "jobs.test must ask the gate for an x86_64 KVM runner: the oracle tools and the \
-         kernel oracles run in a VM"
-    );
-    assert!(
-        needs_of(test).iter().any(|n| n == "fixtures"),
-        "jobs.test must need jobs.fixtures, whose artifact it tests against"
-    );
-    let steps = steps_of(test, "test");
-    assert!(runs_chore(steps, "test"));
-    assert!(
-        steps
-            .iter()
-            .any(|step| serves_chore(step, "x86_64", "test")),
-        "jobs.test must run `chore test` beside the emulated x86_64 guest \
-         (scripts/ci-test-serve.sh serve): every oracle tool call and every kernel \
-         mount happens in that guest"
-    );
-    let runner = read_or_panic(&manifest_dir().join("scripts/ci-qemu-runner.sh"));
-    assert!(
-        runner.contains(&["debug", "fs"].concat())
-            && runner.contains("::error::%s ran in the runner environment"),
-        "scripts/ci-qemu-runner.sh serve must make the runner environment's own oracle \
-         tools UNUSABLE"
-    );
-    assert!(
-        steps
-            .iter()
-            .any(|step| is_artifact_step(step, "download-artifact", "fixtures")),
-        "jobs.test must download the `fixtures` artifact the fixtures job built"
-    );
-    // NOTHING INSTALLS THE ORACLE TOOLS ON THE RUNNER, and the job proves
-    // it rather than claiming it.
-    assert!(
-        steps.iter().all(|step| !run_of(step).contains("e2fsprogs")),
-        "jobs.test must not install e2fsprogs on the runner: the tools live in the VM"
-    );
-    let serve = read_or_panic(&manifest_dir().join("scripts/ci-test-serve.sh"));
-    assert!(serve.contains("scripts/ci-qemu-runner.sh\" serve"));
-    assert!(serve.contains("scripts/ci-test-run-prebuilt.sh"));
-    let restore = read_or_panic(&manifest_dir().join("scripts/ci-test-run-prebuilt.sh"));
-    assert!(restore.contains("scripts/ci-test-bundle.py install"));
-    assert!(restore.contains("export FS_EXT4_PREBUILT_REPO"));
-
-    // jobs.test-arm64 — the architecture the driver ships on: the tiers
-    // that need no oracle, compiled for aarch64 and run in an emulated ARM64
-    // guest.
-    let arm = job(&document, "test-arm64", &path);
-    assert_unconditional(arm, "test-arm64", "ci.yml");
-    assert_prebuilt_test(&document, &path, "test-arm64", "aarch64");
-    assert_eq!(
-        field(
-            &steps_of(job(&document, "test-arm64-gate", &path), "test-arm64-gate")[0],
-            "run"
-        )
-        .and_then(Yaml::as_str),
-        Some("runner-gate pick linux-arm64"),
-        "jobs.test-arm64 must ask the gate for an arm64 runner"
-    );
-    let arm_steps = steps_of(arm, "test-arm64");
-    for task in ["test:unit", "test:images"] {
+    // THE TEST STAGE: one job per tier and architecture, each on the build
+    // job's executables. x86_64 runs them on the runner, with the oracle
+    // tools, the kernel and lwext4 in the harness's guest; aarch64 runs them
+    // in the harness's emulated ARM64 guest.
+    for tier in ["images", "oracle", "kernel", "lwext4"] {
+        let name = format!("test-{tier}-x86_64");
+        let test = job(&document, &name, &path);
+        assert_unconditional(test, &name, "ci.yml");
+        assert_prebuilt_test(&document, &path, &name, "x86_64");
+        assert!(needs_of(test).iter().any(|n| n == "test-gate"));
         assert!(
-            runs_chore(arm_steps, task),
-            "jobs.test-arm64 does not run `chore {task}`"
+            needs_of(test).iter().any(|n| n == "test-fixtures"),
+            "jobs.{name} must need jobs.test-fixtures, whose artifact it tests against"
         );
-    }
-    for task in ["test:unit", "test:images"] {
+        let steps = steps_of(test, &name);
+        let task = format!("test:{tier}");
         assert!(
-            arm_steps
+            runs_chore(steps, &task),
+            "jobs.{name} must run `chore {task}` in the harness guest"
+        );
+        assert!(
+            steps
                 .iter()
-                .any(|step| serves_chore(step, "aarch64", task)),
-            "jobs.test-arm64 must run `chore {task}` in the emulated ARM64 guest \
-             (scripts/ci-test-serve.sh serve aarch64): an x86_64 run of it is not an \
-             ARM64 test"
+                .any(|step| is_artifact_step(step, "download-artifact", "fixtures")),
+            "jobs.{name} must download the `fixtures` artifact the fixtures job built"
+        );
+        // NOTHING INSTALLS THE ORACLE TOOLS ON THE RUNNER.
+        assert!(
+            steps.iter().all(|step| !run_of(step).contains("e2fsprogs")),
+            "jobs.{name} must not install e2fsprogs on the runner: the tools live in the VM"
         );
     }
+    let scripts = job(&document, "test-scripts-x86_64", &path);
+    assert_unconditional(scripts, "test-scripts-x86_64", "ci.yml");
+    assert!(runs_chore(
+        steps_of(scripts, "test-scripts-x86_64"),
+        "test:scripts"
+    ));
+    for tier in ["unit", "images"] {
+        let name = format!("test-{tier}-aarch64");
+        let arm = job(&document, &name, &path);
+        assert_unconditional(arm, &name, "ci.yml");
+        assert!(needs_of(arm).iter().any(|n| n == "test-arm64-gate"));
+        assert_prebuilt_test(&document, &path, &name, "aarch64");
+        assert_eq!(
+            field(field(arm, "env").unwrap(), "FLTH_GUEST_ARCH").and_then(Yaml::as_str),
+            Some("aarch64"),
+            "jobs.{name} runs its tier in an ARM64 guest: an x86_64 run of it is not an ARM64 test"
+        );
+        let task = format!("test:{tier}");
+        assert!(
+            runs_chore(steps_of(arm, &name), &task),
+            "jobs.{name} does not run `chore {task}`"
+        );
+    }
+    let guest = read_or_panic(&manifest_dir().join("scripts/ci-harness-guest-test.sh"));
+    assert!(guest.contains("export FLTH_GUEST_ARCH=\"$arch\" FLTH_BUILD_PREBUILT=1"));
+    assert!(guest.contains("exec \"$harness\" guest-test \"$@\""));
     let compile = read_or_panic(&manifest_dir().join(".github/actions/ci-test-compile/action.yml"));
     assert!(compile.contains("bash scripts/ci-test-compile.sh"));
     let compile = read_or_panic(&manifest_dir().join("scripts/ci-test-compile.sh"));
     assert!(
         compile.contains("docker run --rm --pull=never")
-            && compile.contains("CARGO_BUILD_TARGET=\"$arch-unknown-linux-gnu\"")
-            && compile.contains("chore lint")
+            && compile.contains(
+                "bash scripts/test-bundle-build.sh ci \"$1\" \"$2\" /bundle/bundle.tar --lint"
+            )
+    );
+    // The container's build is one script, shared with `chore test:vm`'s
+    // [build] step, so CI and a workstation compile the same way.
+    let bundle = read_or_panic(&manifest_dir().join("scripts/test-bundle-build.sh"));
+    assert!(
+        bundle.contains("export CARGO_BUILD_TARGET=\"$arch-unknown-linux-gnu\"")
+            && bundle.contains("[ \"$lint\" = 0 ] || chore lint")
     );
     let builder = read_or_panic(&manifest_dir().join("scripts/ci-test-builder/Dockerfile"));
     assert!(builder.contains("rustup target add aarch64-unknown-linux-gnu"));
+    assert!(builder.contains("amd64) cross=\"gcc-aarch64-linux-gnu libc6-dev-arm64-cross\""));
 
-    // jobs.suite-in-vm — the whole suite built and run INSIDE the guest,
-    // which is how a host that is not Linux runs it.
-    let in_vm = job(&document, "suite-in-vm", &path);
-    assert_unconditional(in_vm, "suite-in-vm", "ci.yml");
-    let in_vm_steps = steps_of(in_vm, "suite-in-vm");
-    assert!(
-        runs_chore(in_vm_steps, "test:vm"),
-        "jobs.suite-in-vm must run `chore test:vm`, or the in-guest path rots unnoticed"
-    );
-    assert!(
-        in_vm_steps
-            .iter()
-            .any(|step| serves_chore(step, "x86_64", "test:vm")),
-        "jobs.suite-in-vm must run `chore test:vm` beside the emulated guest it compiles \
-         and runs the suite in"
-    );
-
-    // jobs.fixtures
-    let fixtures = job(&document, "fixtures", &path);
-    assert_unconditional_or_skipped_for_documentation(fixtures, "fixtures", "ci.yml");
+    // jobs.test-fixtures
+    let fixtures = job(&document, "test-fixtures", &path);
+    assert_unconditional_or_skipped_for_documentation(fixtures, "test-fixtures", "ci.yml");
     assert_eq!(
         field(
-            &steps_of(job(&document, "fixtures-gate", &path), "fixtures-gate")[0],
+            &steps_of(
+                job(&document, "test-fixtures-gate", &path),
+                "test-fixtures-gate"
+            )[0],
             "run"
         )
         .and_then(Yaml::as_str),
         Some("runner-gate pick linux-x64-kvm"),
-        "jobs.fixtures must ask the gate for an x86_64 KVM runner"
+        "jobs.test-fixtures must ask the gate for an x86_64 KVM runner"
     );
-    let steps = steps_of(fixtures, "fixtures");
+    let steps = steps_of(fixtures, "test-fixtures");
     assert!(
-        steps
-            .iter()
-            .any(|step| serves_chore(step, "x86_64", "fixtures")),
-        "jobs.fixtures must run `chore fixtures` beside the emulated guest whose kernel \
-         makes the images"
+        runs_chore(steps, "fixtures"),
+        "jobs.test-fixtures must run `chore fixtures`, whose guest kernel makes the images"
     );
+    assert_harness_guest(fixtures, "test-fixtures");
     assert!(
         steps
             .iter()
             .any(|step| is_artifact_step(step, "upload-artifact", "fixtures")),
-        "jobs.fixtures must upload the images as the `fixtures` artifact"
+        "jobs.test-fixtures must upload the images as the `fixtures` artifact"
     );
 
     // jobs.unit
@@ -1659,9 +1648,8 @@ fn the_pr_gate_builds_fixtures_once_in_a_guest_and_tests_both_architectures_thro
 }
 
 /// THE SHIPPING GATE runs the same chore tasks as the pull-request gate,
-/// in one job: it builds the fixtures itself beside the emulated guest --
-/// `scripts/ci-qemu-runner.sh serve`, then `chore fixtures` -- and then
-/// runs `chore test` there too, unconditionally.
+/// in one job: it builds the fixtures itself in the harness's guest --
+/// `chore fixtures` -- and then runs `chore test`, unconditionally.
 ///
 /// None of the scripts the harness replaced may come back: the native
 /// sudo generator, the in-repo VM builder and e2fsck runner, and the
@@ -1677,18 +1665,15 @@ fn the_release_gate_builds_fixtures_in_a_guest_and_runs_chore_test() {
     assert_unconditional(test, "test", "release.yml");
     let steps = steps_of(test, "test");
 
-    let build = steps
-        .iter()
-        .position(|step| serves_chore(step, "x86_64", "fixtures"))
-        .unwrap_or_else(|| {
-            panic!("release jobs.test must run `chore fixtures` beside the emulated guest")
-        });
-    let tested = steps
-        .iter()
-        .position(|step| serves_chore(step, "x86_64", "test"))
-        .unwrap_or_else(|| {
-            panic!("release jobs.test must run `chore test` beside the emulated guest")
-        });
+    let runs = |task: &str| {
+        steps
+            .iter()
+            .position(|step| chore_invocations(run_of(step)).iter().any(|t| t == task))
+    };
+    let build =
+        runs("fixtures").unwrap_or_else(|| panic!("release jobs.test must run `chore fixtures`"));
+    let tested = runs("test").unwrap_or_else(|| panic!("release jobs.test must run `chore test`"));
+    assert_harness_guest(test, "test");
     assert!(
         build < tested,
         "release jobs.test must build the fixtures before `chore test` reads them"
@@ -2125,24 +2110,37 @@ fn local_crates_and_members() -> (Vec<PathBuf>, Vec<PathBuf>) {
             local.push(root.join(dir));
         }
     }
-    let output = std::process::Command::new("cargo")
-        .args([
-            "metadata",
-            "--no-deps",
-            "--offline",
-            "--format-version",
-            "1",
-        ])
-        .arg("--manifest-path")
-        .arg(root.join("Cargo.toml"))
-        .output()
-        .unwrap_or_else(|e| panic!("cannot run `cargo metadata`: {e}"));
-    assert!(
-        output.status.success(),
-        "`cargo metadata` failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let text = String::from_utf8(output.stdout).expect("cargo metadata prints UTF-8");
+    // In the harness guest there is no Cargo: the suite there runs what the
+    // host's builder container compiled, and that build recorded this same
+    // `cargo metadata` for it (scripts/test-bundle-build.sh).
+    let text = match std::env::var_os("FS_EXT4_CARGO_METADATA") {
+        Some(recorded) => std::fs::read_to_string(&recorded).unwrap_or_else(|e| {
+            panic!(
+                "cannot read the recorded `cargo metadata` {}: {e}",
+                Path::new(&recorded).display()
+            )
+        }),
+        None => {
+            let output = std::process::Command::new("cargo")
+                .args([
+                    "metadata",
+                    "--no-deps",
+                    "--offline",
+                    "--format-version",
+                    "1",
+                ])
+                .arg("--manifest-path")
+                .arg(root.join("Cargo.toml"))
+                .output()
+                .unwrap_or_else(|e| panic!("cannot run `cargo metadata`: {e}"));
+            assert!(
+                output.status.success(),
+                "`cargo metadata` failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout).expect("cargo metadata prints UTF-8")
+        }
+    };
     // JSON is YAML 1.2, so the parser this file already uses reads it.
     let documents = Yaml::load_from_str(&text).expect("cargo metadata prints JSON");
     let metadata = documents.first().expect("cargo metadata prints a document");
@@ -2949,37 +2947,25 @@ tasks:
     /// THE GUARD BITES ON THE REAL FILES, mutated in memory.
     ///
     /// Note what it takes: dropping the `unit` job's `chore test:unit` is
-    /// NOT enough on its own, because the `test` job's `chore test` runs
-    /// `task: test:unit` as well -- in debug, with the handshake -- so the
-    /// PR gate still sees an overflow, on both architectures. Only both
-    /// gone, or the handshake gone from the task, or the task made
-    /// skippable, leaves nothing.
+    /// NOT enough on its own, because test-unit-aarch64 runs it as well --
+    /// in debug, with the handshake. Only both gone, or the handshake gone
+    /// from the task, or the task made skippable, leaves nothing.
     #[test]
     fn the_real_files_stop_gating_when_the_run_is_removed() {
         let workflow = real(&[".github", "workflows", "ci.yml"]);
         let chores = real(&["chores.yml"]);
         assert!(!gating(&workflow, &chores).is_empty(), "control");
 
-        // The unit job's step, and the ARM64 job's, which runs the same task
-        // beside its emulated guest.
-        let no_unit_step = workflow
+        // The unit job's step, and the ARM64 unit job's, which runs the same
+        // task in the harness's ARM64 guest. No job runs `chore test`, which
+        // would reach test:unit too.
+        let neither = workflow
             .replace("run: chore test:unit\n", "run: 'true'\n")
             .replace(
-                "run: bash scripts/ci-test-serve.sh serve aarch64 tcg full -- chore test:unit\n",
+                "run: bash scripts/ci-harness-guest-test.sh aarch64 \"$EXT4_CI_BUNDLE_KEY\" --chore \"$CHORE_VERSION\" test:unit\n",
                 "run: 'true'\n",
             );
-        assert_ne!(no_unit_step, workflow, "the mutation must actually apply");
-        assert!(
-            gating(&no_unit_step, &chores)
-                .iter()
-                .all(|run| run.starts_with("chore test -> test:unit: ")),
-            "without the unit job's step, only `chore test` reaches the run"
-        );
-        let neither = no_unit_step.replace(
-            "run: bash scripts/ci-test-serve.sh serve x86_64 tcg full -- chore test\n",
-            "run: 'true'\n",
-        );
-        assert_ne!(neither, no_unit_step, "the mutation must actually apply");
+        assert_ne!(neither, workflow, "the mutation must actually apply");
         assert!(
             gating(&neither, &chores).is_empty(),
             "no step reaches test:unit"
