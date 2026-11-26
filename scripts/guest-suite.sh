@@ -74,6 +74,10 @@ python3 scripts/ci-test-bundle.py install "$arch" "$key" "$build/bundle.tar" "$s
 export FS_EXT4_PREBUILT_REPO="$PWD"
 # What tests/ci_profile.rs would ask Cargo, recorded by the build.
 export FS_EXT4_CARGO_METADATA="$build/cargo-metadata.json"
+# Each tier's log, copied from the run's private tmp/ to the share, the one
+# directory of the run the host sees (/repo is the run's own copy of the tree):
+# <share>/logs/<tier>.log, .vm-share/logs/ on the host.
+export FS_EXT4_GUEST_LOGS=/share/logs
 
 # `--chore <version> <task>...`: run those chore tasks here, on the bundle,
 # instead of the whole suite. CI's test job of an architecture the runner

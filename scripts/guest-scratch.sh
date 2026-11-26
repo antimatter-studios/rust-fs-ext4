@@ -33,6 +33,14 @@ mounted=0
 cleanup() {
     status=$?
     trap - EXIT
+    # A tier's full output is tmp/logs/<tier>.log, on the scratch that is about to
+    # be unmounted. FS_EXT4_GUEST_LOGS names a directory the host can read, so a
+    # failed tier can be read once the guest has gone.
+    if [ "$mounted" = 1 ] && [ -n "${FS_EXT4_GUEST_LOGS:-}" ] &&
+        compgen -G "$repo/tmp/logs/*.log" >/dev/null; then
+        mkdir -p "$FS_EXT4_GUEST_LOGS" && cp -f "$repo/tmp/logs/"*.log "$FS_EXT4_GUEST_LOGS/" ||
+            echo "guest-scratch.sh: could not copy tmp/logs to $FS_EXT4_GUEST_LOGS" >&2
+    fi
     if [ "$mounted" = 1 ] && ! umount "$repo/tmp"; then
         echo "guest-scratch.sh: could not unmount $repo/tmp; scratch retained at $scratch" >&2
         [ "$status" -ne 0 ] || status=1
