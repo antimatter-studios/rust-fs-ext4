@@ -341,47 +341,30 @@ jobs:
         run: runner-gate pick linux-x64-kvm
 
   fixtures:
-    name: fixtures (kernel-made, in the emulated x86_64 guest)
+    name: fixtures (kernel-made, in the harness guest)
     needs: [changes, fixtures-gate]
     if: needs.changes.outputs.profile == 'full' && needs.changes.outputs.code == 'true'
     runs-on: antimatter-vps-linux-x64
-    # The runner has no KVM: the guest is emulated (TCG), several times slower
-    # than the KVM guest this job used to boot.
-    # One build job and one test thread (FLTH_RESOURCE_PROFILE low, applied by
-    # scripts/ci-qemu-runner.sh serve) keep the 4-CPU runner's load down, and
-    # take longer: the limit is long so a slow, healthy run finishes.
+    # The runner has no KVM: the harness boots its guest under TCG
+    # (FLTH_ACCELERATOR), with QEMU's translation cache capped (FLTH_VM_MEM,
+    # MiB) and the guest's RAM at most 75% of that cap (FLTH_GUEST_MEM). The
+    # guest's kernel makes the images (test-disks/build-fixtures.sh).
     timeout-minutes: 60
+    env:
+      FLTH_ACCELERATOR: tcg
+      FLTH_VM_MEM: '2048'
+      FLTH_GUEST_MEM: '1536'
     steps:
       - uses: actions/checkout@v4
       - name: Install chore
         run: scripts/ci-install-chore.sh
       - name: chore siblings
         run: chore siblings
-      # THE GUEST. `serve` boots the Debian guest the QEMU preparation workflow
-      # published (scripts/vm-setup.sh's tools, in a disk image keyed by every
-      # input that made it), emulated, in the published runner environment;
-      # then runs the task beside it. A missing guest image is set up live
-      # and published nowhere.
-      - name: chore fixtures, in the emulated guest
-        env:
-          EXT4_CI_FIXTURE_SETUP: '1'
-          GH_TOKEN: ${{ github.token }}
-          BENCH_CACHE_REGISTRY: ghcr.io/${{ github.repository }}/qemu-pilot
-        run: bash scripts/ci-qemu-runner.sh serve x86_64 tcg full -- chore fixtures
-      - name: Keep the guest's evidence
-        # The boot, console and timing records of the emulated guest, kept
-        # whatever the outcome: a stalled or failed guest is read from these.
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: guest-evidence-fixtures
-          path: |
-            tmp/qemu-benchmark/**/*.json
-            tmp/qemu-benchmark/**/*.txt
-            tmp/qemu-benchmark/**/*.tsv
-            tmp/qemu-benchmark/**/*.log
-          if-no-files-found: warn
-          retention-days: 7
+      - uses: antimatter-studios/fs-linux-test-harness/.github/actions/install-virtiofsd@feat/vagrant-tcg
+      - name: QEMU and Vagrant for the harness guest (TCG)
+        run: bash ../fs-linux-test-harness/scripts/ci-setup-linux.sh
+      - name: chore fixtures, in the harness guest
+        run: chore fixtures
       - uses: actions/upload-artifact@v4
         with:
           name: fixtures

@@ -1329,6 +1329,41 @@ fn serves_chore(step: &Yaml, arch: &str, task: &str) -> bool {
         && chore_invocations(run).iter().any(|t| t == task)
 }
 
+/// A job whose guest is fs-linux-test-harness's, under TCG with its memory
+/// limits, and never the served pilot guest.
+fn assert_harness_guest(job: &Yaml, name: &str) {
+    let env =
+        field(job, "env").unwrap_or_else(|| panic!("jobs.{name} sets the harness guest's limits"));
+    for (key, value) in [
+        ("FLTH_ACCELERATOR", "tcg"),
+        ("FLTH_VM_MEM", "2048"),
+        ("FLTH_GUEST_MEM", "1536"),
+    ] {
+        assert_eq!(
+            field(env, key).and_then(Yaml::as_str),
+            Some(value),
+            "jobs.{name} env {key}"
+        );
+    }
+    let steps = steps_of(job, name);
+    assert!(
+        steps
+            .iter()
+            .any(|step| run_of(step).contains("../fs-linux-test-harness/scripts/ci-setup-linux.sh")),
+        "jobs.{name} sets the runner up with the harness's ci-setup-linux.sh"
+    );
+    for pilot in [
+        "ci-qemu-runner.sh",
+        "ci-test-serve.sh",
+        "ci-qemu-benchmark.sh",
+    ] {
+        assert!(
+            steps.iter().all(|step| !run_of(step).contains(pilot)),
+            "jobs.{name} must not boot the pilot guest ({pilot})"
+        );
+    }
+}
+
 fn assert_prebuilt_test(document: &Yaml, path: &Path, name: &str, arch: &str) {
     let test = job(document, name, path);
     let producer = format!("build-test-{arch}");
@@ -1537,13 +1572,7 @@ fn the_pr_gate_builds_fixtures_once_in_a_guest_and_tests_both_architectures_thro
         runs_chore(in_vm_steps, "test:vm"),
         "jobs.suite-in-vm must run `chore test:vm`, or the in-guest path rots unnoticed"
     );
-    assert!(
-        in_vm_steps
-            .iter()
-            .any(|step| serves_chore(step, "x86_64", "test:vm")),
-        "jobs.suite-in-vm must run `chore test:vm` beside the emulated guest it compiles \
-         and runs the suite in"
-    );
+    assert_harness_guest(in_vm, "suite-in-vm");
 
     // jobs.fixtures
     let fixtures = job(&document, "fixtures", &path);
@@ -1559,12 +1588,10 @@ fn the_pr_gate_builds_fixtures_once_in_a_guest_and_tests_both_architectures_thro
     );
     let steps = steps_of(fixtures, "fixtures");
     assert!(
-        steps
-            .iter()
-            .any(|step| serves_chore(step, "x86_64", "fixtures")),
-        "jobs.fixtures must run `chore fixtures` beside the emulated guest whose kernel \
-         makes the images"
+        runs_chore(steps, "fixtures"),
+        "jobs.fixtures must run `chore fixtures`, whose guest kernel makes the images"
     );
+    assert_harness_guest(fixtures, "fixtures");
     assert!(
         steps
             .iter()
