@@ -1316,8 +1316,8 @@ fn assert_harness_guest(job: &Yaml, name: &str) {
         field(job, "env").unwrap_or_else(|| panic!("jobs.{name} sets the harness guest's limits"));
     for (key, value) in [
         ("FLTH_ACCELERATOR", "tcg"),
-        ("FLTH_VM_MEM", "1024"),
-        ("FLTH_GUEST_MEM", "768"),
+        ("FLTH_VM_MEM", "256"),
+        ("FLTH_GUEST_MEM", "192"),
     ] {
         assert_eq!(
             field(env, key).and_then(Yaml::as_str),
