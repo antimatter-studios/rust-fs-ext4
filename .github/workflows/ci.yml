@@ -351,6 +351,7 @@ jobs:
       FLTH_VM_MEM: '1024'
       FLTH_GUEST_MEM: '768'
       FLTH_HOST_MEMORY_RESERVE_MIB: '768'
+      FLTH_HOST_MEMORY_WAIT_SECONDS: '1200'
     steps:
       - uses: actions/checkout@v4
       - name: Install chore
@@ -491,8 +492,10 @@ jobs:
   # (FLTH_GUEST_MEM). The harness admits a guest only when the runner pod
   # (its cgroup limit, or the node, whichever is lower) has the guest's RAM,
   # the cache cap, QEMU's overhead and FLTH_HOST_MEMORY_RESERVE_MIB free:
-  # 768 + 1024 + 384 + 768 MiB, where a pod had 3415-3794 MiB. A tier that
-  # fails is rerun alone (Re-run failed jobs).
+  # 768 + 1024 + 384 + 768 MiB, where a pod had 3415-3794 MiB. Jobs whose
+  # guests would not fit beside each other's wait up to 20 minutes for the
+  # memory (FLTH_HOST_MEMORY_WAIT_SECONDS) instead of being refused. A tier
+  # that fails is rerun alone (Re-run failed jobs).
   # The x86_64 unit tier is jobs.unit; test-scripts-x86_64 checks the shell
   # tooling on the runner.
 
@@ -506,6 +509,7 @@ jobs:
       FLTH_VM_MEM: '1024'
       FLTH_GUEST_MEM: '768'
       FLTH_HOST_MEMORY_RESERVE_MIB: '768'
+      FLTH_HOST_MEMORY_WAIT_SECONDS: '1200'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -543,6 +547,7 @@ jobs:
       FLTH_VM_MEM: '1024'
       FLTH_GUEST_MEM: '768'
       FLTH_HOST_MEMORY_RESERVE_MIB: '768'
+      FLTH_HOST_MEMORY_WAIT_SECONDS: '1200'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -580,6 +585,7 @@ jobs:
       FLTH_VM_MEM: '1024'
       FLTH_GUEST_MEM: '768'
       FLTH_HOST_MEMORY_RESERVE_MIB: '768'
+      FLTH_HOST_MEMORY_WAIT_SECONDS: '1200'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -617,6 +623,7 @@ jobs:
       FLTH_VM_MEM: '1024'
       FLTH_GUEST_MEM: '768'
       FLTH_HOST_MEMORY_RESERVE_MIB: '768'
+      FLTH_HOST_MEMORY_WAIT_SECONDS: '1200'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -697,6 +704,7 @@ jobs:
       FLTH_VM_MEM: '1024'
       FLTH_GUEST_MEM: '768'
       FLTH_HOST_MEMORY_RESERVE_MIB: '768'
+      FLTH_HOST_MEMORY_WAIT_SECONDS: '1200'
       FLTH_GUEST_ARCH: aarch64
     steps:
       - uses: actions/checkout@v4
@@ -738,6 +746,7 @@ jobs:
       FLTH_VM_MEM: '1024'
       FLTH_GUEST_MEM: '768'
       FLTH_HOST_MEMORY_RESERVE_MIB: '768'
+      FLTH_HOST_MEMORY_WAIT_SECONDS: '1200'
       FLTH_GUEST_ARCH: aarch64
     steps:
       - uses: actions/checkout@v4
