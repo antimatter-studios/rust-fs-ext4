@@ -356,11 +356,35 @@ jobs:
         run: scripts/ci-install-chore.sh
       - name: chore siblings
         run: chore siblings
-      - uses: antimatter-studios/fs-linux-test-harness/.github/actions/install-virtiofsd@feat/vagrant-tcg
-      - name: QEMU and Vagrant for the harness guest (TCG)
+      # THE IMAGES DEPEND ONLY ON THEIR RECIPE: the script the guest runs, the
+      # script that drives it, the guest's packages, and the harness that
+      # boots it. Keyed by those, the guest boots only when one changes.
+      - name: The fixture recipe's key
+        id: recipe
+        run: |
+          set -euo pipefail
+          harness="$(git -C ../fs-linux-test-harness rev-parse HEAD)"
+          key="$(cat test-disks/guest-build-images.sh test-disks/build-fixtures.sh scripts/vm-setup.sh | sha256sum | cut -d' ' -f1)"
+          echo "key=ext4-fixtures-$key-$harness" >> "$GITHUB_OUTPUT"
+      - name: Restore the fixtures this recipe made
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: test-disks/*.img
+          key: ${{ steps.recipe.outputs.key }}
+      - if: steps.cache.outputs.cache-hit != 'true'
+        uses: antimatter-studios/fs-linux-test-harness/.github/actions/install-virtiofsd@feat/vagrant-tcg
+      - if: steps.cache.outputs.cache-hit != 'true'
+        name: QEMU and Vagrant for the harness guest (TCG)
         run: bash ../fs-linux-test-harness/scripts/ci-setup-linux.sh
-      - name: chore fixtures, in the harness guest
+      - if: steps.cache.outputs.cache-hit != 'true'
+        name: chore fixtures, in the harness guest
         run: chore fixtures
+      - if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: test-disks/*.img
+          key: ${{ steps.recipe.outputs.key }}
       - uses: actions/upload-artifact@v4
         with:
           name: fixtures
@@ -452,18 +476,23 @@ jobs:
         run: runner-gate pick linux-arm64
 
   # THE TEST STAGE: ONE JOB PER TIER AND ARCHITECTURE, each on the build
-  # job's executables, compiling nothing. A tier that fails is rerun alone
-  # (Re-run failed jobs), and its log is its own. Where a tier needs the
-  # oracle tools, the kernel or lwext4, they run in fs-linux-test-harness's
-  # guest, under TCG (the runner has no KVM) with QEMU's translation cache
-  # capped (FLTH_VM_MEM, MiB) and the guest's RAM at most 75% of it
-  # (FLTH_GUEST_MEM). The x86_64 unit tier is jobs.unit.
+  # job's executables, compiling nothing, INSIDE fs-linux-test-harness's
+  # guest of its architecture (scripts/ci-harness-guest-test.sh): under TCG,
+  # since the runner has no KVM, with QEMU's translation cache capped
+  # (FLTH_VM_MEM, MiB) and the guest's RAM at most 75% of it
+  # (FLTH_GUEST_MEM). A tier that fails is rerun alone (Re-run failed jobs).
+  # The x86_64 unit tier is jobs.unit; test-scripts-x86_64 checks the shell
+  # tooling on the runner.
 
   test-images-x86_64:
     name: test-images-x86_64
     needs: [fixtures, test-gate, test-builder-image, build-test-x86_64]
     runs-on: antimatter-vps-linux-x64
     timeout-minutes: 60
+    env:
+      FLTH_ACCELERATOR: tcg
+      FLTH_VM_MEM: '2048'
+      FLTH_GUEST_MEM: '1536'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -482,22 +511,14 @@ jobs:
           artifact: ${{ needs.build-test-x86_64.outputs.bundle }}
           key: ${{ needs.build-test-x86_64.outputs.key }}
           image: ${{ needs.test-builder-image.outputs.image }}
-      - name: chore test:images, the build job's executables
+      - uses: antimatter-studios/fs-linux-test-harness/.github/actions/install-virtiofsd@feat/vagrant-tcg
+      - name: QEMU and Vagrant for the harness guest (TCG)
+        run: bash ../fs-linux-test-harness/scripts/ci-setup-linux.sh
+      - name: chore test:images, in the harness guest
         id: tier
         env:
           EXT4_CI_BUNDLE_KEY: ${{ needs.build-test-x86_64.outputs.key }}
-        run: bash scripts/ci-test-harness-prebuilt.sh x86_64 "$EXT4_CI_BUNDLE_KEY" chore test:images
-      - name: Keep the tier logs
-        # A quiet tier writes its detail to tmp/logs/<tier>.log and prints a
-        # verdict; without this the detail dies with the runner. Not before
-        # the tier ran, or there is no log and this step's red hides the real
-        # one (#306).
-        if: always() && steps.tier.outcome != 'skipped'
-        uses: actions/upload-artifact@v4
-        with:
-          name: tier-logs-images-x86_64-${{ github.run_attempt }}
-          path: tmp/logs/*.log
-          if-no-files-found: error
+        run: bash scripts/ci-harness-guest-test.sh x86_64 "$EXT4_CI_BUNDLE_KEY" --chore "$CHORE_VERSION" test:images
 
   test-oracle-x86_64:
     name: test-oracle-x86_64
@@ -529,22 +550,11 @@ jobs:
       - uses: antimatter-studios/fs-linux-test-harness/.github/actions/install-virtiofsd@feat/vagrant-tcg
       - name: QEMU and Vagrant for the harness guest (TCG)
         run: bash ../fs-linux-test-harness/scripts/ci-setup-linux.sh
-      - name: chore test:oracle, the build job's executables
+      - name: chore test:oracle, in the harness guest
         id: tier
         env:
           EXT4_CI_BUNDLE_KEY: ${{ needs.build-test-x86_64.outputs.key }}
-        run: bash scripts/ci-test-harness-prebuilt.sh x86_64 "$EXT4_CI_BUNDLE_KEY" chore test:oracle
-      - name: Keep the tier logs
-        # A quiet tier writes its detail to tmp/logs/<tier>.log and prints a
-        # verdict; without this the detail dies with the runner. Not before
-        # the tier ran, or there is no log and this step's red hides the real
-        # one (#306).
-        if: always() && steps.tier.outcome != 'skipped'
-        uses: actions/upload-artifact@v4
-        with:
-          name: tier-logs-oracle-x86_64-${{ github.run_attempt }}
-          path: tmp/logs/*.log
-          if-no-files-found: error
+        run: bash scripts/ci-harness-guest-test.sh x86_64 "$EXT4_CI_BUNDLE_KEY" --chore "$CHORE_VERSION" test:oracle
 
   test-kernel-x86_64:
     name: test-kernel-x86_64
@@ -576,22 +586,11 @@ jobs:
       - uses: antimatter-studios/fs-linux-test-harness/.github/actions/install-virtiofsd@feat/vagrant-tcg
       - name: QEMU and Vagrant for the harness guest (TCG)
         run: bash ../fs-linux-test-harness/scripts/ci-setup-linux.sh
-      - name: chore test:kernel, the build job's executables
+      - name: chore test:kernel, in the harness guest
         id: tier
         env:
           EXT4_CI_BUNDLE_KEY: ${{ needs.build-test-x86_64.outputs.key }}
-        run: bash scripts/ci-test-harness-prebuilt.sh x86_64 "$EXT4_CI_BUNDLE_KEY" chore test:kernel
-      - name: Keep the tier logs
-        # A quiet tier writes its detail to tmp/logs/<tier>.log and prints a
-        # verdict; without this the detail dies with the runner. Not before
-        # the tier ran, or there is no log and this step's red hides the real
-        # one (#306).
-        if: always() && steps.tier.outcome != 'skipped'
-        uses: actions/upload-artifact@v4
-        with:
-          name: tier-logs-kernel-x86_64-${{ github.run_attempt }}
-          path: tmp/logs/*.log
-          if-no-files-found: error
+        run: bash scripts/ci-harness-guest-test.sh x86_64 "$EXT4_CI_BUNDLE_KEY" --chore "$CHORE_VERSION" test:kernel
 
   test-lwext4-x86_64:
     name: test-lwext4-x86_64
@@ -623,26 +622,15 @@ jobs:
       - uses: antimatter-studios/fs-linux-test-harness/.github/actions/install-virtiofsd@feat/vagrant-tcg
       - name: QEMU and Vagrant for the harness guest (TCG)
         run: bash ../fs-linux-test-harness/scripts/ci-setup-linux.sh
-      - name: chore test:lwext4, the build job's executables
+      - name: chore test:lwext4, in the harness guest
         id: tier
         env:
           EXT4_CI_BUNDLE_KEY: ${{ needs.build-test-x86_64.outputs.key }}
-        run: bash scripts/ci-test-harness-prebuilt.sh x86_64 "$EXT4_CI_BUNDLE_KEY" chore test:lwext4
-      - name: Keep the tier logs
-        # A quiet tier writes its detail to tmp/logs/<tier>.log and prints a
-        # verdict; without this the detail dies with the runner. Not before
-        # the tier ran, or there is no log and this step's red hides the real
-        # one (#306).
-        if: always() && steps.tier.outcome != 'skipped'
-        uses: actions/upload-artifact@v4
-        with:
-          name: tier-logs-lwext4-x86_64-${{ github.run_attempt }}
-          path: tmp/logs/*.log
-          if-no-files-found: error
+        run: bash scripts/ci-harness-guest-test.sh x86_64 "$EXT4_CI_BUNDLE_KEY" --chore "$CHORE_VERSION" test:lwext4
 
   test-scripts-x86_64:
     name: test-scripts-x86_64
-    needs: [fixtures, test-gate, test-builder-image, build-test-x86_64]
+    needs: [fixtures, test-gate]
     runs-on: antimatter-vps-linux-x64
     timeout-minutes: 60
     steps:
@@ -659,17 +647,11 @@ jobs:
         with:
           name: fixtures
           path: test-disks
-      - uses: ./.github/actions/ci-test-restore
-        with:
-          arch: x86_64
-          artifact: ${{ needs.build-test-x86_64.outputs.bundle }}
-          key: ${{ needs.build-test-x86_64.outputs.key }}
-          image: ${{ needs.test-builder-image.outputs.image }}
-      - name: chore test:scripts, the build job's executables
+      # The shell tooling checks: they test the scripts and build their own
+      # small sandboxes, not the suite's executables.
+      - name: chore test:scripts
         id: tier
-        env:
-          EXT4_CI_BUNDLE_KEY: ${{ needs.build-test-x86_64.outputs.key }}
-        run: bash scripts/ci-test-harness-prebuilt.sh x86_64 "$EXT4_CI_BUNDLE_KEY" chore test:scripts
+        run: chore test:scripts
       - name: Keep the tier logs
         # A quiet tier writes its detail to tmp/logs/<tier>.log and prints a
         # verdict; without this the detail dies with the runner. Not before

@@ -47,44 +47,26 @@ if [ -z "$targets" ]; then
 fi
 
 cd "$REPO"
-if [ -n "${FS_EXT4_GUEST_SSH:-}" ]; then
-    # A CI runner without KVM: the guest `scripts/ci-qemu-runner.sh serve`
-    # booted beside this command, the same Debian guest with the same tools
-    # (scripts/vm-setup.sh). The script goes in and the images come back
-    # over ssh, sparse, and are checked below exactly as the harness's are.
-    mkdir -p tmp
-    out="$(mktemp -d "$REPO/tmp/fixtures.XXXXXX")"
-    trap 'rm -rf "$out"' EXIT
-    started=$(date +%s)
-    ssh -F "$FS_EXT4_GUEST_SSH" guest \
-        'rm -rf /var/tmp/ext4-fixtures && mkdir -p /var/tmp/ext4-fixtures && cat >/var/tmp/ext4-guest-build-images.sh' \
-        <test-disks/guest-build-images.sh
-    ssh -n -F "$FS_EXT4_GUEST_SSH" guest \
-        "FLTH_GUEST=1 bash /var/tmp/ext4-guest-build-images.sh /var/tmp/ext4-fixtures $targets"
-    ssh -n -F "$FS_EXT4_GUEST_SSH" guest 'tar --sparse -cf - -C /var/tmp/ext4-fixtures .' |
-        tar -xf - -C "$out"
-else
-    HARNESS="$REPO/../fs-linux-test-harness"
-    VM="$HARNESS/scripts/vm.sh"
+HARNESS="$REPO/../fs-linux-test-harness"
+VM="$HARNESS/scripts/vm.sh"
 
-    if [ ! -x "$VM" ]; then
-        echo "build-fixtures: the harness is not checked out at $HARNESS." >&2
-        echo "                Run 'chore siblings' first." >&2
-        exit 1
-    fi
-
-    # shellcheck source=/dev/null
-    . "$HARNESS/scripts/vm-session.sh"
-
-    share="$("$VM" share)"
-    out="$share/fixtures"
-    rm -rf "$out"
-    mkdir -p "$out"
-    cp test-disks/guest-build-images.sh "$share/guest-build-images.sh"
-
-    started=$(date +%s)
-    "$VM" run "bash /share/guest-build-images.sh /share/fixtures $targets"
+if [ ! -x "$VM" ]; then
+    echo "build-fixtures: the harness is not checked out at $HARNESS." >&2
+    echo "                Run 'chore siblings' first." >&2
+    exit 1
 fi
+
+# shellcheck source=/dev/null
+. "$HARNESS/scripts/vm-session.sh"
+
+share="$("$VM" share)"
+out="$share/fixtures"
+rm -rf "$out"
+mkdir -p "$out"
+cp test-disks/guest-build-images.sh "$share/guest-build-images.sh"
+
+started=$(date +%s)
+"$VM" run "bash /share/guest-build-images.sh /share/fixtures $targets"
 
 built=0
 for img in "$out"/*.img; do

@@ -108,17 +108,19 @@ class BundleTest(unittest.TestCase):
 
     def test_test_dispatch_never_calls_cargo(self):
         manifest = {'arch': 'x86_64', 'invocations': [{'flags': ['--locked'], 'tests': ['target/probe']}]}
-        with (patch.dict(os.environ, FS_EXT4_GUEST_ARCH='x86_64', FS_EXT4_GUEST_SSH='test-config'),
+        with (patch.dict(os.environ, FLTH_GUEST='1'),
+              patch.object(bundle.platform, 'machine', return_value='x86_64'),
               patch.object(bundle.subprocess, 'run') as runner):
             runner.return_value.returncode = 0
             self.assertEqual(bundle.run(['--locked', '--', '--skip', 'needs_host::'], manifest), 0)
-            runner.assert_called_once_with(['bash', bundle.REPO / 'scripts/ci-guest-run.sh',
-                                            bundle.REPO / 'target/probe', '--skip', 'needs_host::'])
+            runner.assert_called_once_with([bundle.REPO / 'target/probe', '--skip', 'needs_host::'],
+                                           cwd=bundle.REPO)
             with self.assertRaisesRegex(ValueError, 'refusing to compile'):
                 bundle.run(['--release'], manifest)
-            with patch.dict(os.environ, FS_EXT4_GUEST_ARCH='aarch64'):
-                with self.assertRaisesRegex(ValueError, 'matching QEMU guest'):
-                    bundle.run(['--locked'], manifest)
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop('FLTH_GUEST', None)
+            with self.assertRaisesRegex(ValueError, 'harness guest of their architecture'):
+                bundle.run(['--locked'], manifest)
 
     def test_local_scope_is_the_whole_suite_in_one_invocation(self):
         for arch in bundle.MACHINES:
@@ -133,14 +135,12 @@ class BundleTest(unittest.TestCase):
         with (patch.dict(os.environ, FLTH_GUEST='1'),
               patch.object(bundle.platform, 'machine', return_value='aarch64'),
               patch.object(bundle.subprocess, 'run') as runner):
-            os.environ.pop('FS_EXT4_GUEST_SSH', None)
             runner.return_value.returncode = 0
             self.assertEqual(bundle.run(['--locked', '--', 'filter'], manifest), 0)
             runner.assert_called_once_with([bundle.REPO / 'target/probe', 'filter'], cwd=bundle.REPO)
         with (patch.dict(os.environ, FLTH_GUEST='1'),
               patch.object(bundle.platform, 'machine', return_value='x86_64')):
-            os.environ.pop('FS_EXT4_GUEST_SSH', None)
-            with self.assertRaisesRegex(ValueError, 'matching QEMU guest'):
+            with self.assertRaisesRegex(ValueError, 'harness guest of their architecture'):
                 bundle.run(['--locked'], manifest)
 
 

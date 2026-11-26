@@ -16,8 +16,6 @@ on:
 # unpinned action or persists its token.
 permissions:
   contents: read
-  # jobs.test pulls the published runner environment and guest images
-  # (ghcr.io/<repository>/qemu-pilot); nothing here publishes them.
   packages: read
 
 env:
@@ -39,9 +37,14 @@ jobs:
     name: test
     needs: test-gate
     runs-on: antimatter-vps-linux-x64
-    # Fixtures and every test executable run in the emulated (TCG) guest:
-    # the runner has no KVM.
+    # The oracle tools, the kernel and lwext4 run in fs-linux-test-harness's
+    # guest, under TCG (the runner has no KVM) with QEMU's translation cache
+    # capped (FLTH_VM_MEM, MiB) and the guest's RAM (FLTH_GUEST_MEM).
     timeout-minutes: 480
+    env:
+      FLTH_ACCELERATOR: tcg
+      FLTH_VM_MEM: '2048'
+      FLTH_GUEST_MEM: '1536'
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
@@ -65,8 +68,8 @@ jobs:
       # The same gate as a pull request's CI, through the same chore
       # tasks: the siblings at their pinned refs (rust-fs-core for its
       # scripts), the kernel-made fixtures and the oracle tools in the
-      # emulated Debian guest `scripts/ci-qemu-runner.sh serve` boots (the
-      # runner has no KVM; see ci.yml), lint, and the whole suite -- which
+      # harness's guest (the runner has no KVM; see ci.yml), lint, and the
+      # whole suite -- which
       # includes the e2fsck checks of the mkfs.ext4 tool
       # (tests/mkfs_bin_fsck_oracle.rs) that used to be a job of their own
       # here.
@@ -79,18 +82,15 @@ jobs:
           toolchain: 1.95.0
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - name: chore fixtures, in the emulated guest
-        env:
-          GH_TOKEN: ${{ github.token }}
-          BENCH_CACHE_REGISTRY: ghcr.io/${{ github.repository }}/qemu-pilot
-        run: bash scripts/ci-qemu-runner.sh serve x86_64 tcg full -- chore fixtures
+      - uses: antimatter-studios/fs-linux-test-harness/.github/actions/install-virtiofsd@feat/vagrant-tcg
+      - name: QEMU and Vagrant for the harness guest (TCG)
+        run: bash ../fs-linux-test-harness/scripts/ci-setup-linux.sh
+      - name: chore fixtures, in the harness guest
+        run: chore fixtures
       - name: chore lint
         run: chore lint
-      - name: chore test, every test executable in the emulated guest
-        env:
-          GH_TOKEN: ${{ github.token }}
-          BENCH_CACHE_REGISTRY: ghcr.io/${{ github.repository }}/qemu-pilot
-        run: bash scripts/ci-qemu-runner.sh serve x86_64 tcg full -- chore test
+      - name: chore test, the oracles in the harness guest
+        run: chore test
 
   cli:
     needs: [test, publish]

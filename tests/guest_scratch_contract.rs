@@ -37,15 +37,7 @@ fn the_harness_guest_runs_what_the_host_built_and_never_compiles() {
 }
 
 #[test]
-fn the_served_ci_guest_runs_the_same_chain() {
-    let served = include_str!("../scripts/ci-guest-suite.sh");
-    assert!(served.contains(
-        "command=\"cd /repo && FLTH_GUEST=1 FLTH_BUILD_DIR=/share/build$limits exec bash scripts/guest-suite.sh\""
-    ));
-    assert!(served.contains("tar -cf - -C \"$BUILD\" . | ssh_guest 'tar -xf - -C /share/build'"));
-    assert!(!std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("scripts/ci-guest-compile-suite.sh")
-        .exists());
+fn the_ci_test_stage_is_one_job_per_tier_in_the_harness_guest() {
     let ci = include_str!("../.github/workflows/ci.yml");
     assert!(
         !ci.contains("\n  suite-build:\n"),
@@ -57,6 +49,17 @@ fn the_served_ci_guest_runs_the_same_chain() {
     );
     let guest = include_str!("../scripts/guest-suite.sh");
     assert!(guest.contains("bash scripts/guest-scratch.sh \"$HOME/.local/bin/chore\" \"$task\""));
+    for pilot in [
+        "ci-qemu-runner.sh",
+        "ci-test-serve.sh",
+        "ci-qemu-benchmark.sh",
+        "qemu-pilot",
+    ] {
+        assert!(
+            !ci.contains(pilot),
+            "the pilot QEMU is gone from the pipeline ({pilot})"
+        );
+    }
 }
 
 #[test]

@@ -703,8 +703,7 @@ tasks:
     # the guest. The guest stays up afterwards, for the next run.
     #
     # CI's test jobs boot the same harness guest under TCG on the build job's
-    # output (FLTH_BUILD_PREBUILT=1). With FS_EXT4_GUEST_SSH set, a served
-    # guest runs it instead (scripts/ci-guest-suite.sh).
+    # output (FLTH_BUILD_PREBUILT=1).
     timeout: 360m
     on_timeout:
       - cmd: '../fs-linux-test-harness/scripts/vm.sh down || ../fs-linux-test-harness/scripts/vm.sh destroy'
@@ -725,33 +724,24 @@ tasks:
           case "$arg" in --verbose|-v) continue ;; esac
           guest_args="$guest_args $arg"
         done
-        # A CI runner without KVM runs the same in-guest suite in the guest
-        # `scripts/ci-qemu-runner.sh serve` booted beside this task, which
-        # stages the same siblings (scripts/ci-guest-suite.sh).
-        if [ -n "${FS_EXT4_GUEST_SSH:-}" ]; then
-          # shellcheck disable=SC2086  # the words are the point
-          bash ../rust-fs-core/scripts/tier.sh test:vm vm 3900 193000 -- \
-            scripts/ci-guest-suite.sh $guest_args
-        else
-          [ -x ../fs-linux-test-harness/scripts/vm.sh ] || {
-            echo "test:vm needs the harness sibling -- run 'chore siblings'." >&2
+        [ -x ../fs-linux-test-harness/scripts/vm.sh ] || {
+          echo "test:vm needs the harness sibling -- run 'chore siblings'." >&2
+          exit 1
+        }
+        share="$(../fs-linux-test-harness/scripts/vm.sh share)"
+        for sibling in rust-fs-core fs-linux-test-harness; do
+          [ -e "../$sibling/.git" ] || {
+            echo "test:vm: ../$sibling is not checked out -- run 'chore siblings'." >&2
             exit 1
           }
-          share="$(../fs-linux-test-harness/scripts/vm.sh share)"
-          for sibling in rust-fs-core fs-linux-test-harness; do
-            [ -e "../$sibling/.git" ] || {
-              echo "test:vm: ../$sibling is not checked out -- run 'chore siblings'." >&2
-              exit 1
-            }
-            dest="$share/siblings/$sibling"
-            rm -rf "$dest"
-            mkdir -p "$dest"
-            git -C "../$sibling" archive --format=tar HEAD | tar -x -C "$dest"
-          done
-          # shellcheck disable=SC2086  # the words are the point
-          bash ../rust-fs-core/scripts/tier.sh test:vm vm 3900 193000 -- \
-            ../fs-linux-test-harness/scripts/vm.sh guest-test $guest_args
-        fi
+          dest="$share/siblings/$sibling"
+          rm -rf "$dest"
+          mkdir -p "$dest"
+          git -C "../$sibling" archive --format=tar HEAD | tar -x -C "$dest"
+        done
+        # shellcheck disable=SC2086  # the words are the point
+        bash ../rust-fs-core/scripts/tier.sh test:vm vm 3900 193000 -- \
+          ../fs-linux-test-harness/scripts/vm.sh guest-test $guest_args
         # cli_export_kernel.rs adds two cases to the whole-suite floor.
         # cli_import_kernel.rs adds three more cases.
         # #536 adds one unit case and two kernel cases.
@@ -859,7 +849,8 @@ tasks:
     # BUDGET: all script tests, including the whole-image-read guard, measured
     # 53 lines and 3021 bytes in PR #659's CI run 45090429034 and local rerun.
     # The v0.11.0 pin verdict is one byte longer than v0.9.1; every test passed.
-    # tests/scripts/test-guest-detached-setup.sh adds its "==" line and its
+    # tests/scripts/test-guest-detached-setup.sh, since deleted with the pilot
+    # QEMU, added its "==" line and its
     # PASS line, 2 lines and 130 bytes, measured locally: 55 and 3151.
     # By glob, so a test added later needs no edit here -- a guard that
     # has to be registered somewhere else is a guard that gets silently

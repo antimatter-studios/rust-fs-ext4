@@ -185,18 +185,13 @@ def in_guest(manifest):
 
 def run(args, manifest):
     flags, test_args = split_args(args)
-    local = in_guest(manifest)
-    if not local and (os.environ.get('FS_EXT4_GUEST_ARCH') != manifest['arch']
-                      or not os.environ.get('FS_EXT4_GUEST_SSH')):
-        raise ValueError('prebuilt tests require the matching QEMU guest')
+    if not in_guest(manifest):
+        raise ValueError('prebuilt tests run in the harness guest of their architecture')
     for invocation in manifest['invocations']:
         if tuple(invocation['flags']) == flags:
             for test in invocation['tests']:
                 print(f'     Running {test}', flush=True)
-                if local:
-                    result = subprocess.run([REPO / test, *test_args], cwd=REPO)
-                else:
-                    result = subprocess.run(['bash', REPO / 'scripts/ci-guest-run.sh', REPO / test, *test_args])
+                result = subprocess.run([REPO / test, *test_args], cwd=REPO)
                 if result.returncode:
                     return result.returncode if result.returncode > 0 else 128 - result.returncode
             return 0
