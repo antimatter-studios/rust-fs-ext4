@@ -1261,7 +1261,7 @@ fn ci_gates_keep_their_checks_without_selecting_workload_runners() {
     for (name, gate, class) in [
         ("changes", "changes-gate", "linux-x64"),
         ("unit", "unit-gate", "linux-x64"),
-        ("fixtures", "fixtures-gate", "linux-x64-kvm"),
+        ("test-fixtures", "test-fixtures-gate", "linux-x64-kvm"),
         ("test-images-x86_64", "test-gate", "linux-x64-kvm"),
         ("test-oracle-x86_64", "test-gate", "linux-x64-kvm"),
         ("test-kernel-x86_64", "test-gate", "linux-x64-kvm"),
@@ -1427,8 +1427,8 @@ fn the_pr_gate_builds_fixtures_once_in_a_guest_and_tests_both_architectures_thro
         assert_prebuilt_test(&document, &path, &name, "x86_64");
         assert!(needs_of(test).iter().any(|n| n == "test-gate"));
         assert!(
-            needs_of(test).iter().any(|n| n == "fixtures"),
-            "jobs.{name} must need jobs.fixtures, whose artifact it tests against"
+            needs_of(test).iter().any(|n| n == "test-fixtures"),
+            "jobs.{name} must need jobs.test-fixtures, whose artifact it tests against"
         );
         let steps = steps_of(test, &name);
         let task = format!("test:{tier}");
@@ -1494,29 +1494,32 @@ fn the_pr_gate_builds_fixtures_once_in_a_guest_and_tests_both_architectures_thro
     assert!(builder.contains("rustup target add aarch64-unknown-linux-gnu"));
     assert!(builder.contains("amd64) cross=\"gcc-aarch64-linux-gnu libc6-dev-arm64-cross\""));
 
-    // jobs.fixtures
-    let fixtures = job(&document, "fixtures", &path);
-    assert_unconditional_or_skipped_for_documentation(fixtures, "fixtures", "ci.yml");
+    // jobs.test-fixtures
+    let fixtures = job(&document, "test-fixtures", &path);
+    assert_unconditional_or_skipped_for_documentation(fixtures, "test-fixtures", "ci.yml");
     assert_eq!(
         field(
-            &steps_of(job(&document, "fixtures-gate", &path), "fixtures-gate")[0],
+            &steps_of(
+                job(&document, "test-fixtures-gate", &path),
+                "test-fixtures-gate"
+            )[0],
             "run"
         )
         .and_then(Yaml::as_str),
         Some("runner-gate pick linux-x64-kvm"),
-        "jobs.fixtures must ask the gate for an x86_64 KVM runner"
+        "jobs.test-fixtures must ask the gate for an x86_64 KVM runner"
     );
-    let steps = steps_of(fixtures, "fixtures");
+    let steps = steps_of(fixtures, "test-fixtures");
     assert!(
         runs_chore(steps, "fixtures"),
-        "jobs.fixtures must run `chore fixtures`, whose guest kernel makes the images"
+        "jobs.test-fixtures must run `chore fixtures`, whose guest kernel makes the images"
     );
-    assert_harness_guest(fixtures, "fixtures");
+    assert_harness_guest(fixtures, "test-fixtures");
     assert!(
         steps
             .iter()
             .any(|step| is_artifact_step(step, "upload-artifact", "fixtures")),
-        "jobs.fixtures must upload the images as the `fixtures` artifact"
+        "jobs.test-fixtures must upload the images as the `fixtures` artifact"
     );
 
     // jobs.unit

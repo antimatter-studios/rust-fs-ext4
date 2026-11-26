@@ -18,7 +18,7 @@ use std::path::PathBuf;
 const ALL: [&str; 18] = [
     "changes",
     "unit",
-    "fixtures",
+    "test-fixtures",
     "test-builder-image",
     "build-test-x86_64",
     "build-test-aarch64",
@@ -36,7 +36,7 @@ const ALL: [&str; 18] = [
     "provenance",
 ];
 const FULL_ONLY: [&str; 13] = [
-    "fixtures",
+    "test-fixtures",
     "test-builder-image",
     "build-test-x86_64",
     "build-test-aarch64",
@@ -51,7 +51,7 @@ const FULL_ONLY: [&str; 13] = [
     "cli",
 ];
 const VM_ONLY: [&str; 11] = [
-    "fixtures",
+    "test-fixtures",
     "test-builder-image",
     "build-test-x86_64",
     "build-test-aarch64",

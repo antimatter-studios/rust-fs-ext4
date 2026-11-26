@@ -127,7 +127,7 @@ env:
   # or cancellation still fails ci-ok.
   # The gate jobs that carry the same `if:` as their job, and ci-ok-gate (it only
   # picks ci-ok's runner and carries `if: always()` like ci-ok), are named too.
-  CI_GATE_NON_GATING: fixtures wasm cli fixtures-gate wasm-gate cli-gate ci-ok-gate test-builder-image
+  CI_GATE_NON_GATING: test-fixtures wasm cli test-fixtures-gate wasm-gate cli-gate ci-ok-gate test-builder-image
 
 jobs:
   # Is this change documentation-only? rust-fs-core's
@@ -325,7 +325,7 @@ jobs:
           path: tmp/logs/*.log
           if-no-files-found: error
 
-  fixtures-gate:
+  test-fixtures-gate:
     needs: changes
     if: needs.changes.outputs.profile == 'full' && needs.changes.outputs.code == 'true'
     runs-on: antimatter-vps-gate
@@ -336,9 +336,9 @@ jobs:
       - id: pick
         run: runner-gate pick linux-x64-kvm
 
-  fixtures:
-    name: fixtures (kernel-made, in the harness guest)
-    needs: [changes, fixtures-gate]
+  test-fixtures:
+    name: test-fixtures (kernel-made, in the harness guest, cached by recipe)
+    needs: [changes, test-fixtures-gate]
     if: needs.changes.outputs.profile == 'full' && needs.changes.outputs.code == 'true'
     runs-on: antimatter-vps-linux-x64
     # The runner has no KVM: the harness boots its guest under TCG
@@ -456,7 +456,7 @@ jobs:
           registry-token: ${{ github.token }}
 
   test-gate:
-    needs: fixtures
+    needs: test-fixtures
     runs-on: antimatter-vps-gate
     timeout-minutes: 1
     outputs:
@@ -466,7 +466,7 @@ jobs:
         run: runner-gate pick linux-x64-kvm
 
   test-arm64-gate:
-    needs: fixtures
+    needs: test-fixtures
     runs-on: antimatter-vps-gate
     timeout-minutes: 1
     outputs:
@@ -486,7 +486,7 @@ jobs:
 
   test-images-x86_64:
     name: test-images-x86_64
-    needs: [fixtures, test-gate, test-builder-image, build-test-x86_64]
+    needs: [test-fixtures, test-gate, test-builder-image, build-test-x86_64]
     runs-on: antimatter-vps-linux-x64
     timeout-minutes: 60
     env:
@@ -522,7 +522,7 @@ jobs:
 
   test-oracle-x86_64:
     name: test-oracle-x86_64
-    needs: [fixtures, test-gate, test-builder-image, build-test-x86_64]
+    needs: [test-fixtures, test-gate, test-builder-image, build-test-x86_64]
     runs-on: antimatter-vps-linux-x64
     timeout-minutes: 60
     env:
@@ -558,7 +558,7 @@ jobs:
 
   test-kernel-x86_64:
     name: test-kernel-x86_64
-    needs: [fixtures, test-gate, test-builder-image, build-test-x86_64]
+    needs: [test-fixtures, test-gate, test-builder-image, build-test-x86_64]
     runs-on: antimatter-vps-linux-x64
     timeout-minutes: 60
     env:
@@ -594,7 +594,7 @@ jobs:
 
   test-lwext4-x86_64:
     name: test-lwext4-x86_64
-    needs: [fixtures, test-gate, test-builder-image, build-test-x86_64]
+    needs: [test-fixtures, test-gate, test-builder-image, build-test-x86_64]
     runs-on: antimatter-vps-linux-x64
     timeout-minutes: 60
     env:
@@ -630,7 +630,7 @@ jobs:
 
   test-scripts-x86_64:
     name: test-scripts-x86_64
-    needs: [fixtures, test-gate]
+    needs: [test-fixtures, test-gate]
     runs-on: antimatter-vps-linux-x64
     timeout-minutes: 60
     steps:
@@ -666,7 +666,7 @@ jobs:
 
   test-unit-aarch64:
     name: test-unit-aarch64
-    needs: [fixtures, test-arm64-gate, test-builder-image, build-test-aarch64]
+    needs: [test-fixtures, test-arm64-gate, test-builder-image, build-test-aarch64]
     runs-on: antimatter-vps-linux-x64
     timeout-minutes: 60
     # The executables are aarch64, so the tier runs INSIDE the harness's
@@ -706,7 +706,7 @@ jobs:
 
   test-images-aarch64:
     name: test-images-aarch64
-    needs: [fixtures, test-arm64-gate, test-builder-image, build-test-aarch64]
+    needs: [test-fixtures, test-arm64-gate, test-builder-image, build-test-aarch64]
     runs-on: antimatter-vps-linux-x64
     timeout-minutes: 60
     # The executables are aarch64, so the tier runs INSIDE the harness's
@@ -1004,7 +1004,7 @@ jobs:
 
   ci-ok-gate:
     if: always()
-    needs: [changes-gate, changes, unit-gate, unit, fixtures-gate, fixtures, test-builder-image, build-test-x86_64, build-test-aarch64, test-gate, test-arm64-gate, test-images-x86_64, test-oracle-x86_64, test-kernel-x86_64, test-lwext4-x86_64, test-scripts-x86_64, test-unit-aarch64, test-images-aarch64, wasm-gate, wasm, semver-gate, semver, msrv-gate, msrv, cli-gate, cli, provenance-gate, provenance]
+    needs: [changes-gate, changes, unit-gate, unit, test-fixtures-gate, test-fixtures, test-builder-image, build-test-x86_64, build-test-aarch64, test-gate, test-arm64-gate, test-images-x86_64, test-oracle-x86_64, test-kernel-x86_64, test-lwext4-x86_64, test-scripts-x86_64, test-unit-aarch64, test-images-aarch64, wasm-gate, wasm, semver-gate, semver, msrv-gate, msrv, cli-gate, cli, provenance-gate, provenance]
     runs-on: antimatter-vps-gate
     timeout-minutes: 1
     outputs:
@@ -1016,7 +1016,7 @@ jobs:
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [changes-gate, changes, unit-gate, unit, fixtures-gate, fixtures, test-builder-image, build-test-x86_64, build-test-aarch64, test-gate, test-arm64-gate, test-images-x86_64, test-oracle-x86_64, test-kernel-x86_64, test-lwext4-x86_64, test-scripts-x86_64, test-unit-aarch64, test-images-aarch64, wasm-gate, wasm, semver-gate, semver, msrv-gate, msrv, cli-gate, cli, provenance-gate, provenance, ci-ok-gate]
+    needs: [changes-gate, changes, unit-gate, unit, test-fixtures-gate, test-fixtures, test-builder-image, build-test-x86_64, build-test-aarch64, test-gate, test-arm64-gate, test-images-x86_64, test-oracle-x86_64, test-kernel-x86_64, test-lwext4-x86_64, test-scripts-x86_64, test-unit-aarch64, test-images-aarch64, wasm-gate, wasm, semver-gate, semver, msrv-gate, msrv, cli-gate, cli, provenance-gate, provenance, ci-ok-gate]
     runs-on: antimatter-vps-linux-x64
     steps:
       - uses: actions/checkout@v4
