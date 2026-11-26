@@ -99,6 +99,12 @@ def compile_targets(args):
     return executables, tests
 
 
+def cargo_metadata():
+    # What tests/ci_profile.rs asks Cargo, recorded for the guest, which has no
+    # Cargo: install writes it to target/cargo-metadata.json.
+    return json.loads(command('cargo', 'metadata', '--no-deps', '--offline', '--format-version', '1'))
+
+
 def build(arch, key, archive, scope='ci'):
     if REPO != CI_REPO:
         raise ValueError(f'build tests from {CI_REPO}, the path their binaries use in the guest')
@@ -119,7 +125,8 @@ def build(arch, key, archive, scope='ci'):
         raise ValueError('Cargo did not build the staged CLI')
     executables.update(files)
     manifest = {'version': VERSION, 'arch': arch, 'key': key, 'scope': scope,
-                'invocations': invocations, 'cli': cli, 'files': {}}
+                'invocations': invocations, 'cli': cli, 'files': {},
+                'cargo_metadata': cargo_metadata()}
     archive.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=archive.parent) as temporary:
         temporary = Path(temporary)
@@ -174,6 +181,8 @@ def verify(arch, key, archive, install=False, scope='ci'):
                     destination.chmod(0o755)
         if install:
             (REPO / 'target/ci-test-manifest.json').write_text(json.dumps(manifest))
+            if 'cargo_metadata' in manifest:
+                (REPO / 'target/cargo-metadata.json').write_text(json.dumps(manifest['cargo_metadata']))
     print(f'{arch}: verified {len(files)} prebuilt executables ({key})')
 
 

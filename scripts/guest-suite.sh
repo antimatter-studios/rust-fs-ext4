@@ -72,8 +72,9 @@ done
 cd "$base/rust-fs-ext4"
 python3 scripts/ci-test-bundle.py install "$arch" "$key" "$build/bundle.tar" "$scope"
 export FS_EXT4_PREBUILT_REPO="$PWD"
-# What tests/ci_profile.rs would ask Cargo, recorded by the build.
-export FS_EXT4_CARGO_METADATA="$build/cargo-metadata.json"
+# What tests/ci_profile.rs would ask Cargo, recorded by the build in the
+# bundle's manifest, for a local bundle and CI's alike, and installed beside it.
+export FS_EXT4_CARGO_METADATA="$PWD/target/cargo-metadata.json"
 # Each tier's log, copied from the run's private tmp/ to the share, the one
 # directory of the run the host sees (/repo is the run's own copy of the tree):
 # <share>/logs/<tier>.log, .vm-share/logs/ on the host.

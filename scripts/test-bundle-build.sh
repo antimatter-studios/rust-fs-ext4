@@ -78,7 +78,5 @@ python3 scripts/ci-test-bundle.py build "$arch" "$key" "$bundle" "$scope"
 
 if [ "$scope" = local ]; then
     python3 scripts/ci-test-bundle.py verify "$arch" "$key" "$bundle" local
-    # What tests/ci_profile.rs asks Cargo, answered here: the guest has no Cargo.
-    cargo metadata --no-deps --offline --format-version 1 > "$output/cargo-metadata.json"
     printf '%s\n' "$key" > "$output/key"
 fi

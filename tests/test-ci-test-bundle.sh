@@ -48,7 +48,8 @@ class BundleTest(unittest.TestCase):
             archive = root / 'bundle.tar'
             with (patch.object(bundle, 'REPO', source), patch.object(bundle, 'CI_REPO', source),
                   patch.object(bundle, 'selections', return_value=[flags]),
-                  patch.object(bundle, 'compile_targets', compiler)):
+                  patch.object(bundle, 'compile_targets', compiler),
+                  patch.object(bundle, 'cargo_metadata', return_value={'packages': ['probe']})):
                 bundle.build(arch, key, archive)
                 self.assertEqual(compiler.call_args_list, [
                     unittest.mock.call(['test', '--no-run', *flags]),
@@ -72,6 +73,9 @@ class BundleTest(unittest.TestCase):
                     self.assertTrue(os.access(destination / cli, os.X_OK))
                     manifest = json.loads((destination / 'target/ci-test-manifest.json').read_text())
                     self.assertEqual(manifest['cli'], cli)
+                    # The guest has no Cargo: what the build's Cargo said is installed.
+                    self.assertEqual(json.loads((destination / 'target/cargo-metadata.json').read_text()),
+                                     {'packages': ['probe']})
 
                 altered = root / 'altered.tar'
                 with tarfile.open(archive) as original, tarfile.open(altered, 'w') as corrupted:
