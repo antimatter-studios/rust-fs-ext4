@@ -15,41 +15,53 @@
 
 use std::path::PathBuf;
 
-const ALL: [&str; 14] = [
+const ALL: [&str; 18] = [
     "changes",
     "unit",
     "fixtures",
     "test-builder-image",
     "build-test-x86_64",
     "build-test-aarch64",
-    "test",
-    "test-arm64",
-    "suite-in-vm",
+    "test-images-x86_64",
+    "test-oracle-x86_64",
+    "test-kernel-x86_64",
+    "test-lwext4-x86_64",
+    "test-scripts-x86_64",
+    "test-unit-aarch64",
+    "test-images-aarch64",
     "wasm",
     "semver",
     "msrv",
     "cli",
     "provenance",
 ];
-const FULL_ONLY: [&str; 9] = [
+const FULL_ONLY: [&str; 13] = [
     "fixtures",
     "test-builder-image",
     "build-test-x86_64",
     "build-test-aarch64",
-    "test",
-    "test-arm64",
-    "suite-in-vm",
+    "test-images-x86_64",
+    "test-oracle-x86_64",
+    "test-kernel-x86_64",
+    "test-lwext4-x86_64",
+    "test-scripts-x86_64",
+    "test-unit-aarch64",
+    "test-images-aarch64",
     "wasm",
     "cli",
 ];
-const VM_ONLY: [&str; 7] = [
+const VM_ONLY: [&str; 11] = [
     "fixtures",
     "test-builder-image",
     "build-test-x86_64",
     "build-test-aarch64",
-    "test",
-    "test-arm64",
-    "suite-in-vm",
+    "test-images-x86_64",
+    "test-oracle-x86_64",
+    "test-kernel-x86_64",
+    "test-lwext4-x86_64",
+    "test-scripts-x86_64",
+    "test-unit-aarch64",
+    "test-images-aarch64",
 ];
 
 fn read(relative: &str) -> String {

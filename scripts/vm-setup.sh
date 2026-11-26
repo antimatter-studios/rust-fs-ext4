@@ -33,7 +33,7 @@
 # suite: its [build] step does that on the host, in the test builder
 # container, and the guest has no Rust toolchain.
 #
-# No guest compiles the suite any more, CI's suite-in-vm included. gcc,
+# No guest compiles the suite any more. gcc,
 # cmake and make stay: they build lwext4, above.
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive

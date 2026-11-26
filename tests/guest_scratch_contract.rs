@@ -49,25 +49,14 @@ fn the_served_ci_guest_runs_the_same_chain() {
     let ci = include_str!("../.github/workflows/ci.yml");
     assert!(
         !ci.contains("\n  suite-build:\n"),
-        "the build job is build-test-x86_64; there is no second one"
+        "the build jobs are build-test-<arch>; there is no other"
     );
-    for job in ["test", "suite-in-vm"] {
-        let body = ci.split_once(&format!("\n  {job}:\n")).unwrap().1;
-        let body = &body[..body.find("\n\n  ").unwrap_or(body.len())];
-        assert!(
-            body.contains("build-test-x86_64"),
-            "{job} runs the build job's bundle"
-        );
-        for setting in ["FLTH_ACCELERATOR: tcg", "FLTH_VM_MEM:", "FLTH_GUEST_MEM:"] {
-            assert!(body.contains(setting), "{job} sets {setting}");
-        }
-        for compiles in ["vm.sh build", "ci-qemu-runner.sh", "ci-test-serve.sh"] {
-            assert!(
-                !body.contains(compiles),
-                "{job} neither compiles nor boots a pilot guest ({compiles})"
-            );
-        }
-    }
+    assert!(
+        !ci.contains("\n  suite-in-vm:\n"),
+        "the test stage is one job per tier and architecture"
+    );
+    let guest = include_str!("../scripts/guest-suite.sh");
+    assert!(guest.contains("bash scripts/guest-scratch.sh \"$HOME/.local/bin/chore\" \"$task\""));
 }
 
 #[test]

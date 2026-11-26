@@ -51,15 +51,18 @@ def selections(arch, scope='ci'):
     if scope == 'local':
         yield tuple(options)
         return
+    # One selection per tier, so CI tests one tier per job. The oracle,
+    # kernel and lwext4 tiers read the same bytes on every architecture and
+    # run on x86_64 only.
     yield ('--locked', *split_args(command('bash', 'scripts/test-targets.sh', 'unit').splitlines())[0])
-    tiers = ('images',) if arch == 'aarch64' else ('oracle', 'kernel', 'lwext4')
+    tiers = ('images',) if arch == 'aarch64' else ('images', 'oracle', 'kernel', 'lwext4')
     for tier in tiers:
         targets = command('bash', 'scripts/test-targets.sh', tier).splitlines()
         if not targets:
             raise ValueError(f'{tier} selected no targets')
         yield (*options, *targets)
     if arch == 'x86_64':
-        yield tuple(options)
+        # tests/scripts/test-scratch-left-behind.sh runs this one binary.
         yield (*options, '--test', 'repro_wants_dir_symlinks')
 
 

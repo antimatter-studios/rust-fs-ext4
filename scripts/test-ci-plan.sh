@@ -20,7 +20,7 @@ fail() {
   echo "FAIL: $*" >&2
 }
 
-VM_ONLY=(fixtures test-builder-image build-test-x86_64 build-test-aarch64 test test-arm64 suite-in-vm)
+VM_ONLY=(fixtures test-builder-image build-test-x86_64 build-test-aarch64 test-images-x86_64 test-oracle-x86_64 test-kernel-x86_64 test-lwext4-x86_64 test-scripts-x86_64 test-unit-aarch64 test-images-aarch64)
 FULL_ONLY=("${VM_ONLY[@]}" wasm cli)
 QUICK=(changes unit semver msrv provenance)
 ALL=("${QUICK[@]}" "${FULL_ONLY[@]}")

@@ -710,8 +710,7 @@ directly on the runner. Missing or mismatched artifacts fail the job rather
 than triggering a build. Use **Re-run failed jobs** to retry a failed test
 without rerunning a successful build; the uploaded artifact must still be
 available. The AMD64 shell tooling checks still build their own sandbox
-fixtures, not the tests' executables. The separate `suite-in-vm` job still
-checks the macOS path that compiles inside the guest.
+fixtures, not the tests' executables.
 
 ### Git hooks
 

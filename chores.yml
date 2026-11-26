@@ -346,7 +346,7 @@ vars:
   # After v0.11.0, until the next release: the branch feat/vagrant-tcg, on
   # main with the [build] step (#301) and the host memory budget (#300),
   # adds FLTH_ACCELERATOR=tcg, FLTH_VM_MEM, FLTH_GUEST_MEM and
-  # FLTH_BUILD_PREBUILT, which CI's suite-in-vm job uses. LINUX_HARNESS_BASE
+  # FLTH_BUILD_PREBUILT and FLTH_GUEST_ARCH, which CI's test jobs use. LINUX_HARNESS_BASE
   # names the release a branch or commit pin builds on, for
   # tests/scripts/test-harness-pin-keeps-guest-off-shares.sh.
   LINUX_HARNESS_REF: feat/vagrant-tcg
@@ -702,10 +702,9 @@ tasks:
     # guest_command, which installs that bundle and runs it: no toolchain in
     # the guest. The guest stays up afterwards, for the next run.
     #
-    # CI's suite-in-vm job runs this same task through the harness, under
-    # TCG, on the build its suite-build job made (FLTH_BUILD_PREBUILT=1).
-    # With FS_EXT4_GUEST_SSH set, a served guest runs it instead
-    # (scripts/ci-guest-suite.sh).
+    # CI's test jobs boot the same harness guest under TCG on the build job's
+    # output (FLTH_BUILD_PREBUILT=1). With FS_EXT4_GUEST_SSH set, a served
+    # guest runs it instead (scripts/ci-guest-suite.sh).
     timeout: 360m
     on_timeout:
       - cmd: '../fs-linux-test-harness/scripts/vm.sh down || ../fs-linux-test-harness/scripts/vm.sh destroy'

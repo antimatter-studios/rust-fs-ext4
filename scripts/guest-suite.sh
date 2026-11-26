@@ -75,6 +75,21 @@ export FS_EXT4_PREBUILT_REPO="$PWD"
 # What tests/ci_profile.rs would ask Cargo, recorded by the build.
 export FS_EXT4_CARGO_METADATA="$build/cargo-metadata.json"
 
+# `--chore <version> <task>...`: run those chore tasks here, on the bundle,
+# instead of the whole suite. CI's test job of an architecture the runner
+# cannot run (an aarch64 bundle on an x86_64 runner) tests one tier this way.
+if [ "${1:-}" = --chore ]; then
+    version="${2:?guest-suite.sh --chore <version> <task>...}"
+    shift 2
+    [ "$#" -gt 0 ] || { echo "guest-suite.sh: --chore needs at least one task" >&2; exit 2; }
+    CHORE_VERSION="$version" bash scripts/ci-install-chore.sh
+    for task in "$@"; do
+        echo "== in-guest chore $task: $(uname -srm), the $arch bundle"
+        bash scripts/guest-scratch.sh "$HOME/.local/bin/chore" "$task"
+    done
+    exit 0
+fi
+
 echo "== in-guest suite: $(uname -srm), the $arch bundle built on the host"
 started=$(date +%s)
 bash scripts/guest-scratch.sh scripts/test.sh --locked --profile test-opt "$@"
