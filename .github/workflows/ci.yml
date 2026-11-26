@@ -659,6 +659,10 @@ jobs:
         run: chore siblings
       - name: Install Rust for the shell tooling self-tests
         uses: dtolnay/rust-toolchain@stable
+      # The tools the shell checks call: a C toolchain for their sandboxes,
+      # ripgrep (tests/scripts/test-no-root.sh), rsync and time.
+      - name: C toolchain and tools for the shell tooling self-tests
+        run: bash scripts/ci-c-toolchain.sh ripgrep rsync time
       - uses: actions/download-artifact@v4
         with:
           name: fixtures

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 #
-# ci-c-toolchain.sh — install build-essential on a self-hosted Linux runner,
-# which lacks the C toolchain the hosted image has.
+# ci-c-toolchain.sh [package...] — install build-essential, and any other
+# packages named, on a self-hosted Linux runner, which lacks the C toolchain
+# and tools the hosted image has.
 #
 # Ubuntu's mirrors answer an index that is mid-sync with "File has unexpected
 # size ... Mirror sync in progress?", and one such answer used to fail the job
@@ -17,4 +18,4 @@ for wait in 15 30 60 0; do
     echo "::warning::apt-get update failed (a mirror mid-sync?); trying again in ${wait}s" >&2
     sleep "$wait"
 done
-sudo apt-get -o Acquire::Retries=3 install -y build-essential
+sudo apt-get -o Acquire::Retries=3 install -y build-essential "$@"
