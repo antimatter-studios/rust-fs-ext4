@@ -43,8 +43,14 @@ if at_or_above v0.5.2 "$FLOOR"; then fail "v0.5.2 reads as at or above the floor
 if at_or_above v0.4.0 "$FLOOR"; then fail "v0.4.0 reads as at or above the floor $FLOOR"; fi
 
 pin="$(sed -nE 's/^ *LINUX_HARNESS_REF: *(v[0-9]+\.[0-9]+\.[0-9]+) *$/\1/p' "$CHORES")"
+# A branch or commit pin, between releases, names the release it builds on.
+commit="$(sed -nE 's/^ *LINUX_HARNESS_REF: *([A-Za-z0-9][A-Za-z0-9._/-]*) *$/\1/p' "$CHORES")"
+if [ -z "$pin" ] && [ -n "$commit" ]; then
+    pin="$(sed -nE 's/^ *LINUX_HARNESS_BASE: *(v[0-9]+\.[0-9]+\.[0-9]+) *$/\1/p' "$CHORES")"
+    [ -n "$pin" ] || fail "LINUX_HARNESS_REF is $commit, and no LINUX_HARNESS_BASE vX.Y.Z names the release it builds on"
+fi
 if [ -z "$pin" ]; then
-    fail "chores.yml has no LINUX_HARNESS_REF of the form vX.Y.Z"
+    fail "chores.yml has no LINUX_HARNESS_REF of the form vX.Y.Z, or a branch or commit with a LINUX_HARNESS_BASE"
 elif ! at_or_above "$pin" "$FLOOR"; then
     fail "LINUX_HARNESS_REF is $pin; below $FLOOR a Mac-hosted guest writes to the shares and can empty a test's file (#611)"
 fi

@@ -33,11 +33,8 @@
 # suite: its [build] step does that on the host, in the test builder
 # container, and the guest has no Rust toolchain.
 #
-# What a Rust build needs from the distribution (curl, gcc, libc6-dev,
-# pkg-config) stays for CI's suite-in-vm job, the one path left that still
-# compiles in a guest (scripts/ci-guest-compile-suite.sh, which installs the
-# toolchain itself through rust-fs-core's scripts/guest-rust-toolchain.sh).
-# gcc, cmake and make also build lwext4, above.
+# No guest compiles the suite any more, CI's suite-in-vm included. gcc,
+# cmake and make stay: they build lwext4, above.
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 

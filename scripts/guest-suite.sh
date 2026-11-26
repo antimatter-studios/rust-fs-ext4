@@ -37,6 +37,9 @@ build="${FLTH_BUILD_DIR:-}"
     exit 1
 }
 key="$(cat "$build/key")"
+# The bundle's scope: `local` from the harness's [build] step, `ci` when CI's
+# build job made it (its full-suite selection is the one run here).
+scope="$(cat "$build/scope" 2>/dev/null || echo local)"
 arch="$(uname -m)"
 
 # The sibling checkouts, by directory name. The harness mounts us at /repo,
@@ -67,7 +70,7 @@ for sibling in $SIBLINGS; do
 done
 
 cd "$base/rust-fs-ext4"
-python3 scripts/ci-test-bundle.py install "$arch" "$key" "$build/bundle.tar" local
+python3 scripts/ci-test-bundle.py install "$arch" "$key" "$build/bundle.tar" "$scope"
 export FS_EXT4_PREBUILT_REPO="$PWD"
 # What tests/ci_profile.rs would ask Cargo, recorded by the build.
 export FS_EXT4_CARGO_METADATA="$build/cargo-metadata.json"

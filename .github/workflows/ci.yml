@@ -34,13 +34,10 @@ name: CI
 #                (they read the same images) and are covered by `test`;
 #                so are the script tests, which check the tree rather than
 #                the machine.
-#   suite-in-vm  `chore test:vm` beside a served guest: the whole suite
-#                COMPILED AND RUN INSIDE the guest
-#                (scripts/ci-guest-compile-suite.sh, with the siblings
-#                staged as the harness stages them, scripts/ci-guest-suite.sh).
-#                A workstation's `chore test:vm` no longer compiles in the
-#                guest: the harness's [build] step compiles in the builder
-#                container, and the guest runs scripts/guest-suite.sh.
+#   suite-in-vm  `chore test:vm` as a workstation runs it, on the bundle
+#                build-test-x86_64 compiled: the harness's guest, under TCG,
+#                runs scripts/guest-suite.sh, which installs and runs it.
+#                The guest has no Rust toolchain and compiles nothing.
 #   wasm         `chore test:wasm`: the browser build (wasm32-unknown-
 #                unknown) RUN under wasm-bindgen-test in Node, because std
 #                there compiles clock and process-ID calls that panic at
@@ -353,7 +350,7 @@ jobs:
     # One build job and one test thread (FLTH_RESOURCE_PROFILE low, applied by
     # scripts/ci-qemu-runner.sh serve) keep the 4-CPU runner's load down, and
     # take longer: the limit is long so a slow, healthy run finishes.
-    timeout-minutes: 240
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - name: Install chore
@@ -422,7 +419,7 @@ jobs:
   build-test-x86_64:
     needs: test-builder-image
     runs-on: antimatter-vps-linux-x64
-    timeout-minutes: 90
+    timeout-minutes: 60
     outputs:
       bundle: ${{ steps.compile.outputs.artifact }}
       key: ${{ steps.compile.outputs.key }}
@@ -440,7 +437,7 @@ jobs:
   build-test-aarch64:
     needs: test-builder-image
     runs-on: antimatter-vps-linux-x64
-    timeout-minutes: 90
+    timeout-minutes: 60
     outputs:
       bundle: ${{ steps.compile.outputs.artifact }}
       key: ${{ steps.compile.outputs.key }}
@@ -466,10 +463,17 @@ jobs:
         run: runner-gate pick linux-x64-kvm
 
   test:
-    name: test (x86_64, oracles in the emulated guest)
+    name: test (x86_64, oracles in the harness guest)
     needs: [fixtures, test-gate, test-builder-image, build-test-x86_64]
     runs-on: antimatter-vps-linux-x64
-    timeout-minutes: 600
+    timeout-minutes: 60
+    # The runner has no KVM: the harness boots its guest under TCG
+    # (FLTH_ACCELERATOR), with QEMU's translation cache capped (FLTH_VM_MEM,
+    # MiB) and the guest's RAM at most 75% of that cap (FLTH_GUEST_MEM).
+    env:
+      FLTH_ACCELERATOR: tcg
+      FLTH_VM_MEM: '2048'
+      FLTH_GUEST_MEM: '1536'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -490,27 +494,21 @@ jobs:
           artifact: ${{ needs.build-test-x86_64.outputs.bundle }}
           key: ${{ needs.build-test-x86_64.outputs.key }}
           image: ${{ needs.test-builder-image.outputs.image }}
-      - name: chore test, use prebuilt executables in the emulated guest
+      # The harness's guest, under TCG with its low-memory limits: QEMU and
+      # Vagrant from the harness's own CI setup, and upstream virtiofsd at the
+      # harness pin, before ci-setup-linux.sh, whose host check refuses an
+      # older one.
+      - uses: antimatter-studios/fs-linux-test-harness/.github/actions/install-virtiofsd@feat/vagrant-tcg
+      - name: QEMU and Vagrant for the harness guest (TCG)
+        run: bash ../fs-linux-test-harness/scripts/ci-setup-linux.sh
+      # The build job's executables, installed where they were compiled and
+      # run on this runner; every tool call and kernel mount goes to the
+      # harness's guest. Nothing is compiled.
+      - name: chore test, the build job's executables, oracles in the harness guest
         id: tier
         env:
-          GH_TOKEN: ${{ github.token }}
-          BENCH_CACHE_REGISTRY: ghcr.io/${{ github.repository }}/qemu-pilot
           EXT4_CI_BUNDLE_KEY: ${{ needs.build-test-x86_64.outputs.key }}
-        run: bash scripts/ci-test-serve.sh serve x86_64 tcg full -- chore test
-      - name: Keep the guest's evidence
-        # The boot, console and timing records of the emulated guest, kept
-        # whatever the outcome: a stalled or failed guest is read from these.
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: guest-evidence-x86_64-${{ github.run_attempt }}
-          path: |
-            tmp/qemu-benchmark/**/*.json
-            tmp/qemu-benchmark/**/*.txt
-            tmp/qemu-benchmark/**/*.tsv
-            tmp/qemu-benchmark/**/*.log
-          if-no-files-found: warn
-          retention-days: 7
+        run: bash scripts/ci-test-harness-prebuilt.sh x86_64 "$EXT4_CI_BUNDLE_KEY" chore test
       - name: Keep the tier logs
         # A quiet tier writes its detail to tmp/logs/<tier>.log and prints a
         # verdict; without this the detail dies with the runner and the only
@@ -539,7 +537,7 @@ jobs:
     name: test (aarch64, in the emulated ARM64 guest)
     needs: [fixtures, test-arm64-gate, test-builder-image, build-test-aarch64]
     runs-on: antimatter-vps-linux-x64
-    timeout-minutes: 480
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
         with:
@@ -614,14 +612,21 @@ jobs:
 
   suite-in-vm:
     name: suite in the guest (the macOS path)
-    needs: [fixtures, suite-in-vm-gate]
+    needs: [fixtures, suite-in-vm-gate, test-builder-image, build-test-x86_64]
     runs-on: antimatter-vps-linux-x64
-    # The guest compiles the whole suite emulated (TCG): the runner has no
-    # KVM, and that is several times slower than the KVM guest was.
-    # One build job and one test thread (FLTH_RESOURCE_PROFILE low, applied by
-    # scripts/ci-qemu-runner.sh serve) keep the 4-CPU runner's load down, and
-    # take longer: the limit is long so a slow, healthy run finishes.
-    timeout-minutes: 600
+    # `chore test:vm` as a Mac runs it, on the build job's bundle: the
+    # harness's guest-test runs scripts/guest-suite.sh in its guest, which
+    # installs the bundle and runs the whole suite. FLTH_BUILD_PREBUILT=1:
+    # the harness builds nothing; the build job did.
+    timeout-minutes: 60
+    # The runner has no KVM: the harness boots its guest under TCG
+    # (FLTH_ACCELERATOR), with QEMU's translation cache capped (FLTH_VM_MEM,
+    # MiB) and the guest's RAM at most 75% of that cap (FLTH_GUEST_MEM).
+    env:
+      FLTH_ACCELERATOR: tcg
+      FLTH_VM_MEM: '2048'
+      FLTH_GUEST_MEM: '1536'
+      FLTH_BUILD_PREBUILT: '1'
     steps:
       - uses: actions/checkout@v4
       - name: Install chore
@@ -632,37 +637,36 @@ jobs:
         with:
           name: fixtures
           path: test-disks
-      # No Rust on the runner: the toolchain that matters is the one the
-      # guest installs from rust-toolchain.toml. That is the point of the
-      # job — on a Mac there is no usable host toolchain for these tests
-      # either. scripts/ci-guest-suite.sh stages the siblings as the
-      # harness does and runs scripts/ci-guest-compile-suite.sh in the guest.
-      - name: chore test:vm, compiled and run in the emulated guest
-        id: tier
-        env:
-          GH_TOKEN: ${{ github.token }}
-          BENCH_CACHE_REGISTRY: ghcr.io/${{ github.repository }}/qemu-pilot
-        run: bash scripts/ci-qemu-runner.sh serve x86_64 tcg full -- chore test:vm
-      - name: Keep the guest's evidence
-        # The boot, console and timing records of the emulated guest, kept
-        # whatever the outcome: a stalled or failed guest is read from these.
-        if: always()
-        uses: actions/upload-artifact@v4
+      - uses: ./.github/actions/ci-test-restore
         with:
-          name: guest-evidence-suite-in-vm
-          path: |
-            tmp/qemu-benchmark/**/*.json
-            tmp/qemu-benchmark/**/*.txt
-            tmp/qemu-benchmark/**/*.tsv
-            tmp/qemu-benchmark/**/*.log
-          if-no-files-found: warn
-          retention-days: 7
+          arch: x86_64
+          artifact: ${{ needs.build-test-x86_64.outputs.bundle }}
+          key: ${{ needs.build-test-x86_64.outputs.key }}
+          image: ${{ needs.test-builder-image.outputs.image }}
+      # Where the harness hands a build to its guest: the share's build/.
+      - name: The build job's bundle, as the harness's build
+        env:
+          KEY: ${{ needs.build-test-x86_64.outputs.key }}
+        run: |
+          set -euo pipefail
+          mkdir -p .vm-share/build
+          mv tmp/ci-test-bundle/bundle.tar .vm-share/build/bundle.tar
+          printf '%s\n' "$KEY" > .vm-share/build/key
+          printf 'ci\n' > .vm-share/build/scope
+      # The harness's guest, under TCG with its low-memory limits: QEMU and
+      # Vagrant from the harness's own CI setup, and upstream virtiofsd at the
+      # harness pin, before ci-setup-linux.sh, whose host check refuses an
+      # older one.
+      - uses: antimatter-studios/fs-linux-test-harness/.github/actions/install-virtiofsd@feat/vagrant-tcg
+      - name: QEMU and Vagrant for the harness guest (TCG)
+        run: bash ../fs-linux-test-harness/scripts/ci-setup-linux.sh
+      - name: chore test:vm, the build job's bundle run in the harness guest
+        id: tier
+        run: chore test:vm
       - name: Keep the tier logs
         # A quiet tier writes its detail to tmp/logs/<tier>.log and prints a
-        # verdict; without this the detail dies with the runner and the only
-        # record left is the one line the terminal got. `if: always()` because
-        # the run worth reading is the one that failed; not before the tier
-        # ran, though, or there is no log and this step's red hides the real
+        # verdict; without this the detail dies with the runner. Not before
+        # the tier ran, or there is no log and this step's red hides the real
         # one (#306).
         if: always() && steps.tier.outcome != 'skipped'
         uses: actions/upload-artifact@v4

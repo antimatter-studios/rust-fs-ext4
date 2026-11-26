@@ -343,7 +343,14 @@ vars:
   # grep check under pipefail no longer fails on its own match.
   # v0.11.0: guest test concurrency follows the resource profile, and each
   # guest run gets a private disk-backed temporary directory.
-  LINUX_HARNESS_REF: v0.11.0
+  # After v0.11.0, until the next release: the branch feat/vagrant-tcg, on
+  # main with the [build] step (#301) and the host memory budget (#300),
+  # adds FLTH_ACCELERATOR=tcg, FLTH_VM_MEM, FLTH_GUEST_MEM and
+  # FLTH_BUILD_PREBUILT, which CI's suite-in-vm job uses. LINUX_HARNESS_BASE
+  # names the release a branch or commit pin builds on, for
+  # tests/scripts/test-harness-pin-keeps-guest-off-shares.sh.
+  LINUX_HARNESS_REF: feat/vagrant-tcg
+  LINUX_HARNESS_BASE: v0.11.0
 
 # The harness's consumer tasks, as `chore vm:<task>`. OPTIONAL because the
 # harness is a sibling that `chore siblings` itself checks out: without
@@ -695,10 +702,10 @@ tasks:
     # guest_command, which installs that bundle and runs it: no toolchain in
     # the guest. The guest stays up afterwards, for the next run.
     #
-    # On a CI runner without KVM (FS_EXT4_GUEST_SSH) the suite-in-vm job
-    # still compiles in its served guest (scripts/ci-guest-suite.sh). Long
-    # enough for that emulated (TCG) guest, which compiles the suite several
-    # times slower than a KVM guest.
+    # CI's suite-in-vm job runs this same task through the harness, under
+    # TCG, on the build its suite-build job made (FLTH_BUILD_PREBUILT=1).
+    # With FS_EXT4_GUEST_SSH set, a served guest runs it instead
+    # (scripts/ci-guest-suite.sh).
     timeout: 360m
     on_timeout:
       - cmd: '../fs-linux-test-harness/scripts/vm.sh down || ../fs-linux-test-harness/scripts/vm.sh destroy'

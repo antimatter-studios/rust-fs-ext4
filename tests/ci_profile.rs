@@ -767,7 +767,9 @@ fn carries_any(keys: &[String], forbidden: &[&str]) -> bool {
 /// (or the native `ci-test-serve.sh` equivalent)
 /// IS one: the VM jobs on a runner without KVM run their task beside an
 /// emulated guest, and the wrapper execs the command after its `--`, with
-/// the wrapper's status.
+/// the wrapper's status. So is
+/// `bash scripts/ci-test-harness-prebuilt.sh <arch> <key> chore x`, which
+/// installs the build job's bundle and execs the command after its key.
 fn chore_invocations(script: &str) -> Vec<String> {
     let mut found = Vec::new();
     for raw in script.lines() {
@@ -785,7 +787,14 @@ fn chore_invocations(script: &str) -> Vec<String> {
             if words.peek() == Some(&"bash") {
                 words.next();
             }
-            if words.peek().is_some_and(|w| {
+            if words
+                .peek()
+                .is_some_and(|w| w.ends_with("scripts/ci-test-harness-prebuilt.sh"))
+            {
+                words.next();
+                words.next();
+                words.next();
+            } else if words.peek().is_some_and(|w| {
                 w.ends_with("scripts/ci-qemu-runner.sh") || w.ends_with("scripts/ci-test-serve.sh")
             }) {
                 words.next();
@@ -1329,7 +1338,14 @@ fn assert_prebuilt_test(document: &Yaml, path: &Path, name: &str, arch: &str) {
         field(test, "container").is_none(),
         "{name} must run Actions steps directly on the runner"
     );
-    let serve_command = format!("scripts/ci-test-serve.sh serve {arch} tcg full");
+    // x86_64 runs the bundle on the runner with the harness's guest for the
+    // oracles; aarch64 still beside a served ARM64 guest, which the harness
+    // cannot emulate on an x86_64 runner.
+    let serve_command = if arch == "x86_64" {
+        format!("scripts/ci-test-harness-prebuilt.sh {arch} \"$EXT4_CI_BUNDLE_KEY\"")
+    } else {
+        format!("scripts/ci-test-serve.sh serve {arch} tcg full")
+    };
     let expected_key = format!("${{{{ needs.{producer}.outputs.key }}}}");
     let serve_steps: Vec<_> = steps_of(test, name)
         .iter()
@@ -1413,13 +1429,26 @@ fn the_pr_gate_builds_fixtures_once_in_a_guest_and_tests_both_architectures_thro
     let steps = steps_of(test, "test");
     assert!(runs_chore(steps, "test"));
     assert!(
-        steps
-            .iter()
-            .any(|step| serves_chore(step, "x86_64", "test")),
-        "jobs.test must run `chore test` beside the emulated x86_64 guest \
-         (scripts/ci-test-serve.sh serve): every oracle tool call and every kernel \
-         mount happens in that guest"
+        steps.iter().any(|step| {
+            run_of(step).contains("scripts/ci-test-harness-prebuilt.sh x86_64")
+                && chore_invocations(run_of(step)).iter().any(|t| t == "test")
+        }),
+        "jobs.test must run `chore test` on the build job's executables \
+         (scripts/ci-test-harness-prebuilt.sh): every oracle tool call and every kernel \
+         mount happens in the harness's guest"
     );
+    let env = field(test, "env").expect("jobs.test sets the harness guest's limits");
+    for (name, value) in [
+        ("FLTH_ACCELERATOR", "tcg"),
+        ("FLTH_VM_MEM", "2048"),
+        ("FLTH_GUEST_MEM", "1536"),
+    ] {
+        assert_eq!(
+            field(env, name).and_then(Yaml::as_str),
+            Some(value),
+            "jobs.test env {name}"
+        );
+    }
     let runner = read_or_panic(&manifest_dir().join("scripts/ci-qemu-runner.sh"));
     assert!(
         runner.contains(&["debug", "fs"].concat())
@@ -1439,12 +1468,13 @@ fn the_pr_gate_builds_fixtures_once_in_a_guest_and_tests_both_architectures_thro
         steps.iter().all(|step| !run_of(step).contains("e2fsprogs")),
         "jobs.test must not install e2fsprogs on the runner: the tools live in the VM"
     );
+    let restore = read_or_panic(&manifest_dir().join("scripts/ci-test-harness-prebuilt.sh"));
+    assert!(restore.contains("scripts/ci-test-bundle.py install"));
+    assert!(restore.contains("export FS_EXT4_PREBUILT_REPO"));
+    assert!(restore.contains("FS_EXT4_GUEST_SSH names a served one"));
     let serve = read_or_panic(&manifest_dir().join("scripts/ci-test-serve.sh"));
     assert!(serve.contains("scripts/ci-qemu-runner.sh\" serve"));
     assert!(serve.contains("scripts/ci-test-run-prebuilt.sh"));
-    let restore = read_or_panic(&manifest_dir().join("scripts/ci-test-run-prebuilt.sh"));
-    assert!(restore.contains("scripts/ci-test-bundle.py install"));
-    assert!(restore.contains("export FS_EXT4_PREBUILT_REPO"));
 
     // jobs.test-arm64 — the architecture the driver ships on: the tiers
     // that need no oracle, compiled for aarch64 and run in an emulated ARM64
@@ -2998,7 +3028,7 @@ tasks:
             "without the unit job's step, only `chore test` reaches the run"
         );
         let neither = no_unit_step.replace(
-            "run: bash scripts/ci-test-serve.sh serve x86_64 tcg full -- chore test\n",
+            "run: bash scripts/ci-test-harness-prebuilt.sh x86_64 \"$EXT4_CI_BUNDLE_KEY\" chore test\n",
             "run: 'true'\n",
         );
         assert_ne!(neither, no_unit_step, "the mutation must actually apply");

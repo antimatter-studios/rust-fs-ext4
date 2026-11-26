@@ -1,21 +1,17 @@
 #[test]
 fn the_guest_suite_runs_unchanged_tests_with_guest_local_scratch() {
-    for runner in [
-        include_str!("../scripts/guest-suite.sh"),
-        include_str!("../scripts/ci-guest-compile-suite.sh"),
-    ] {
-        assert!(
-            runner.contains("bash scripts/guest-scratch.sh scripts/test.sh --locked --profile test-opt \"$@\""),
-            "the guest suite must isolate scratch from the repository share before running the original tests"
-        );
-    }
+    assert!(
+        include_str!("../scripts/guest-suite.sh")
+            .contains("bash scripts/guest-scratch.sh scripts/test.sh --locked --profile test-opt \"$@\""),
+        "the guest suite must isolate scratch from the repository share before running the original tests"
+    );
 }
 
 #[test]
 fn the_harness_guest_runs_what_the_host_built_and_never_compiles() {
     let runner = include_str!("../scripts/guest-suite.sh");
     assert!(runner.contains(
-        "scripts/ci-test-bundle.py install \"$arch\" \"$key\" \"$build/bundle.tar\" local"
+        "scripts/ci-test-bundle.py install \"$arch\" \"$key\" \"$build/bundle.tar\" \"$scope\""
     ));
     assert!(runner.contains("export FS_EXT4_PREBUILT_REPO=\"$PWD\""));
     // What it runs, not what its comments say.
@@ -41,16 +37,37 @@ fn the_harness_guest_runs_what_the_host_built_and_never_compiles() {
 }
 
 #[test]
-fn the_served_suite_limits_optimizer_work_only_inside_the_guest() {
+fn the_served_ci_guest_runs_the_same_chain() {
     let served = include_str!("../scripts/ci-guest-suite.sh");
+    assert!(served.contains(
+        "command=\"cd /repo && FLTH_GUEST=1 FLTH_BUILD_DIR=/share/build$limits exec bash scripts/guest-suite.sh\""
+    ));
+    assert!(served.contains("tar -cf - -C \"$BUILD\" . | ssh_guest 'tar -xf - -C /share/build'"));
+    assert!(!std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("scripts/ci-guest-compile-suite.sh")
+        .exists());
+    let ci = include_str!("../.github/workflows/ci.yml");
     assert!(
-        served.contains(
-            "command=\"cd /repo && FLTH_GUEST=1$limits CARGO_PROFILE_TEST_OPT_OPT_LEVEL=1 exec bash scripts/ci-guest-compile-suite.sh\""
-        ),
-        "the served suite must send the lower optimization level to the guest Cargo process without changing its resource limits"
+        !ci.contains("\n  suite-build:\n"),
+        "the build job is build-test-x86_64; there is no second one"
     );
-    assert!(!include_str!("../scripts/ci-guest-compile-suite.sh")
-        .contains("CARGO_PROFILE_TEST_OPT_OPT_LEVEL"));
+    for job in ["test", "suite-in-vm"] {
+        let body = ci.split_once(&format!("\n  {job}:\n")).unwrap().1;
+        let body = &body[..body.find("\n\n  ").unwrap_or(body.len())];
+        assert!(
+            body.contains("build-test-x86_64"),
+            "{job} runs the build job's bundle"
+        );
+        for setting in ["FLTH_ACCELERATOR: tcg", "FLTH_VM_MEM:", "FLTH_GUEST_MEM:"] {
+            assert!(body.contains(setting), "{job} sets {setting}");
+        }
+        for compiles in ["vm.sh build", "ci-qemu-runner.sh", "ci-test-serve.sh"] {
+            assert!(
+                !body.contains(compiles),
+                "{job} neither compiles nor boots a pilot guest ({compiles})"
+            );
+        }
+    }
 }
 
 #[test]
