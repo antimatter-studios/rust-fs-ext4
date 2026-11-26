@@ -230,7 +230,7 @@ jobs:
         # Only a self-hosted Linux runner lacks it; the hosted image has it.
         run: |
           if [ "$RUNNER_OS" = Linux ] && [ "$RUNNER_ENVIRONMENT" = self-hosted ]; then
-            sudo apt-get update && sudo apt-get install -y build-essential
+            bash scripts/ci-c-toolchain.sh
           fi
       - name: Install chore
         # Pinned (CHORE_VERSION) and checked against the release's
@@ -783,7 +783,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: C toolchain for the gated runner
         if: runner.environment == 'self-hosted'
-        run: sudo apt-get update && sudo apt-get install -y build-essential
+        run: bash scripts/ci-c-toolchain.sh
       - name: Install chore
         run: scripts/ci-install-chore.sh
       - name: chore siblings
@@ -847,7 +847,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: C toolchain for the gated runner
         if: runner.environment == 'self-hosted'
-        run: sudo apt-get update && sudo apt-get install -y build-essential
+        run: bash scripts/ci-c-toolchain.sh
       - name: Install chore
         run: scripts/ci-install-chore.sh
       - name: chore siblings
@@ -898,7 +898,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: C toolchain for the gated runner
         if: runner.environment == 'self-hosted'
-        run: sudo apt-get update && sudo apt-get install -y build-essential
+        run: bash scripts/ci-c-toolchain.sh
       - name: Install chore
         run: scripts/ci-install-chore.sh
       - name: chore siblings
@@ -940,7 +940,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: C toolchain for the gated runner
         if: runner.environment == 'self-hosted'
-        run: sudo apt-get update && sudo apt-get install -y build-essential
+        run: bash scripts/ci-c-toolchain.sh
       - name: Install chore
         run: scripts/ci-install-chore.sh
       - name: chore siblings
@@ -1013,7 +1013,7 @@ jobs:
         # Only a self-hosted Linux runner lacks it; the hosted image has it.
         run: |
           if [ "$RUNNER_OS" = Linux ] && [ "$RUNNER_ENVIRONMENT" = self-hosted ]; then
-            sudo apt-get update && sudo apt-get install -y build-essential
+            bash scripts/ci-c-toolchain.sh
           fi
       - name: Install chore
         run: scripts/ci-install-chore.sh

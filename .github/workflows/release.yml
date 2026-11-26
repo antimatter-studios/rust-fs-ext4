@@ -54,7 +54,7 @@ jobs:
         # Only a self-hosted Linux runner lacks it; the hosted image has it.
         run: |
           if [ "$RUNNER_OS" = Linux ] && [ "$RUNNER_ENVIRONMENT" = self-hosted ]; then
-            sudo apt-get update && sudo apt-get install -y build-essential
+            bash scripts/ci-c-toolchain.sh
           fi
 
       - name: verify tag matches Cargo.toml version
@@ -262,7 +262,7 @@ jobs:
           persist-credentials: false
       - name: C toolchain for the gated runner
         if: runner.environment == 'self-hosted'
-        run: sudo apt-get update && sudo apt-get install -y build-essential
+        run: bash scripts/ci-c-toolchain.sh
 
       # rust-fs-core's scripts, at the ref chores.yml pins (read from there
       # rather than restated; chore itself has no build for every runner
