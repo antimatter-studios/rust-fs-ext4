@@ -374,12 +374,19 @@ jobs:
           key: ${{ steps.recipe.outputs.key }}
       - if: steps.cache.outputs.cache-hit != 'true'
         uses: antimatter-studios/fs-linux-test-harness/.github/actions/install-virtiofsd@feat/vagrant-tcg
-      - if: steps.cache.outputs.cache-hit != 'true'
-        name: QEMU and Vagrant for the harness guest (TCG)
-        run: bash ../fs-linux-test-harness/scripts/ci-setup-linux.sh
-      - if: steps.cache.outputs.cache-hit != 'true'
-        name: chore fixtures, in the harness guest
-        run: chore fixtures
+      # One unconditional step: a cached set is checked, and a missing one is
+      # made in the harness guest.
+      - name: chore fixtures, in the harness guest unless the cache had them
+        env:
+          CACHED: ${{ steps.cache.outputs.cache-hit }}
+        run: |
+          set -euo pipefail
+          if [ "$CACHED" = true ]; then
+            test-disks/build-fixtures.sh --check
+          else
+            bash ../fs-linux-test-harness/scripts/ci-setup-linux.sh
+            chore fixtures
+          fi
       - if: steps.cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
