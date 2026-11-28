@@ -114,7 +114,7 @@ def report(root, jobs, run, workload, source_commit):
         ):
             problems.append(f"{name}: not the requested hosted runner; this is NOT a hosted measurement")
         if name.startswith("vps-") and (
-            placement != "antimatter-vps-linux-x64" or result["runner_environment"] != "self-hosted"
+            placement != "vps-linux-x64" or result["runner_environment"] != "self-hosted"
         ):
             problems.append(f"{name}: fell back to hosted; this is NOT a VPS measurement")
         if by_name.get(name, {}).get("conclusion") != "success":

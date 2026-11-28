@@ -258,7 +258,7 @@ jobs:
         # machine: its workspace and caches outlive the job before this one.
         # Measured on merge-group run 44795173191, where checkout had emptied
         # the workspace and test-disks/ still held images by this step, on
-        # antimatter-vps-linux-x64-runner-fflsv. Images are gitignored
+        # vps-linux-x64-runner-fflsv. Images are gitignored
         # (test-disks/*.img) and are never part of this job's inputs, so any
         # found here came from the runner, not from the commit. Report what is
         # there (so the next occurrence names its source), remove it, and let

@@ -219,7 +219,7 @@ The `QEMU runner benchmark (pilot)` workflow runs when its implementation change
 in an owner-authored PR. Once available on the default branch, it can also be
 dispatched with `workload=single`, `workload=smoke` or `workload=full`. Each trial starts independently
 and runs the QEMU argument regression tests itself. VPS trials explicitly request
-`antimatter-vps-linux-x64`; hosted trials request `ubuntu-24.04`. There is no hosted
+`vps-linux-x64`; hosted trials request `ubuntu-24.04`. There is no hosted
 bootstrap job delaying the VPS trials, and no fallback that could invalidate a
 placement comparison. A full or unavailable VPS pool leaves its trials queued
 until a matching runner is available; it does not silently send them to hosted.

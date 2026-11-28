@@ -189,7 +189,7 @@ workflow = pathlib.Path(sys.argv[1]).read_text()
 for name in ("hosted-x64", "vps-x64", "hosted-arm64", "vps-arm64"):
     job = re.search(rf"^  {name}:\n(.*?)(?=^  \S|\Z)", workflow, re.M | re.S).group(1)
     assert not re.search(r"^    needs:", job, re.M), f"{name} must not wait for a hosted bootstrap"
-    label = "antimatter-vps-linux-x64" if name.startswith("vps-") else "ubuntu-24.04"
+    label = "vps-linux-x64" if name.startswith("vps-") else "ubuntu-24.04"
     assert f"    runs-on: {label}\n" in job, f"{name} must measure its intended placement"
     for identity in ("github.actor", "github.triggering_actor", "github.event.sender.login",
                      "github.event.pull_request.user.login"):
@@ -254,7 +254,7 @@ for name, arch in (("hosted-x64", "x86_64"), ("vps-x64", "x86_64"),
         "status": 0, "elapsed_seconds": 1800, "finished_unix": 3500,
         "job_ready_unix": 1100, "job_arrival_unix": 1705,
         "runner_environment": "self-hosted" if vps else "github-hosted",
-        "selected_runner": "antimatter-vps-linux-x64" if vps else "ubuntu-24.04",
+        "selected_runner": "vps-linux-x64" if vps else "ubuntu-24.04",
     }))
     (trial / "host.json").write_text(json.dumps({
         "job": name, "source_commit": "same", "core_commit": "same", "source_dirty": False,

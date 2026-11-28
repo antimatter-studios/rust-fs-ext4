@@ -34,7 +34,7 @@ class ExecutedTestEvidence(unittest.TestCase):
                 "build_mode": "host-prebuilt", "status": 0, "elapsed_seconds": 1800,
                 "finished_unix": 3500, "job_arrival_unix": 1705,
                 "runner_environment": "self-hosted" if vps else "github-hosted",
-                "selected_runner": "antimatter-vps-linux-x64" if vps else "ubuntu-24.04",
+                "selected_runner": "vps-linux-x64" if vps else "ubuntu-24.04",
             }))
             (trial / "host.json").write_text(json.dumps({
                 "job": name, "source_commit": "source", "core_commit": "core",
@@ -127,7 +127,7 @@ class ExecutedTestEvidence(unittest.TestCase):
                     result_path.write_text(original)
 
     def test_hosted_trial_on_vps_runner_is_rejected(self):
-        self.check_hosted_placement("selected_runner", "antimatter-vps-linux-x64")
+        self.check_hosted_placement("selected_runner", "vps-linux-x64")
 
     def test_hosted_trial_on_self_hosted_environment_is_rejected(self):
         self.check_hosted_placement("runner_environment", "self-hosted")

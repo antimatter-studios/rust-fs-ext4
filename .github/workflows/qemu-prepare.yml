@@ -41,7 +41,7 @@ jobs:
       github.actor == 'christhomas' && github.triggering_actor == 'christhomas' &&
       (github.event.sender.login == 'christhomas' || github.event.sender.login == '') &&
       (github.event.pull_request.user.login == 'christhomas' || github.event.pull_request.user.login == '')
-    runs-on: antimatter-vps-linux-x64
+    runs-on: vps-linux-x64
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
